@@ -1,0 +1,20 @@
+# State Zero - Dependencies
+
+# HTTP clients
+requests>=2.31.0
+httpx>=0.25.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Data formats
+pyyaml>=6.0.1
+
+# Image processing
+Pillow>=10.0.0
+
+# Terminal colors
+colorama>=0.4.6
+
+# Timezone handling
+pytz>=2023.3

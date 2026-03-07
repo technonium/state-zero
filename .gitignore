@@ -1,0 +1,51 @@
+# Secrets — never commit
+.env
+.env.bak
+
+# Private runtime data (should be in STATE_ZERO_PRIVATE_ROOT)
+# These directories should NEVER exist in the public repo
+# They should be in the private folder instead
+astrology/
+!astrology_generator/astrology/
+!astrology_generator/astrology/**
+runtime/
+
+# Legacy locations — remove if still present
+output/
+gallery/
+local_vps/
+database/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.swp
+venv*/
+venv_new/
+.venv/
+.venv_new/
+
+# Logs at project root
+*.log
+*.pid
+
+# macOS
+.DS_Store
+
+# Cache
+prana_cache.json
+
+# Claude AI local files
+.claude/
+.kilocode/
+
+# IDE
+.idea/
+.vscode/
+*.sublime-*
+
+# Temporary files
+*.tmp
+*.temp
+test_out_*
