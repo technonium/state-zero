@@ -1,0 +1,1 @@
+"""Astrology YAML generation helpers."""

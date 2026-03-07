@@ -1,0 +1,3 @@
+# Archived: Dokploy cron is the supported production execution path.
+# This workflow is kept only as historical reference and is intentionally
+# disabled by moving it out of .github/workflows/.
