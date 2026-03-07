@@ -1,13 +1,6 @@
-# 🎨 STATE ZERO - MASTER SYSTEM V4.6
-## Complete Biometric Data to Abstract Sci-Fi Art Pipeline
+# State Zero — Master Rulebook
 
-**Version:** 4.6.0  
-**Last Updated:** Mar 04, 2026  
-**Purpose:** Transform WHOOP biometric data + Vedic astrology into daily unique abstract sci-fi landscapes
-
----
-
-## 🎯 SYSTEM OVERVIEW
+## SYSTEM OVERVIEW
 
 This system generates unique daily art cards by:
 1. **WHOOP metrics (80%)** - Determine environment mood, structure, depth
@@ -19,7 +12,7 @@ This system generates unique daily art cards by:
 
 ---
 
-## 📊 COMPLETE DATA MAPPING HIERARCHY
+## COMPLETE DATA MAPPING HIERARCHY
 
 ### THE FLOW
 
@@ -46,7 +39,7 @@ VIDEO PROMPT → animation
 
 ---
 
-## 1️⃣ STRAIN → ENERGY ZONE
+## STRAIN → ENERGY ZONE
 
 **Purpose:** Sets the base energy constraint for environment selection
 
@@ -55,14 +48,14 @@ VIDEO PROMPT → animation
 | Strain Value | Energy Zone | Energy Type |
 |-------------|-------------|-------------|
 | 0-9 | **LOW ENERGY** | Passive, static, mineral |
-| 9-14 | **MEDIUM ENERGY** | Active, flowing, organic |
+| 9-14 | **MID ENERGY** | Active, flowing, organic |
 | 14+ | **HIGH ENERGY** | Intense, explosive, extreme |
 
 **Note:** Strain is NEUTRAL - high strain from workout vs stress feels different based on Recovery modulation. Strain only sets energy level, not quality.
 
 ---
 
-## 2️⃣ VEDIC DASHA → THREE OUTPUTS
+## VEDIC DASHA → THREE OUTPUTS
 
 **Purpose:** Provides daily variation seed to prevent repetitive environments despite consistent WHOOP data
 
@@ -256,7 +249,7 @@ Critical: Pick based on theme, not creature
 
 ---
 
-## 🌍 ENVIRONMENT TYPE OPTIONS (By Energy Zone)
+## ENVIRONMENT TYPE OPTIONS (By Energy Zone)
 
 ### LOW ENERGY ENVIRONMENTS (Strain 0-9)
 
@@ -272,7 +265,7 @@ Critical: Pick based on theme, not creature
 
 ---
 
-### MEDIUM ENERGY ENVIRONMENTS (Strain 9-14)
+### MID ENERGY ENVIRONMENTS (Strain 9-14)
 
 **Character:** Active, flowing, organic, dynamic, balanced
 
@@ -302,7 +295,7 @@ Critical: Pick based on theme, not creature
 
 ---
 
-## 3️⃣ RECOVERY × SLEEP SCORE → BEHAVIORAL MATRIX
+## RECOVERY × SLEEP SCORE → BEHAVIORAL MATRIX
 
 **Purpose:** Combines Recovery and Sleep Score into a single behavioral direction that reflects how the body-mind state actually felt — not just one metric in isolation.
 
@@ -349,7 +342,7 @@ Critical: Pick based on theme, not creature
 
 ---
 
-## 4️⃣ SLEEP SCORE → DEPTH LEVEL
+## SLEEP SCORE → DEPTH LEVEL
 
 **Purpose:** Determines vertical positioning/depth within chosen environment
 
@@ -378,7 +371,7 @@ Critical: Pick based on theme, not creature
 
 ---
 
-## 5️⃣ SLEEP HOURS → MOON COUNT
+## SLEEP HOURS → MOON COUNT
 
 **Purpose:** Adds celestial variation element
 
@@ -398,7 +391,7 @@ Critical: Pick based on theme, not creature
 
 ---
 
-## 🔗 CORRELATION SUMMARY
+## CORRELATION SUMMARY
 
 ### How Everything Works Together
 
@@ -456,7 +449,7 @@ refraction, structured geometric expansion theme woven throughout.
 
 ---
 
-## 🎨 LOCKED ART STYLE RULES
+## LOCKED ART STYLE RULES
 
 ### Core Aesthetic (NEVER CHANGE)
 - 1970s-1980s science fiction aesthetic
@@ -516,15 +509,15 @@ refraction, structured geometric expansion theme woven throughout.
 
 ---
 
-## 6️⃣ CARD METADATA
+## CARD METADATA
 
 **Purpose:** Generates the title and scene description displayed on the final composited card (header + footer text).
 
 ### TITLE
-- 1-2 words, UPPERCASE, max 13 characters including space
+- 1-2 words, UPPERCASE, 10-13 characters including space, never below 8
 - Derived from the specific combination of creature, environment, and behavioral state — not a generic mood label
 - Each title should feel like a name for THIS particular landscape
-- Burned words (never reuse): VOID, WEIGHT, DRIFT, DEPTH, HOLLOW, STATIC
+- Burned words (never reuse): VOID, WEIGHT, DRIFT, DEPTH, HOLLOW, STATIC, EDGE, HOLD, RUSH, GRIND
 
 ### SCENE DESCRIPTION
 - Describes **what a viewer would see** — the place, the scale, the light, the materials
@@ -537,7 +530,7 @@ refraction, structured geometric expansion theme woven throughout.
 
 ---
 
-## 7️⃣ VIDEO PROMPT / CAMERA MOVEMENT
+## VIDEO PROMPT / CAMERA MOVEMENT
 
 **Purpose:** Generates the video animation prompt that drives VEO image-to-video generation.
 
@@ -568,7 +561,7 @@ Different days will produce different movements, but the **speed, weight, and co
 
 ---
 
-## 📋 QUICK REFERENCE CARD
+## QUICK REFERENCE CARD
 
 ### Input → Output Flow
 
@@ -598,7 +591,7 @@ WHOOP Data              Dasha Data              Art Output
 
 ---
 
-## 🚀 QUICK START
+## QUICK START
 
 1. **Get WHOOP data** → strain, recovery, sleep_score, sleep_hours
 2. **Look up dasha** → get today's 5 planets from dasha_periods.yaml
@@ -607,7 +600,3 @@ WHOOP Data              Dasha Data              Art Output
 5. **Build JSON** → combine into image_prompt.json
 6. **Generate** → call image API
 7. **Composite** → overlay data, format, upload
-
----
-
-**End of State Zero Master Rulebook V4.5**
