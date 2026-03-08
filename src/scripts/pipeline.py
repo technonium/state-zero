@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 import uuid
 import shlex
 import threading
@@ -320,6 +321,7 @@ class WHOOPPipeline:
 
         status = (state or {}).get('status', 'UNKNOWN')
         if decision == 'skip_posted':
+            self._recover_posted_archive_if_needed(state or {})
             print(f"{Fore.YELLOW}⚠ Daily run already POSTED for {self.run_date}. Exiting cleanly.{Style.RESET_ALL}")
             raise SystemExit(0)
         if decision == 'skip_failed_fatal':
@@ -335,25 +337,138 @@ class WHOOPPipeline:
         )
         raise SystemExit(0)
 
-    def _mark_posted_terminal_success(self, post_id: str | None, permalink: str | None, note: str):
-        if not self.daily_run.is_owner():
+    def _recover_posted_archive_if_needed(self, state: dict):
+        if not self.post_to_instagram:
             return
+
+        payload_path = self.output_dir / 'last_archived_payload.json'
+        has_card = False
+        card_check_error = None
+
+        try:
+            from database_manager import CardDatabase
+
+            has_card = CardDatabase().has_card_for_date(self.run_date)
+        except Exception as e:
+            card_check_error = str(e)
+
+        if payload_path.exists() and has_card:
+            return
+
+        try:
+            daily_data = json.loads((self.output_dir / 'daily_data.json').read_text(encoding='utf-8'))
+            metadata = json.loads((self.output_dir / 'card_metadata.json').read_text(encoding='utf-8'))
+            image_json = json.loads((self.output_dir / 'image_prompt.json').read_text(encoding='utf-8'))
+            blend_option, creature, environment = self._load_required_text_outputs()
+            final_png = self.output_dir / 'card_final.png'
+            final_mp4 = self.output_dir / 'card_final.mp4'
+            if not final_png.exists():
+                raise FileNotFoundError(f'Missing archived asset: {final_png}')
+            if not final_mp4.exists():
+                raise FileNotFoundError(f'Missing archived asset: {final_mp4}')
+
+            post_id = state.get('instagram_post_id') or 'unknown'
+            instagram_permalink = state.get('instagram_permalink')
+            self.step_15_archive(
+                daily_data,
+                metadata,
+                final_png,
+                final_mp4,
+                image_json,
+                post_id,
+                instagram_permalink,
+                blend_option,
+                creature,
+                environment,
+            )
+            print(
+                f"{Fore.GREEN}✅ Recovered archive/database artifacts for already-posted day {self.run_date}{Style.RESET_ALL}"
+            )
+        except Exception as e:
+            details = self._merge_details(
+                card_check_error,
+                ''.join(traceback.format_exception(type(e), e, e.__traceback__))[-2000:],
+            )
+            self._notify_post_success_cleanup_warning(
+                'Post Publish Recovery',
+                'Daily run was already POSTED, but archive/database recovery could not be completed.',
+                details,
+            )
+
+    def _recover_posted_state_after_publish(
+        self,
+        *,
+        post_id: str | None,
+        permalink: str | None,
+        note: str,
+        details_tail: str | None = None,
+    ):
+        try:
+            self.daily_run.mark_posted_after_publish(
+                post_id=post_id,
+                permalink=permalink,
+                note=note,
+            )
+        except Exception as recovery_error:
+            self._notify_post_success_cleanup_warning(
+                'Post Publish State Sync',
+                'Instagram publish succeeded, but POSTED state recovery failed. Manual intervention may be required to avoid reposts.',
+                self._merge_details(details_tail, str(recovery_error)),
+            )
+            return
+
+        self._notify_post_success_cleanup_warning(
+            'Post Publish State Sync',
+            'Instagram publish succeeded after daily ownership moved. Forced POSTED state recovery to prevent duplicate reposts.',
+            details_tail,
+        )
+
+    def _mark_posted_terminal_success(self, post_id: str | None, permalink: str | None, note: str):
         with self._heartbeat_lock:
             self._heartbeat_status = 'POSTED'
             self._heartbeat_note = note
+        if not self.daily_run.is_owner():
+            self._recover_posted_state_after_publish(
+                post_id=post_id,
+                permalink=permalink,
+                note=note,
+                details_tail='Daily run ownership was already lost when syncing POSTED state after Instagram publish.',
+            )
+            return
         try:
             self.daily_run.mark_posted(post_id=post_id, permalink=permalink, note=note)
         except OwnershipLostError as e:
-            self.log_error('Daily Ownership', str(e))
+            self._recover_posted_state_after_publish(
+                post_id=post_id,
+                permalink=permalink,
+                note=note,
+                details_tail=str(e),
+            )
 
-    def _handle_retryable_lookup_not_ready(self, details_tail: str | None = None):
+    def _release_retryable_lookup_failure(
+        self,
+        *,
+        retry_message: str,
+        rescue_stage: str,
+        rescue_message: str,
+        notifier_step: str,
+        notifier_message: str,
+        details_tail: str | None = None,
+    ):
         self._stop_heartbeat_thread()
-        message = 'WHOOP recovery entry for today is not ready yet. Releasing claim for next cron retry.'
+        if env_bool('PIPELINE_TERMINAL_RESCUE_RUN', default=False):
+            raise PipelineStageError(
+                stage=rescue_stage,
+                message=rescue_message,
+                details=details_tail,
+                fallback_eligible=True,
+            )
+
         retry_cleanup_notes: list[str] = []
         try:
             self.daily_run.mark_retryable_failure(
                 step='Data Retrieve & Dasha Lookups',
-                message=message,
+                message=retry_message,
                 details_tail=details_tail,
             )
         except Exception as e:
@@ -372,14 +487,34 @@ class WHOOPPipeline:
         notifier = get_notifier()
         notifier.notify_warning(
             run_date=self.run_date,
-            step='WHOOPRecoveryNotReady',
-            message='WHOOP recovery not ready yet. This run was released for the next cron retry.',
+            step=notifier_step,
+            message=notifier_message,
             details_tail=warning_details,
         )
         if retry_cleanup_notes:
             print(f"{Fore.YELLOW}⚠ {' | '.join(retry_cleanup_notes)}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}⚠ {message}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}⚠ {retry_message}{Style.RESET_ALL}")
         raise SystemExit(0)
+
+    def _handle_retryable_lookup_not_ready(self, details_tail: str | None = None):
+        self._release_retryable_lookup_failure(
+            retry_message='WHOOP recovery entry for today is not ready yet. Releasing claim for next cron retry.',
+            rescue_stage='WHOOP Data Unavailable',
+            rescue_message='WHOOP recovery data never arrived. Terminal rescue run triggering emergency fallback.',
+            notifier_step='WHOOPRecoveryNotReady',
+            notifier_message='WHOOP recovery not ready yet. This run was released for the next cron retry.',
+            details_tail=details_tail,
+        )
+
+    def _handle_retryable_lookup_external_failure(self, details_tail: str | None = None):
+        self._release_retryable_lookup_failure(
+            retry_message='Transient WHOOP or lookup failure encountered. Releasing claim for next cron retry.',
+            rescue_stage='Lookup Retry Exhausted',
+            rescue_message='Transient WHOOP or lookup failure persisted into the terminal rescue run. Triggering emergency fallback.',
+            notifier_step='LookupRetryableFailure',
+            notifier_message='Transient WHOOP or lookup failure. This run was released for the next cron retry.',
+            details_tail=details_tail,
+        )
 
     def log_error(self, step_name: str, error_msg: str, details_tail: str = None):
         if self.post_to_instagram and self.daily_run.is_owner():
@@ -495,6 +630,63 @@ class WHOOPPipeline:
                 ) from e
             self.log_error(step_name, str(e), str(e))
 
+    def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
+        if (
+            exc.fallback_eligible
+            and self.post_to_instagram
+            and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False)
+            and not self.in_emergency_fallback
+        ):
+            notifier = get_notifier()
+            notifier.notify_warning(
+                run_date=self.run_date,
+                step=exc.stage,
+                message=f"{exc.message} Emergency fallback will be attempted.",
+                details_tail=exc.details,
+            )
+            if self._run_emergency_fallback(exc.stage, exc.message):
+                print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
+                return True
+
+            fatal_message = self._last_emergency_fallback_error or exc.message
+            fatal_details = self._merge_details(exc.details, self._last_emergency_fallback_details)
+            self.log_error('Emergency Post Fallback', fatal_message, fatal_details)
+
+        self.log_error(exc.stage, exc.message, exc.details)
+        return False
+
+    def _build_caption_or_raise(self, metadata: dict, daily_data: dict) -> str:
+        try:
+            return self.step_13_build_caption(metadata, daily_data)
+        except PipelineStageError:
+            raise
+        except Exception as e:
+            raise PipelineStageError(
+                stage='Caption Build',
+                message='Caption building failed unexpectedly.',
+                details=''.join(traceback.format_exception(type(e), e, e.__traceback__))[-2000:],
+                fallback_eligible=True,
+            ) from e
+
+    def _notify_post_success_cleanup_warning(self, step: str, message: str, details_tail: str | None = None):
+        print(f"{Fore.YELLOW}⚠ {message}{Style.RESET_ALL}")
+        notifier = get_notifier()
+        notifier.notify_warning(
+            run_date=self.run_date,
+            step=step,
+            message=message,
+            details_tail=details_tail,
+        )
+
+    def _coerce_unexpected_runtime_error(self, exc: Exception) -> PipelineStageError:
+        details = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-2000:]
+        return PipelineStageError(
+            stage='Unhandled Runtime Pre-Post',
+            message='Unexpected runtime failure before Instagram post completion.',
+            details=details,
+            fallback_eligible=True,
+        )
+
     def run(self):
         try:
             self._claim_daily_run_or_exit()
@@ -544,8 +736,7 @@ class WHOOPPipeline:
                     print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping VPS upload.{Style.RESET_ALL}")
                     video_url, thumb_url = None, None
 
-                interpretation = (self.output_dir / 'interpretation.txt').read_text(encoding='utf-8').strip()
-                caption = self.step_13_build_caption(metadata, daily_data, interpretation)
+                caption = self._build_caption_or_raise(metadata, daily_data)
 
                 # Only post to Instagram when enabled
                 if self.post_to_instagram:
@@ -586,28 +777,18 @@ class WHOOPPipeline:
 
                 print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
             except PipelineStageError as exc:
-                if (
-                    exc.fallback_eligible
-                    and self.post_to_instagram
-                    and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False)
-                    and not self.in_emergency_fallback
-                ):
-                    notifier = get_notifier()
-                    notifier.notify_warning(
-                        run_date=self.run_date,
-                        step=exc.stage,
-                        message=f"{exc.message} Emergency fallback will be attempted.",
-                        details_tail=exc.details,
+                if self._handle_runtime_stage_error(exc):
+                    return
+            except Exception as exc:
+                if self.daily_run.current_status() == 'POSTED':
+                    self._notify_post_success_cleanup_warning(
+                        'Post Success Cleanup',
+                        'Instagram post succeeded, but later cleanup failed. Leaving daily state as POSTED.',
+                        ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-2000:],
                     )
-                    if self._run_emergency_fallback(exc.stage, exc.message):
-                        print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
-                        return
-
-                    fatal_message = self._last_emergency_fallback_error or exc.message
-                    fatal_details = self._merge_details(exc.details, self._last_emergency_fallback_details)
-                    self.log_error('Emergency Post Fallback', fatal_message, fatal_details)
-
-                self.log_error(exc.stage, exc.message, exc.details)
+                    return
+                if self._handle_runtime_stage_error(self._coerce_unexpected_runtime_error(exc)):
+                    return
         finally:
             self._stop_heartbeat_thread()
             self._cleanup_non_authoritative_daily_state()
@@ -1302,16 +1483,28 @@ class WHOOPPipeline:
         if result.returncode == 2:
             details_tail = self._build_subprocess_details_tail(result)
             self._handle_retryable_lookup_not_ready(details_tail)
+        elif result.returncode == 3:
+            details_tail = self._build_subprocess_details_tail(result)
+            self._handle_retryable_lookup_external_failure(details_tail)
+        elif result.returncode == 4:
+            print(f"{Fore.RED}Script Error STDOUT:\n{result.stdout}{Style.RESET_ALL}")
+            print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
+            details_tail = self._build_subprocess_details_tail(result)
+            raise PipelineStageError(
+                stage=step_name,
+                message='Script reported a terminal lookup failure',
+                details=details_tail,
+                fallback_eligible=True,
+            )
         elif result.returncode != 0:
             print(f"{Fore.RED}Script Error STDOUT:\n{result.stdout}{Style.RESET_ALL}")
             print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
             details_tail = self._build_subprocess_details_tail(result)
-            # Keep non-retryable WHOOP / lookup failures emergency-fallback eligible.
             raise PipelineStageError(
                 stage=step_name,
-                message=f'Script exited with code {result.returncode}',
+                message=f'lookups.py exited with unexpected code {result.returncode}',
                 details=details_tail,
-                fallback_eligible=True,
+                fallback_eligible=False,
             )
         print(f"{Fore.GREEN}✅ {step_name} completed{Style.RESET_ALL}")
         self._set_heartbeat_context(status='STARTING', note=f'Completed {step_name}.', pulse=True)
@@ -1720,9 +1913,7 @@ class WHOOPPipeline:
                 )
                 return False
 
-            if post_result.get('already_posted'):
-                return True
-
+            reused_existing_post = bool(post_result.get('already_posted'))
             post_id = post_result.get('post_id')
             instagram_permalink = post_result.get('permalink')
 
@@ -1736,6 +1927,7 @@ class WHOOPPipeline:
                     thumb_url=thumb_url,
                     instagram_post_id=post_id,
                     instagram_permalink=instagram_permalink,
+                    reused_existing_post=reused_existing_post,
                 )
             except Exception as e:
                 notifier.notify_warning(
@@ -1782,7 +1974,7 @@ class WHOOPPipeline:
             self._active_emergency_fallback_version = None
             self._active_emergency_fallback_publish_mode = None
 
-    def step_13_build_caption(self, metadata: dict, daily_data: dict, _interpretation: str) -> str:
+    def step_13_build_caption(self, metadata: dict, daily_data: dict) -> str:
         self._set_heartbeat_context(status='STARTING', note='Building Instagram caption.', pulse=True)
         date_str = daily_data.get('date', self.run_date)
         date_display = daily_data.get('date_display') or metadata.get('date_display') or date_str
@@ -1831,6 +2023,9 @@ class WHOOPPipeline:
             user_id = token_manager.get_user_id()
         except Exception as e:
             if self.in_emergency_fallback:
+                # Do not recurse into emergency fallback from inside the fallback publish path.
+                # fallback_eligible is intentionally omitted here so token failures inside the
+                # emergency fallback remain terminal and cannot trigger nested fallback attempts.
                 raise PipelineStageError(
                     stage='Instagram Token',
                     message=f'Failed to fetch Instagram token during emergency fallback: {e}',
@@ -1965,7 +2160,32 @@ class WHOOPPipeline:
             json.dump(archive_payload, f, indent=2)
 
         if self.post_to_instagram:
-            self.safe_step('Database Archive', 'src/scripts/database_manager.py', ['--insert', '--file', str(payload_path)])
+            cmd = [
+                sys.executable,
+                str(self.base_dir / 'src/scripts/database_manager.py'),
+                '--insert',
+                '--file',
+                str(payload_path),
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+            except Exception as e:
+                self._notify_post_success_cleanup_warning(
+                    'Database Archive',
+                    'Instagram post succeeded, but archive/database insert could not be started. Leaving daily state as POSTED.',
+                    str(e),
+                )
+                return
+            if result.stdout:
+                print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
+            if result.returncode != 0:
+                details_tail = self._build_subprocess_details_tail(result)
+                self._notify_post_success_cleanup_warning(
+                    'Database Archive',
+                    'Instagram post succeeded, but archive/database insert failed. Leaving daily state as POSTED.',
+                    details_tail,
+                )
+                return
             print(f"{Fore.GREEN}✅ Archive completed → {payload_path}{Style.RESET_ALL}")
             self._set_heartbeat_context(status='STARTING', note='Archive and database insert completed.', pulse=True)
         else:

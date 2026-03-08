@@ -41,6 +41,16 @@ def _parse_thresholds(raw: str) -> list[int]:
     return sorted(set(out), reverse=True)
 
 
+def _format_expiry_window(days_left: float | None, hours_left: float | None) -> str:
+    if hours_left is not None and hours_left < 24:
+        return f"{hours_left:.1f} hour(s)"
+    if days_left is None:
+        return "unknown"
+    if float(days_left).is_integer():
+        return f"{int(days_left)} day(s)"
+    return f"{days_left:.1f} day(s)"
+
+
 def main():
     enabled = os.getenv("INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
     if not enabled:
@@ -135,6 +145,7 @@ def main():
 
     thresholds = _parse_thresholds(os.getenv("INSTAGRAM_TOKEN_ALERT_DAYS", "14,7,3,1"))
     days_left = report.get("days_to_expiry")
+    hours_left = report.get("hours_to_expiry")
     expires_at = report.get("expires_at")
 
     # If app credentials are not available for debug_token, we can validate but not estimate expiry.
@@ -154,6 +165,7 @@ def main():
 
     state["last_expires_at"] = expires_at
     state["last_days_to_expiry"] = days_left
+    state["last_hours_to_expiry"] = hours_left
 
     # Determine nearest threshold crossed.
     crossed = None
@@ -168,7 +180,10 @@ def main():
         notifier.notify_warning(
             run_date=run_date,
             step="InstagramTokenHealth",
-            message=f"Instagram token expires in {days_left} day(s) (threshold {crossed}). Rotate/refresh soon.",
+            message=(
+                f"Instagram token expires in {_format_expiry_window(days_left, hours_left)} "
+                f"(threshold {crossed} day(s)). Rotate/refresh soon."
+            ),
             details_tail=f"expires_at={expires_at}",
         )
         state["last_expiry_alert_key"] = dedupe_key
@@ -178,12 +193,12 @@ def main():
             notifier.notify_status(
                 run_date=run_date,
                 status="TOKEN_HEALTH_OK",
-                message=f"Instagram token valid; expires in {days_left} day(s).",
+                message=f"Instagram token valid; expires in {_format_expiry_window(days_left, hours_left)}.",
             )
             state["last_ok_notice_date"] = run_date
 
     _save_state(state_path, state)
-    print(f"Token healthcheck: valid, {days_left} day(s) left.")
+    print(f"Token healthcheck: valid, {_format_expiry_window(days_left, hours_left)} left.")
 
 
 if __name__ == "__main__":

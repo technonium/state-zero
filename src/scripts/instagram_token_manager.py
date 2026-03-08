@@ -8,7 +8,7 @@ Instagram tokens work as follows:
 
 This manager:
 1. Tracks last refresh timestamp in a local JSON file (private runtime state)
-2. Automatically refreshes token if it's been > 40 days (well within 60-day limit)
+2. Automatically refreshes token near expiry using INSTAGRAM_REFRESH_THRESHOLD_DAYS
 3. Persists tokens ONLY to private runtime state files, never to .env
 """
 
@@ -17,15 +17,15 @@ import json
 import logging
 import threading
 import hashlib
-from datetime import datetime, timedelta
+import tempfile
+from datetime import datetime, timedelta, timezone
 import httpx
 from utils import get_state_root, ensure_path
 
 logger = logging.getLogger(__name__)
 
-# Instagram long-lived tokens last 60 days
-# Refresh threshold: 40 days (gives 20 days buffer, well within the 24-hour minimum)
-REFRESH_THRESHOLD_DAYS = 40
+# Instagram long-lived tokens last 60 days.
+LONG_LIVED_TOKEN_DAYS = 60
 # Minimum age before token can be refreshed (Meta requirement)
 MIN_REFRESH_AGE_DAYS = 1
 
@@ -40,11 +40,14 @@ class InstagramTokenManager:
     
     _instance = None
     _lock = threading.Lock()
-    _refresh_lock = threading.Lock()
 
     def __init__(self):
         # Durable token state lives in the private runtime folder.
         self.token_state_file = ensure_path(get_state_root()) / 'instagram_token_state.json'
+        self._refresh_lock = threading.Lock()
+        self._refresh_condition = threading.Condition(self._refresh_lock)
+        self._refresh_in_progress = False
+        self._scope_validation_warning_logged = False
 
         self.access_token = None
         self.last_refresh = datetime.now() - timedelta(days=30)
@@ -100,6 +103,13 @@ class InstagramTokenManager:
             except (json.JSONDecodeError, KeyError, ValueError) as e:
                 logger.warning(f"Failed to load token state: {e}, initializing fresh")
                 self._init_fresh_state()
+                try:
+                    recovered_at = datetime.fromtimestamp(self.token_state_file.stat().st_mtime)
+                except OSError:
+                    recovered_at = None
+                if recovered_at:
+                    self.last_refresh_attempt_at = recovered_at
+                    self.last_refresh_attempt_result = "unknown: recovered from unreadable token state"
         else:
             self._init_fresh_state()
 
@@ -120,6 +130,7 @@ class InstagramTokenManager:
 
     def _save_token_state(self):
         """Save token state to JSON file."""
+        tmp_path = None
         try:
             state = {
                 'access_token': self.access_token,
@@ -130,14 +141,33 @@ class InstagramTokenManager:
                 'last_refresh_attempt_at': self.last_refresh_attempt_at.isoformat() if self.last_refresh_attempt_at else None,
                 'last_refresh_attempt_result': self.last_refresh_attempt_result,
             }
-            with open(self.token_state_file, 'w') as f:
+            with tempfile.NamedTemporaryFile(
+                'w',
+                encoding='utf-8',
+                dir=self.token_state_file.parent,
+                delete=False,
+            ) as f:
                 json.dump(state, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+                tmp_path = f.name
+            os.replace(tmp_path, self.token_state_file)
             logger.info(f"Token state saved to {self.token_state_file}")
         except Exception as e:
             logger.error(f"Failed to save token state: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _sync_if_token_changed(self):
         current_fp = self._fingerprint(self.access_token)
+        if current_fp and not self.token_fingerprint:
+            self.token_fingerprint = current_fp
+            self._save_token_state()
+            return
         if current_fp and current_fp != self.token_fingerprint:
             logger.info("Detected new Instagram token value. Resetting token lifecycle state.")
             self.token_fingerprint = current_fp
@@ -152,10 +182,21 @@ class InstagramTokenManager:
             return True
         return (datetime.now() - self.last_refresh_attempt_at) >= timedelta(hours=max(1, self.refresh_cooldown_hours))
 
-    def _record_refresh_attempt(self, success: bool, note: str):
-        self.last_refresh_attempt_at = datetime.now()
+    def _mark_refresh_attempt_started(self, note: str) -> datetime:
+        started_at = datetime.now()
+        self.last_refresh_attempt_at = started_at
+        self.last_refresh_attempt_result = f"pending: {note}"
+        self._save_token_state()
+        return started_at
+
+    def _record_refresh_attempt(self, success: bool, note: str, attempt_started_at: datetime | None = None):
+        self.last_refresh_attempt_at = attempt_started_at or datetime.now()
         self.last_refresh_attempt_result = f"{'success' if success else 'failure'}: {note}"
         self._save_token_state()
+
+    def _refresh_age_threshold_days(self) -> int:
+        remaining_buffer_days = max(0, self.refresh_threshold_days)
+        return max(MIN_REFRESH_AGE_DAYS, LONG_LIVED_TOKEN_DAYS - remaining_buffer_days)
 
     def _needs_refresh(self) -> bool:
         """Check if token needs refreshing based on time since last refresh."""
@@ -163,19 +204,25 @@ class InstagramTokenManager:
             logger.warning("No INSTAGRAM_ACCESS_TOKEN found")
             return False
 
-        days_since_refresh = (datetime.now() - self.last_refresh).days
+        age_days = (datetime.now() - self.last_refresh).total_seconds() / 86400.0
         
         # Check if token is old enough to refresh (Meta requirement: > 24 hours)
-        if days_since_refresh < MIN_REFRESH_AGE_DAYS:
-            logger.info(f"Token is only {days_since_refresh} days old, skipping refresh (min {MIN_REFRESH_AGE_DAYS} days)")
+        if age_days < MIN_REFRESH_AGE_DAYS:
+            logger.info(f"Token is only {age_days:.2f} days old, skipping refresh (min {MIN_REFRESH_AGE_DAYS} days)")
             return False
 
-        # Check if token is due for refresh (> 40 days = 20 day buffer before 60-day expiry)
-        if days_since_refresh >= REFRESH_THRESHOLD_DAYS:
-            logger.info(f"Token is {days_since_refresh} days old (threshold: {REFRESH_THRESHOLD_DAYS}), needs refresh")
+        refresh_age_threshold = self._refresh_age_threshold_days()
+        if age_days >= refresh_age_threshold:
+            logger.info(
+                f"Token is {age_days:.2f} days old (threshold: {refresh_age_threshold} days from "
+                f"INSTAGRAM_REFRESH_THRESHOLD_DAYS={self.refresh_threshold_days}), needs refresh"
+            )
             return True
 
-        logger.info(f"Token is {days_since_refresh} days old, no refresh needed (threshold: {REFRESH_THRESHOLD_DAYS} days)")
+        logger.info(
+            f"Token is {age_days:.2f} days old, no refresh needed "
+            f"(threshold: {refresh_age_threshold} days from INSTAGRAM_REFRESH_THRESHOLD_DAYS={self.refresh_threshold_days})"
+        )
         return False
 
     def _validate_token_value(self, token: str) -> tuple[bool, str]:
@@ -216,13 +263,16 @@ class InstagramTokenManager:
             "checked_at": datetime.now().isoformat(),
             "expires_at": None,
             "days_to_expiry": None,
+            "hours_to_expiry": None,
             "scopes": [],
+            "scope_validation_skipped": False,
         }
         if not valid:
             return report
 
         # Optional expiry/scopes introspection via Graph debug_token.
         if not (self.app_id and self.app_secret):
+            report["scope_validation_skipped"] = True
             return report
 
         app_access_token = f"{self.app_id}|{self.app_secret}"
@@ -242,9 +292,11 @@ class InstagramTokenManager:
             data = response.json().get("data", {})
             expires_at = int(data.get("expires_at") or 0)
             if expires_at > 0:
-                dt = datetime.fromtimestamp(expires_at)
+                dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
                 report["expires_at"] = dt.isoformat()
-                report["days_to_expiry"] = max(0, (dt - datetime.now()).days)
+                hours_to_expiry = max(0.0, (dt - datetime.now(timezone.utc)).total_seconds() / 3600.0)
+                report["hours_to_expiry"] = round(hours_to_expiry, 2)
+                report["days_to_expiry"] = round(hours_to_expiry / 24.0, 2)
             report["scopes"] = data.get("scopes") or []
             report["valid"] = bool(data.get("is_valid", valid))
             if not report["valid"]:
@@ -254,7 +306,18 @@ class InstagramTokenManager:
             report["detail"] = f"{detail} | debug_token error: {e}"
             return report
 
-    async def _refresh_token_async(self) -> bool:
+    async def _perform_refresh_request(self):
+        async with httpx.AsyncClient() as client:
+            return await client.get(
+                REFRESH_URL,
+                params={
+                    'grant_type': 'ig_refresh_token',
+                    'access_token': self.access_token
+                },
+                timeout=30.0
+            )
+
+    async def _refresh_token_async(self, reason: str = "manual refresh request") -> bool:
         """
         Refresh the Instagram access token via the refresh endpoint.
         
@@ -265,83 +328,84 @@ class InstagramTokenManager:
             logger.error("No access token to refresh")
             return False
 
-        # Use refresh lock to prevent concurrent refresh attempts
-        if not self._refresh_lock.acquire(blocking=False):
-            logger.info("Another refresh is in progress, waiting...")
-            self._refresh_lock.acquire(blocking=True)
-            self._refresh_lock.release()
-            valid, detail = self._validate_token()
-            if not valid:
-                logger.error(f"Concurrent refresh finished but token still invalid: {detail}")
-            return valid
+        with self._refresh_condition:
+            if self._refresh_in_progress:
+                logger.info("Another refresh is in progress, waiting...")
+                while self._refresh_in_progress:
+                    self._refresh_condition.wait()
+                valid, detail = self._validate_token()
+                if not valid:
+                    logger.error(f"Concurrent refresh finished but token still invalid: {detail}")
+                return valid
+            self._refresh_in_progress = True
 
+        attempt_started_at = self._mark_refresh_attempt_started(reason)
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    REFRESH_URL,
-                    params={
-                        'grant_type': 'ig_refresh_token',
-                        'access_token': self.access_token
-                    },
-                    timeout=30.0
+            response = await self._perform_refresh_request()
+
+            if response.status_code != 200:
+                body = response.text[:500]
+                logger.error(f"Token refresh failed: {response.status_code} - {body}")
+                self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
+                return False
+
+            data = response.json()
+            
+            # Extract new token
+            new_token = data.get('access_token')
+            if not new_token:
+                logger.error(f"No access_token in refresh response: {data}")
+                self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
+                return False
+
+            # Get new token duration (expires_in is in seconds)
+            expires_in = data.get('expires_in', 5184000)  # Default 60 days in seconds
+
+            # Validate refreshed token before committing to runtime/.env.
+            refreshed_report = self._inspect_token_health_for_value(new_token)
+            if not refreshed_report.get("valid"):
+                logger.error(
+                    "Refreshed token failed validation; keeping existing token. "
+                    f"Detail: {refreshed_report.get('detail')}"
                 )
+                self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
+                return False
 
-                if response.status_code != 200:
-                    body = response.text[:500]
-                    logger.error(f"Token refresh failed: {response.status_code} - {body}")
-                    return False
+            old_token_prefix = self.access_token[:20] + '...'
 
-                data = response.json()
-                
-                # Extract new token
-                new_token = data.get('access_token')
-                if not new_token:
-                    logger.error(f"No access_token in refresh response: {data}")
-                    return False
+            # Persist token to state file only (not .env)
+            self.access_token = new_token
+            self.last_refresh = datetime.now()
+            self.token_created_at = datetime.now()
+            self.token_fingerprint = self._fingerprint(new_token)
+            os.environ['INSTAGRAM_ACCESS_TOKEN'] = new_token
+            self._record_refresh_attempt(True, reason, attempt_started_at=attempt_started_at)
 
-                # Get new token duration (expires_in is in seconds)
-                expires_in = data.get('expires_in', 5184000)  # Default 60 days in seconds
-
-                # Validate refreshed token before committing to runtime/.env.
-                refreshed_report = self._inspect_token_health_for_value(new_token)
-                if not refreshed_report.get("valid"):
-                    logger.error(
-                        "Refreshed token failed validation; keeping existing token. "
-                        f"Detail: {refreshed_report.get('detail')}"
-                    )
-                    return False
-
-                old_token_prefix = self.access_token[:20] + '...'
-
-                # Persist token to state file only (not .env)
-                self.access_token = new_token
-                self.last_refresh = datetime.now()
-                self.token_created_at = datetime.now()
-                self.token_fingerprint = self._fingerprint(new_token)
-                os.environ['INSTAGRAM_ACCESS_TOKEN'] = new_token
-                self._save_token_state()
-
-                logger.info(f"✅ Instagram token refreshed successfully!")
-                logger.info(f"   Old token: {old_token_prefix}")
-                logger.info(f"   New token: {new_token[:20]}...")
-                logger.info(f"   Token expires in: {expires_in} seconds (~{expires_in // 86400} days)")
-                
-                return True
+            logger.info(f"✅ Instagram token refreshed successfully!")
+            logger.info(f"   Old token: {old_token_prefix}")
+            logger.info(f"   New token: {new_token[:20]}...")
+            logger.info(f"   Token expires in: {expires_in} seconds (~{expires_in // 86400} days)")
+            
+            return True
 
         except httpx.RequestError as e:
             logger.error(f"Network error during token refresh: {e}")
+            self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
             return False
         except Exception as e:
             logger.error(f"Unexpected error during token refresh: {e}", exc_info=True)
+            self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
             return False
         finally:
-            self._refresh_lock.release()
+            with self._refresh_condition:
+                self._refresh_in_progress = False
+                self._refresh_condition.notify_all()
 
-    def _refresh_token(self) -> bool:
+    def _refresh_token(self, reason: str = "manual refresh request") -> bool:
         """Synchronous wrapper for token refresh."""
         try:
             import asyncio
-            return asyncio.run(self._refresh_token_async())
+            return asyncio.run(self._refresh_token_async(reason=reason))
         except Exception as e:
             logger.error(f"Token refresh failed: {e}")
             return False
@@ -379,8 +443,7 @@ class InstagramTokenManager:
         if not should_attempt:
             return False, "refresh not needed"
 
-        ok = self._refresh_token()
-        self._record_refresh_attempt(ok, reason)
+        ok = self._refresh_token(reason=reason)
         if ok:
             # keep fingerprint in sync after successful refresh/token update
             self.token_fingerprint = self._fingerprint(self.access_token)
@@ -440,6 +503,11 @@ class InstagramTokenManager:
         report = self.inspect_token_health()
         valid = bool(report.get("valid"))
         detail = report.get("detail", "Token check failed")
+        if report.get("scope_validation_skipped") and not self._scope_validation_warning_logged:
+            logger.warning(
+                "Facebook App credentials missing; Instagram scope validation and expiry introspection were skipped."
+            )
+            self._scope_validation_warning_logged = True
         if valid:
             logger.info("Instagram token validation passed.")
             self._assert_publish_scopes(report)
@@ -449,6 +517,11 @@ class InstagramTokenManager:
                 if refreshed:
                     report_after = self.inspect_token_health()
                     if report_after.get("valid"):
+                        if report_after.get("scope_validation_skipped") and not self._scope_validation_warning_logged:
+                            logger.warning(
+                                "Facebook App credentials missing; Instagram scope validation and expiry introspection were skipped."
+                            )
+                            self._scope_validation_warning_logged = True
                         self._assert_publish_scopes(report_after)
                         logger.info("Instagram token proactively refreshed in hybrid mode.")
                     else:
@@ -468,6 +541,11 @@ class InstagramTokenManager:
             if refreshed:
                 report_after = self.inspect_token_health()
                 if report_after.get("valid"):
+                    if report_after.get("scope_validation_skipped") and not self._scope_validation_warning_logged:
+                        logger.warning(
+                            "Facebook App credentials missing; Instagram scope validation and expiry introspection were skipped."
+                        )
+                        self._scope_validation_warning_logged = True
                     self._assert_publish_scopes(report_after)
                     logger.info("Instagram token recovered after refresh.")
                     return self.access_token
@@ -487,7 +565,7 @@ class InstagramTokenManager:
     def force_refresh(self) -> bool:
         """Force a token refresh regardless of age."""
         logger.info("Forcing token refresh...")
-        return self._refresh_token()
+        return self._refresh_token(reason="manual refresh request")
 
 
 # Convenience function for easy import

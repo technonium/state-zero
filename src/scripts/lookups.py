@@ -7,6 +7,7 @@ import argparse
 import sys
 import asyncio
 import logging
+import httpx
 from whoop_client import WHOOPClient, WhoopAPIError
 from utils import (
     get_astrology_root,
@@ -35,6 +36,15 @@ SPECIAL_ASPECT_OFFSETS = {
 
 class WhoopRecoveryNotReady(Exception):
     """Raised when today's WHOOP recovery entry has not landed yet."""
+
+
+class RetryableLookupFailure(Exception):
+    """Raised for transient WHOOP or external lookup failures that should retry until rescue."""
+
+
+LOOKUP_EXIT_WHOOP_NOT_READY = 2
+LOOKUP_EXIT_RETRYABLE_EXTERNAL_FAILURE = 3
+LOOKUP_EXIT_TERMINAL_FAILURE = 4
 
 
 def _safe_ms(value) -> float:
@@ -403,12 +413,26 @@ def get_whoop_data(target_date: date = None):
         if e.status_code == 404 and "No recovery entry found" in e.message:
             print(f"⚠ [WHOOP] Recovery not ready yet: {e.message}")
             raise WhoopRecoveryNotReady(e.message) from e
+        if e.status_code == 404 and (
+            "No cycle data around" in e.message
+            or "No strain cycle found" in e.message
+            or "No primary sleep found" in e.message
+        ):
+            print(f"⚠ [WHOOP] Daily data still incomplete: {e.message}")
+            raise RetryableLookupFailure(e.message) from e
         if e.status_code == 401:
             print(f"❌ [WHOOP] Auth error (401): {e.message}")
             print("   → Run src/scripts/auth_whoop.py to get a fresh token.")
+            raise RetryableLookupFailure(e.message) from e
+        if e.status_code == 429 or e.status_code >= 500:
+            print(f"⚠ [WHOOP] Transient API error ({e.status_code}): {e.message}")
+            raise RetryableLookupFailure(e.message) from e
         else:
             print(f"❌ [WHOOP] API error ({e.status_code}): {e.message}")
         raise
+    except (httpx.HTTPError, asyncio.TimeoutError) as e:
+        print(f"⚠ [WHOOP] Network error: {e}")
+        raise RetryableLookupFailure(str(e)) from e
     except Exception as e:
         print(f"❌ [WHOOP] Unexpected error: {e}")
         raise
@@ -459,14 +483,22 @@ def main():
     try:
         whoop_data = get_whoop_data(target_date)
     except WhoopRecoveryNotReady:
-        sys.exit(2)
+        sys.exit(LOOKUP_EXIT_WHOOP_NOT_READY)
+    except RetryableLookupFailure:
+        sys.exit(LOOKUP_EXIT_RETRYABLE_EXTERNAL_FAILURE)
+    except Exception:
+        sys.exit(LOOKUP_EXIT_TERMINAL_FAILURE)
     strain = whoop_data["strain"]
     recovery_pct = whoop_data["recovery"]
     sleep_score_pct = whoop_data["sleep_score"]
     sleep_hours = whoop_data["sleep_hours"]
     
     print(f"▶ Generating daily_data.json for {target_date}...")
-    output = build_daily_data(strain, recovery_pct, sleep_score_pct, sleep_hours, target_date)
+    try:
+        output = build_daily_data(strain, recovery_pct, sleep_score_pct, sleep_hours, target_date)
+    except Exception as e:
+        print(f"❌ [LOOKUPS] Terminal data assembly error: {e}")
+        sys.exit(LOOKUP_EXIT_TERMINAL_FAILURE)
     print("✅ Successfully generated output/daily_data.json")
     
 if __name__ == '__main__':
