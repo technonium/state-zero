@@ -25,8 +25,10 @@ from utils import (
     VALID_MEDIA_MODES,
     env_bool,
     ensure_path,
+    get_pipeline_run_date_str,
 )
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
+from daily_run_state import DailyRunStateManager, OwnershipLostError
 
 load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
 init()
@@ -131,28 +133,41 @@ class WHOOPPipeline:
             sys.exit(1)
 
         self.base_dir = get_project_root()
-        run_date = os.getenv('PIPELINE_DATE') or date_cls.today().isoformat()
+        self.pipeline_timezone = os.getenv('PIPELINE_TIMEZONE', 'Asia/Kolkata').strip() or 'Asia/Kolkata'
+        self.tz = ZoneInfo(self.pipeline_timezone)
+        run_date = os.getenv('PIPELINE_DATE') or get_pipeline_run_date_str()
         self.run_date = run_date
         os.environ['PIPELINE_DATE'] = run_date
 
         self.output_dir = get_output_root() / self.run_date
-        self.local_vps_dir = ensure_path(get_local_vps_root())
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.local_vps_dir = get_local_vps_root()
 
         self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '').strip()
         self.chat_id = os.getenv('TELEGRAM_CHAT_ID', '').strip()
         self.telegram_poll_seconds = int(os.getenv('PIPELINE_TELEGRAM_POLL_SECONDS', '20'))
-        self.pipeline_timezone = os.getenv('PIPELINE_TIMEZONE', 'Asia/Kolkata').strip() or 'Asia/Kolkata'
         self.manual_deadline_local = os.getenv('PIPELINE_MANUAL_DEADLINE_LOCAL', '14:00').strip() or '14:00'
         self.manual_deadline_mode = os.getenv('PIPELINE_MANUAL_DEADLINE_MODE', 'run_date').strip().lower()
         self.manual_window_minutes = int(os.getenv('PIPELINE_MANUAL_WINDOW_MINUTES', '120'))
         self.manual_match_strict = env_bool('PIPELINE_MANUAL_MATCH_STRICT')
 
         self.session_file = self.output_dir / 'manual_session.json'
-        self.tz = ZoneInfo(self.pipeline_timezone)
         self.deadline_dt, self.deadline_reason = self._build_deadline_dt()
         # Tracks whether media came from API generation or manual Telegram upload.
         self.asset_source = 'auto_api'
+        self.run_token = uuid.uuid4().hex[:12]
+        self.daily_run = DailyRunStateManager(
+            run_date=self.run_date,
+            timezone_name=self.pipeline_timezone,
+            run_token=self.run_token,
+            stale_after=timedelta(minutes=20),
+        )
+        self._heartbeat_lock = threading.Lock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_thread = None
+        self._heartbeat_status = 'STARTING'
+        self._heartbeat_note = 'Pipeline initialized.'
+        self._runtime_dirs_ready = False
+        self.in_auto_fallback = False
 
     def _normalize_mode(self, raw_mode: str) -> str:
         """Normalize mode - only 'automatic' and 'telegram' are valid."""
@@ -165,7 +180,7 @@ class WHOOPPipeline:
         try:
             run_day = date_cls.fromisoformat(self.run_date)
         except ValueError:
-            run_day = date_cls.today()
+            run_day = date_cls.fromisoformat(get_pipeline_run_date_str())
 
         if self.manual_deadline_mode == 'from_now':
             now = self._now()
@@ -193,8 +208,171 @@ class WHOOPPipeline:
     def _now(self) -> datetime:
         return datetime.now(self.tz)
 
+    def _ensure_owner_runtime_dirs(self):
+        if self._runtime_dirs_ready:
+            return
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._runtime_dirs_ready = True
+
+    def _cleanup_non_authoritative_daily_state(self):
+        if self.post_to_instagram:
+            return
+
+        try:
+            self.daily_run.release_claim()
+        except Exception:
+            pass
+
+        try:
+            self.daily_run.delete_state()
+        except Exception:
+            pass
+
+    def _current_generation_status(self) -> str:
+        return 'AUTO_FALLBACK_RUNNING' if self.in_auto_fallback else 'STARTING'
+
+    def _set_heartbeat_context(self, *, status: str | None = None, note: str | None = None, pulse: bool = False):
+        if self.daily_run.is_owner():
+            current_status = self.daily_run.current_status()
+            if current_status in {'POSTED', 'FAILED_FATAL'} and status and status != current_status:
+                return
+
+        with self._heartbeat_lock:
+            if status:
+                self._heartbeat_status = status
+            if note:
+                self._heartbeat_note = note
+        if pulse:
+            try:
+                self._pulse_heartbeat()
+            except OwnershipLostError as e:
+                self.log_error('Daily Ownership', str(e))
+
+    def _pulse_heartbeat(self):
+        if not self.daily_run.is_owner():
+            return
+        with self._heartbeat_lock:
+            status = self._heartbeat_status
+            note = self._heartbeat_note
+        self.daily_run.heartbeat(status=status, note=note)
+
+    def _heartbeat_loop(self):
+        while not self._heartbeat_stop.wait(60):
+            try:
+                self._pulse_heartbeat()
+            except OwnershipLostError as e:
+                print(f"{Fore.YELLOW}⚠ Lost daily ownership during heartbeat: {e}{Style.RESET_ALL}")
+                return
+            except SystemExit:
+                return
+            except Exception as e:
+                print(f"{Fore.YELLOW}⚠ Heartbeat update failed: {e}{Style.RESET_ALL}")
+
+    def _start_heartbeat_thread(self):
+        if self._heartbeat_thread is not None:
+            return
+        self._heartbeat_stop.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f'daily-run-heartbeat-{self.run_date}',
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat_thread(self):
+        self._heartbeat_stop.set()
+        thread = self._heartbeat_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._heartbeat_thread = None
+
+    def _claim_daily_run_or_exit(self):
+        decision, state = self.daily_run.acquire()
+        if decision == 'owner':
+            self._set_heartbeat_context(
+                status='STARTING',
+                note=f'Claimed daily run ownership (token {self.run_token}).',
+                pulse=True,
+            )
+            self._start_heartbeat_thread()
+            return
+
+        status = (state or {}).get('status', 'UNKNOWN')
+        if decision == 'skip_posted':
+            print(f"{Fore.YELLOW}⚠ Daily run already POSTED for {self.run_date}. Exiting cleanly.{Style.RESET_ALL}")
+            raise SystemExit(0)
+        if decision == 'skip_failed_fatal':
+            print(
+                f"{Fore.YELLOW}⚠ Daily run is blocked by FAILED_FATAL for {self.run_date}. "
+                f"Manual intervention required.{Style.RESET_ALL}"
+            )
+            raise SystemExit(0)
+
+        print(
+            f"{Fore.YELLOW}⚠ Another active run already owns {self.run_date} "
+            f"(status={status}). Exiting cleanly.{Style.RESET_ALL}"
+        )
+        raise SystemExit(0)
+
+    def _mark_posted_terminal_success(self, post_id: str | None, permalink: str | None, note: str):
+        if not self.daily_run.is_owner():
+            return
+        with self._heartbeat_lock:
+            self._heartbeat_status = 'POSTED'
+            self._heartbeat_note = note
+        try:
+            self.daily_run.mark_posted(post_id=post_id, permalink=permalink, note=note)
+        except OwnershipLostError as e:
+            self.log_error('Daily Ownership', str(e))
+
+    def _handle_retryable_lookup_not_ready(self, details_tail: str | None = None):
+        self._stop_heartbeat_thread()
+        message = 'WHOOP recovery entry for today is not ready yet. Releasing claim for next cron retry.'
+        retry_cleanup_notes: list[str] = []
+        try:
+            self.daily_run.mark_retryable_failure(
+                step='Data Retrieve & Dasha Lookups',
+                message=message,
+                details_tail=details_tail,
+            )
+        except Exception as e:
+            retry_cleanup_notes.append(f'Failed to record FAILED_RETRYABLE state: {e}')
+        finally:
+            try:
+                self.daily_run.release_claim()
+            except Exception as e:
+                retry_cleanup_notes.append(f'Failed to release claim: {e}')
+
+        warning_details = details_tail
+        if retry_cleanup_notes:
+            cleanup_tail = '\n'.join(retry_cleanup_notes)
+            warning_details = f"{details_tail}\n\n{cleanup_tail}" if details_tail else cleanup_tail
+
+        notifier = get_notifier()
+        notifier.notify_warning(
+            run_date=self.run_date,
+            step='WHOOPRecoveryNotReady',
+            message='WHOOP recovery not ready yet. This run was released for the next cron retry.',
+            details_tail=warning_details,
+        )
+        if retry_cleanup_notes:
+            print(f"{Fore.YELLOW}⚠ {' | '.join(retry_cleanup_notes)}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}⚠ {message}{Style.RESET_ALL}")
+        raise SystemExit(0)
+
     def log_error(self, step_name: str, error_msg: str, details_tail: str = None):
+        if self.post_to_instagram and self.daily_run.is_owner():
+            try:
+                self.daily_run.mark_fatal_failure(
+                    step=step_name,
+                    message=error_msg,
+                    details_tail=details_tail,
+                )
+            except OwnershipLostError:
+                pass
+
         # Write to error log
+        self.output_dir.mkdir(parents=True, exist_ok=True)
         with open(self.output_dir / 'pipeline_error.log', 'a', encoding='utf-8') as f:
             f.write(f"[{step_name}] ERROR: {error_msg}\n")
         
@@ -234,9 +412,10 @@ class WHOOPPipeline:
             return None
         return '\n\n'.join(chunks)
 
-    def safe_step(self, step_name: str, script_path: str, args: list = None):
+    def safe_step(self, step_name: str, script_path: str, args: list = None, status: str = 'STARTING'):
         try:
             print(f"{Fore.CYAN}▶ Running {step_name}...{Style.RESET_ALL}")
+            self._set_heartbeat_context(status=status, note=f'Running {step_name}.', pulse=True)
             cmd = [sys.executable, str(self.base_dir / script_path)]
             if args:
                 cmd.extend(args)
@@ -251,94 +430,105 @@ class WHOOPPipeline:
                 details_tail = self._build_subprocess_details_tail(result)
                 self.log_error(step_name, f'Script exited with code {result.returncode}', details_tail)
             print(f"{Fore.GREEN}✅ {step_name} completed{Style.RESET_ALL}")
+            self._set_heartbeat_context(status=status, note=f'Completed {step_name}.', pulse=True)
             return result.stdout
         except Exception as e:
             # Call log_error which will send the notification
             self.log_error(step_name, str(e), str(e))
 
     def run(self):
-        # Set up global exception handler for uncaught errors
-        _setup_global_exception_handler(self)
-        
-        print(f"{Fore.MAGENTA}=== STARTING STATE ZERO PIPELINE ==={Style.RESET_ALL}")
-        print(
-            f"{Fore.LIGHTBLACK_EX}Mode: {self.mode} | "
-            f"Post to Instagram: {self.post_to_instagram} "
-            f"(PIPELINE_POST_TO_INSTAGRAM={str(self.post_to_instagram).lower()}) | "
-            f"Media mode: {self.media_mode}{Style.RESET_ALL}"
-        )
+        try:
+            self._claim_daily_run_or_exit()
+            self._ensure_owner_runtime_dirs()
+            # Set up global exception handler for uncaught errors after ownership is established.
+            _setup_global_exception_handler(self)
 
-        self.step_1_validate()
-        
-        # Only validate Instagram token when posting is enabled
-        if self.post_to_instagram:
-            self.step_1b_validate_instagram_token()
-        else:
-            print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram token validation.{Style.RESET_ALL}")
-        
-        daily_data = self.step_2_3_lookups()
-        self.step_4_6_prompts()
+            print(f"{Fore.MAGENTA}=== STARTING STATE ZERO PIPELINE ==={Style.RESET_ALL}")
+            print(
+                f"{Fore.LIGHTBLACK_EX}Mode: {self.mode} | "
+                f"Post to Instagram: {self.post_to_instagram} "
+                f"(PIPELINE_POST_TO_INSTAGRAM={str(self.post_to_instagram).lower()}) | "
+                f"Media mode: {self.media_mode} | Run token: {self.run_token}{Style.RESET_ALL}"
+            )
 
-        image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
-        metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')
-        blend_option, creature, environment = self._load_required_text_outputs()
+            self.step_1_validate()
 
-        if self.mode == 'telegram':
-            # In telegram mode: always do manual wait + fallback (not skipped in dry run)
-            art_path, video_path = self.step_7_9_manual_or_fallback(image_json)
-        else:
-            # Automatic mode: just generate
-            art_path = self.step_7_generate_image(image_json)
-            video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
+            # Only validate Instagram token when posting is enabled
+            if self.post_to_instagram:
+                self.step_1b_validate_instagram_token()
+            else:
+                print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram token validation.{Style.RESET_ALL}")
 
-        final_png = self.step_10a_render_image(art_path, daily_data, metadata)
-        final_mp4 = self.step_10b_render_video(video_path, daily_data, metadata)
+            daily_data = self.step_2_3_lookups()
+            self.step_4_6_prompts()
 
-        # Only upload to VPS and post to Instagram when enabled
-        if self.post_to_instagram:
-            video_url, thumb_url = self.step_12_upload_vps(final_mp4, final_png)
-        else:
-            print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping VPS upload.{Style.RESET_ALL}")
-            video_url, thumb_url = None, None
+            image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
+            metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')
+            blend_option, creature, environment = self._load_required_text_outputs()
 
-        interpretation = (self.output_dir / 'interpretation.txt').read_text(encoding='utf-8').strip()
-        caption = self.step_13_build_caption(metadata, daily_data, interpretation)
+            if self.mode == 'telegram':
+                # In telegram mode: always do manual wait + fallback (not skipped in dry run)
+                art_path, video_path = self.step_7_9_manual_or_fallback(image_json)
+            else:
+                # Automatic mode: just generate
+                art_path = self.step_7_generate_image(image_json)
+                video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
 
-        # Only post to Instagram when enabled
-        if self.post_to_instagram:
-            post_result = self.step_14_post_instagram(video_url, thumb_url, caption)
-        else:
-            print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")
-            post_result = None
-        
-        # Handle both dict (new) and string (legacy) return types
-        if isinstance(post_result, dict):
-            post_id = post_result.get('post_id', 'unknown')
-            instagram_permalink = post_result.get('permalink')
-        else:
-            post_id = 'dry-run'
-            instagram_permalink = None
+            final_png = self.step_10a_render_image(art_path, daily_data, metadata)
+            final_mp4 = self.step_10b_render_video(video_path, daily_data, metadata)
 
-        print(f"{Fore.CYAN}▶ Archiving Data and Updating Database...{Style.RESET_ALL}")
-        self.step_15_archive(
-            daily_data,
-            metadata,
-            final_png,
-            final_mp4,
-            image_json,
-            post_id,
-            instagram_permalink,
-            blend_option,
-            creature,
-            environment,
-        )
+            # Only upload to VPS and post to Instagram when enabled
+            if self.post_to_instagram:
+                video_url, thumb_url = self.step_12_upload_vps(final_mp4, final_png)
+            else:
+                print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping VPS upload.{Style.RESET_ALL}")
+                video_url, thumb_url = None, None
 
-        # Send dry-run completion notification if not posting
-        if not self.post_to_instagram:
-            notifier = get_notifier()
-            notifier.notify_dry_run_complete(self.run_date, self.mode, self.output_dir)
+            interpretation = (self.output_dir / 'interpretation.txt').read_text(encoding='utf-8').strip()
+            caption = self.step_13_build_caption(metadata, daily_data, interpretation)
 
-        print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
+            # Only post to Instagram when enabled
+            if self.post_to_instagram:
+                post_result = self.step_14_post_instagram(video_url, thumb_url, caption)
+            else:
+                print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")
+                post_result = None
+
+            if isinstance(post_result, dict) and post_result.get('already_posted'):
+                print(f"{Fore.YELLOW}⚠ State already marked POSTED. Skipping archive/database work.{Style.RESET_ALL}")
+                return
+
+            # Handle both dict (new) and string (legacy) return types
+            if isinstance(post_result, dict):
+                post_id = post_result.get('post_id', 'unknown')
+                instagram_permalink = post_result.get('permalink')
+            else:
+                post_id = 'dry-run'
+                instagram_permalink = None
+
+            print(f"{Fore.CYAN}▶ Archiving Data and Updating Database...{Style.RESET_ALL}")
+            self.step_15_archive(
+                daily_data,
+                metadata,
+                final_png,
+                final_mp4,
+                image_json,
+                post_id,
+                instagram_permalink,
+                blend_option,
+                creature,
+                environment,
+            )
+
+            # Send dry-run completion notification if not posting
+            if not self.post_to_instagram:
+                notifier = get_notifier()
+                notifier.notify_dry_run_complete(self.run_date, self.mode, self.output_dir)
+
+            print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
+        finally:
+            self._stop_heartbeat_thread()
+            self._cleanup_non_authoritative_daily_state()
 
     def _load_required_json(self, path: Path, label: str) -> dict:
         try:
@@ -372,7 +562,7 @@ class WHOOPPipeline:
         session = {
             'run_date': self.run_date,
             'mode': 'telegram',
-            'run_token': uuid.uuid4().hex[:8],
+            'run_token': self.run_token,
             'status': 'WAITING_MANUAL',
             'timezone': self.pipeline_timezone,
             'deadline_local': self.deadline_dt.isoformat(),
@@ -417,7 +607,12 @@ class WHOOPPipeline:
         return session
 
     def _is_session_reusable(self, session: dict) -> bool:
+        owner_state = self.daily_run.load_state() or {}
+        if owner_state.get('run_token') != self.run_token:
+            return False
         if session.get('run_date') != self.run_date:
+            return False
+        if session.get('run_token') != self.run_token:
             return False
         status = (session.get('status') or '').strip().upper()
         if status in ('COMPLETED', 'AUTO_FALLBACK_RUNNING'):
@@ -806,13 +1001,22 @@ class WHOOPPipeline:
         if note:
             session['note'] = note
         self._save_manual_session(session)
+        if self.daily_run.is_owner() and status in {'WAITING_MANUAL', 'AUTO_FALLBACK_RUNNING'}:
+            self._set_heartbeat_context(status=status, note=note or f'Manual session status={status}.', pulse=True)
 
     def step_7_9_manual_or_fallback(self, image_json: dict) -> tuple[Path, Path]:
         # In telegram mode, we always do manual wait + fallback (not skipped in dry run)
         # The post_to_instagram flag only controls whether we publish to Instagram at the end
-        
+        self.in_auto_fallback = False
+
         if not self.bot_token or not self.chat_id:
+            self.in_auto_fallback = True
             print(f"{Fore.YELLOW}⚠ Telegram credentials missing. Falling back to automatic generation.{Style.RESET_ALL}")
+            self._set_heartbeat_context(
+                status='AUTO_FALLBACK_RUNNING',
+                note='Telegram credentials missing. Running automatic fallback generation.',
+                pulse=True,
+            )
             art_path = self.step_7_generate_image(image_json)
             video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
             return art_path, video_path
@@ -822,7 +1026,13 @@ class WHOOPPipeline:
 
         now = self._now()
         if now >= session_deadline:
+            self.in_auto_fallback = True
             print(f"{Fore.YELLOW}⚠ Manual deadline already passed. Triggering automatic fallback now.{Style.RESET_ALL}")
+            self._set_heartbeat_context(
+                status='AUTO_FALLBACK_RUNNING',
+                note='Manual deadline already passed at pipeline start. Running automatic fallback.',
+                pulse=True,
+            )
             
             # Send status notification for automatic fallback
             notifier = get_notifier()
@@ -847,6 +1057,7 @@ class WHOOPPipeline:
             try:
                 self._send_manual_instruction_packet(session)
             except Exception as e:
+                self.in_auto_fallback = True
                 # Telegram dispatch failed - mark session and fall back to automatic generation
                 print(f"{Fore.YELLOW}⚠ Telegram dispatch failed: {e}{Style.RESET_ALL}")
                 print(f"{Fore.YELLOW}⚠ Falling back to automatic generation.{Style.RESET_ALL}")
@@ -875,11 +1086,21 @@ class WHOOPPipeline:
             f"{Fore.YELLOW}⏳ Waiting for manual image+video on Telegram until "
             f"{session_deadline.strftime('%Y-%m-%d %H:%M %Z')}...{Style.RESET_ALL}"
         )
+        self._set_heartbeat_context(
+            status='WAITING_MANUAL',
+            note=f'Waiting for Telegram manual assets until {session_deadline.isoformat()}.',
+            pulse=True,
+        )
 
         poll_error_streak = 0
         last_poll_warning_epoch = 0.0
         while self._now() < session_deadline:
             try:
+                self._set_heartbeat_context(
+                    status='WAITING_MANUAL',
+                    note=f'Polling Telegram for manual assets until {session_deadline.isoformat()}.',
+                    pulse=True,
+                )
                 updates = self._fetch_telegram_updates(session)
                 if updates:
                     self._extract_manual_assets_from_updates(session, updates)
@@ -915,6 +1136,12 @@ class WHOOPPipeline:
             time.sleep(max(5, self.telegram_poll_seconds))
 
         print(f"{Fore.YELLOW}⚠ Manual deadline reached. Triggering full automatic fallback...{Style.RESET_ALL}")
+        self.in_auto_fallback = True
+        self._set_heartbeat_context(
+            status='AUTO_FALLBACK_RUNNING',
+            note='Manual deadline reached. Running automatic fallback generation.',
+            pulse=True,
+        )
         
         # Send status notification for deadline fallback (non-blocking)
         safe_notify_status(
@@ -945,6 +1172,7 @@ class WHOOPPipeline:
         Only runs when posting is enabled.
         """
         print(f"{Fore.CYAN}▶ Validating Instagram token (fail-fast)...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Validating Instagram token preflight.', pulse=True)
         try:
             from instagram_token_manager import get_instagram_token_manager
             token_manager = get_instagram_token_manager()
@@ -955,18 +1183,36 @@ class WHOOPPipeline:
             if not user_id:
                 raise RuntimeError("INSTAGRAM_USER_ID is missing for full pipeline mode.")
             print(f"{Fore.GREEN}✅ Instagram token validation passed{Style.RESET_ALL}")
+            self._set_heartbeat_context(status='STARTING', note='Instagram token preflight passed.', pulse=True)
         except Exception as e:
             self.log_error('Instagram Token Preflight', str(e))
 
     def step_2_3_lookups(self) -> dict:
         # No more --test flag or mock data - always fetch real WHOOP data
         args = []
-        
+
         target_date = os.getenv('PIPELINE_DATE')
         if target_date:
             args.extend(['--date', target_date])
 
-        self.safe_step('Data Retrieve & Dasha Lookups', 'src/scripts/lookups.py', args)
+        step_name = 'Data Retrieve & Dasha Lookups'
+        print(f"{Fore.CYAN}▶ Running {step_name}...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note=f'Running {step_name}.', pulse=True)
+        cmd = [sys.executable, str(self.base_dir / 'src/scripts/lookups.py'), *args]
+        env = os.environ.copy()
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if result.stdout:
+            print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
+        if result.returncode == 2:
+            details_tail = self._build_subprocess_details_tail(result)
+            self._handle_retryable_lookup_not_ready(details_tail)
+        elif result.returncode != 0:
+            print(f"{Fore.RED}Script Error STDOUT:\n{result.stdout}{Style.RESET_ALL}")
+            print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
+            details_tail = self._build_subprocess_details_tail(result)
+            self.log_error(step_name, f'Script exited with code {result.returncode}', details_tail)
+        print(f"{Fore.GREEN}✅ {step_name} completed{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note=f'Completed {step_name}.', pulse=True)
 
         with open(self.output_dir / 'daily_data.json', encoding='utf-8') as f:
             return json.load(f)
@@ -976,7 +1222,7 @@ class WHOOPPipeline:
 
     def step_7_generate_image(self, image_json: dict) -> Path:
         args = ['--json', str(self.output_dir / 'image_prompt.json'), '--out', str(self.output_dir / 'generated_art.png')]
-        self.safe_step('Image Generation', 'src/scripts/image_gen.py', args)
+        self.safe_step('Image Generation', 'src/scripts/image_gen.py', args, status=self._current_generation_status())
         art_path = self.output_dir / 'generated_art.png'
         if not art_path.exists():
             self.log_error('Image Generation', f'Expected output missing: {art_path}')
@@ -984,6 +1230,8 @@ class WHOOPPipeline:
 
     def step_9_generate_video(self, art_path: Path, video_prompt_path: Path) -> Path:
         print(f"{Fore.CYAN}▶ Running Video Generation...{Style.RESET_ALL}")
+        generation_status = self._current_generation_status()
+        self._set_heartbeat_context(status=generation_status, note='Generating video asset.', pulse=True)
         try:
             from google_video_client import GoogleVideoClient
 
@@ -999,12 +1247,14 @@ class WHOOPPipeline:
                     'stale file from a previous run. Aborting to prevent wrong video in card.'
                 )
             print(f"{Fore.GREEN}✅ Video Generation completed{Style.RESET_ALL}")
+            self._set_heartbeat_context(status=generation_status, note='Video generation completed.', pulse=True)
             return out_path
         except Exception as e:
             self.log_error('Video Generation', str(e))
 
     def step_10a_render_image(self, art_path: Path, daily_data: dict, metadata: dict) -> Path:
         print(f"{Fore.CYAN}▶ Rendering Static Card...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Rendering static card.', pulse=True)
         final_png = self.output_dir / 'card_final.png'
 
         args = [
@@ -1026,6 +1276,7 @@ class WHOOPPipeline:
 
     def step_10b_render_video(self, video_path: Path, daily_data: dict, metadata: dict) -> Path:
         print(f"{Fore.CYAN}▶ Rendering Animated Card...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Rendering animated card.', pulse=True)
         final_mp4 = self.output_dir / 'card_final.mp4'
 
         if self.asset_source != 'manual_telegram':
@@ -1063,6 +1314,7 @@ class WHOOPPipeline:
             vps_base = 'https://mock-vps.com/media'
 
         print(f"{Fore.CYAN}▶ Preparing public media URLs...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Preparing VPS media upload.', pulse=True)
 
         remote_video_name = f'{self.run_date}-card_final.mp4'
         remote_thumb_name = f'{self.run_date}-card_final.png'
@@ -1073,6 +1325,7 @@ class WHOOPPipeline:
 
         if 'mock' not in vps_base and self.post_to_instagram:
             if self.media_mode == 'local_test':
+                ensure_path(self.local_vps_dir)
                 for local_path, remote_name in uploads:
                     staged_path = self.local_vps_dir / remote_name
                     shutil.copy2(local_path, staged_path)
@@ -1134,9 +1387,11 @@ class WHOOPPipeline:
                     self.log_error('VPS Upload', f'Public {label} URL is not reachable: {url}', last_err)
 
         print(f"{Fore.GREEN}✅ VPS assets ready: {video_url}{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='VPS media upload completed.', pulse=True)
         return video_url, thumb_url
 
     def step_13_build_caption(self, metadata: dict, daily_data: dict, _interpretation: str) -> str:
+        self._set_heartbeat_context(status='STARTING', note='Building Instagram caption.', pulse=True)
         date_str = daily_data.get('date', self.run_date)
         date_display = daily_data.get('date_display') or metadata.get('date_display') or date_str
         title = metadata.get('title', 'UNKNOWN TITLE')
@@ -1152,9 +1407,21 @@ class WHOOPPipeline:
             f"{hashtags}"
         )
         print(f"{Fore.CYAN}▶ Caption Built: {title}{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Instagram caption built.', pulse=True)
         return caption
 
     def step_14_post_instagram(self, video_url: str, thumb_url: str, caption: str):
+        state = self.daily_run.load_state() or {}
+        if (state.get('status') or '').strip().upper() == 'POSTED':
+            existing_post_id = state.get('instagram_post_id')
+            existing_permalink = state.get('instagram_permalink')
+            print(f"{Fore.YELLOW}⚠ Daily state already POSTED. Skipping Instagram publish.{Style.RESET_ALL}")
+            return {
+                'already_posted': True,
+                'post_id': existing_post_id,
+                'permalink': existing_permalink,
+            }
+
         from instagram_token_manager import get_instagram_token_manager
 
         try:
@@ -1171,6 +1438,7 @@ class WHOOPPipeline:
             return 'mock_ig_12345'
 
         print(f"{Fore.CYAN}▶ Posting to Instagram (Real)...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='POSTING', note='Posting media to Instagram.', pulse=True)
         from instagram_poster import InstagramPoster
 
         try:
@@ -1184,6 +1452,11 @@ class WHOOPPipeline:
                 permalink = poster.get_permalink(post_id)
                 
                 print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
+                self._mark_posted_terminal_success(
+                    post_id=post_id,
+                    permalink=permalink,
+                    note='Instagram publish succeeded.',
+                )
                 
                 # Send success notification with MP4 and permalink
                 final_mp4 = self.output_dir / 'card_final.mp4'
@@ -1217,6 +1490,7 @@ class WHOOPPipeline:
         creature: str = None,
         environment: str = None,
     ):
+        self._set_heartbeat_context(status='STARTING', note='Archiving payload and inserting into database.', pulse=True)
         archive_payload = {
             'date': daily_data.get('date'),
             'title': metadata.get('title'),
@@ -1246,8 +1520,12 @@ class WHOOPPipeline:
         with open(payload_path, 'w', encoding='utf-8') as f:
             json.dump(archive_payload, f, indent=2)
 
-        self.safe_step('Database Archive', 'src/scripts/database_manager.py', ['--insert', '--file', str(payload_path)])
-        print(f"{Fore.GREEN}✅ Archive completed → {payload_path}{Style.RESET_ALL}")
+        if self.post_to_instagram:
+            self.safe_step('Database Archive', 'src/scripts/database_manager.py', ['--insert', '--file', str(payload_path)])
+            print(f"{Fore.GREEN}✅ Archive completed → {payload_path}{Style.RESET_ALL}")
+            self._set_heartbeat_context(status='STARTING', note='Archive and database insert completed.', pulse=True)
+        else:
+            print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping database archive insert.{Style.RESET_ALL}")
 
 
 if __name__ == '__main__':
@@ -1265,8 +1543,7 @@ if __name__ == '__main__':
         try:
             notifier = get_notifier()
             # Use a generic run_date since we don't have access to pipeline yet
-            from datetime import date
-            run_date = date.today().isoformat()
+            run_date = get_pipeline_run_date_str()
             notifier.notify_error(
                 run_date=run_date,
                 step='PIPELINE_INIT',
@@ -1286,8 +1563,7 @@ if __name__ == '__main__':
     def _thread_exception_handler(args):
         try:
             notifier = get_notifier()
-            from datetime import date
-            run_date = date.today().isoformat()
+            run_date = get_pipeline_run_date_str()
             notifier.notify_error(
                 run_date=run_date,
                 step='THREAD_EXCEPTION',
