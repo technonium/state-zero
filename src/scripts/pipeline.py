@@ -118,6 +118,21 @@ def _setup_global_exception_handler(pipeline_instance):
     threading.excepthook = threading_exception_handler
 
 
+class PipelineStageError(Exception):
+    def __init__(
+        self,
+        stage: str,
+        message: str,
+        details: str | None = None,
+        fallback_eligible: bool = False,
+    ):
+        self.stage = stage
+        self.message = message
+        self.details = details
+        self.fallback_eligible = fallback_eligible
+        super().__init__(message)
+
+
 class WHOOPPipeline:
     def __init__(self):
         raw_mode = os.getenv('PIPELINE_MODE', 'automatic').strip().lower()
@@ -168,6 +183,12 @@ class WHOOPPipeline:
         self._heartbeat_note = 'Pipeline initialized.'
         self._runtime_dirs_ready = False
         self.in_auto_fallback = False
+        self.in_emergency_fallback = False
+        self._last_emergency_fallback_error: str | None = None
+        self._last_emergency_fallback_details: str | None = None
+        self._last_emergency_fallback_classification: str | None = None
+        self._active_emergency_fallback_version: str | None = None
+        self._active_emergency_fallback_publish_mode: str | None = None
 
     def _normalize_mode(self, raw_mode: str) -> str:
         """Normalize mode - only 'automatic' and 'telegram' are valid."""
@@ -391,6 +412,12 @@ class WHOOPPipeline:
         
         sys.exit(1)
 
+    def _merge_details(self, *details_parts: str | None) -> str | None:
+        parts = [part.strip() for part in details_parts if part and part.strip()]
+        if not parts:
+            return None
+        return '\n\n'.join(parts)
+
     def _build_subprocess_details_tail(self, result: subprocess.CompletedProcess) -> str | None:
         """
         Build stderr/stdout tail using TELEGRAM_NOTIFY_INCLUDE_STDERR_LINES.
@@ -412,7 +439,24 @@ class WHOOPPipeline:
             return None
         return '\n\n'.join(chunks)
 
-    def safe_step(self, step_name: str, script_path: str, args: list = None, status: str = 'STARTING'):
+    def _set_emergency_fallback_failure(
+        self,
+        classification: str,
+        message: str,
+        details: str | None = None,
+    ):
+        self._last_emergency_fallback_classification = classification
+        self._last_emergency_fallback_error = f'[{classification}] {message}'
+        self._last_emergency_fallback_details = details or message
+
+    def safe_step(
+        self,
+        step_name: str,
+        script_path: str,
+        args: list = None,
+        status: str = 'STARTING',
+        fallback_eligible: bool = False,
+    ):
         try:
             print(f"{Fore.CYAN}▶ Running {step_name}...{Style.RESET_ALL}")
             self._set_heartbeat_context(status=status, note=f'Running {step_name}.', pulse=True)
@@ -428,12 +472,27 @@ class WHOOPPipeline:
                 print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
 
                 details_tail = self._build_subprocess_details_tail(result)
+                if fallback_eligible:
+                    raise PipelineStageError(
+                        stage=step_name,
+                        message=f'Script exited with code {result.returncode}',
+                        details=details_tail,
+                        fallback_eligible=True,
+                    )
                 self.log_error(step_name, f'Script exited with code {result.returncode}', details_tail)
             print(f"{Fore.GREEN}✅ {step_name} completed{Style.RESET_ALL}")
             self._set_heartbeat_context(status=status, note=f'Completed {step_name}.', pulse=True)
             return result.stdout
+        except PipelineStageError:
+            raise
         except Exception as e:
-            # Call log_error which will send the notification
+            if fallback_eligible:
+                raise PipelineStageError(
+                    stage=step_name,
+                    message=str(e),
+                    details=str(e),
+                    fallback_eligible=True,
+                ) from e
             self.log_error(step_name, str(e), str(e))
 
     def run(self):
@@ -459,73 +518,96 @@ class WHOOPPipeline:
             else:
                 print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram token validation.{Style.RESET_ALL}")
 
-            daily_data = self.step_2_3_lookups()
-            self.step_4_6_prompts()
+            try:
+                daily_data = self.step_2_3_lookups()
+                self.step_4_6_prompts()
 
-            image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
-            metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')
-            blend_option, creature, environment = self._load_required_text_outputs()
+                image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
+                metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')
+                blend_option, creature, environment = self._load_required_text_outputs()
 
-            if self.mode == 'telegram':
-                # In telegram mode: always do manual wait + fallback (not skipped in dry run)
-                art_path, video_path = self.step_7_9_manual_or_fallback(image_json)
-            else:
-                # Automatic mode: just generate
-                art_path = self.step_7_generate_image(image_json)
-                video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
+                if self.mode == 'telegram':
+                    # In telegram mode: always do manual wait + fallback (not skipped in dry run)
+                    art_path, video_path = self.step_7_9_manual_or_fallback(image_json)
+                else:
+                    # Automatic mode: just generate
+                    art_path = self.step_7_generate_image(image_json)
+                    video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
 
-            final_png = self.step_10a_render_image(art_path, daily_data, metadata)
-            final_mp4 = self.step_10b_render_video(video_path, daily_data, metadata)
+                final_png = self.step_10a_render_image(art_path, daily_data, metadata)
+                final_mp4 = self.step_10b_render_video(video_path, daily_data, metadata)
 
-            # Only upload to VPS and post to Instagram when enabled
-            if self.post_to_instagram:
-                video_url, thumb_url = self.step_12_upload_vps(final_mp4, final_png)
-            else:
-                print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping VPS upload.{Style.RESET_ALL}")
-                video_url, thumb_url = None, None
+                # Only upload to VPS and post to Instagram when enabled
+                if self.post_to_instagram:
+                    video_url, thumb_url = self.step_12_upload_vps(final_mp4, final_png)
+                else:
+                    print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping VPS upload.{Style.RESET_ALL}")
+                    video_url, thumb_url = None, None
 
-            interpretation = (self.output_dir / 'interpretation.txt').read_text(encoding='utf-8').strip()
-            caption = self.step_13_build_caption(metadata, daily_data, interpretation)
+                interpretation = (self.output_dir / 'interpretation.txt').read_text(encoding='utf-8').strip()
+                caption = self.step_13_build_caption(metadata, daily_data, interpretation)
 
-            # Only post to Instagram when enabled
-            if self.post_to_instagram:
-                post_result = self.step_14_post_instagram(video_url, thumb_url, caption)
-            else:
-                print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")
-                post_result = None
+                # Only post to Instagram when enabled
+                if self.post_to_instagram:
+                    post_result = self.step_14_post_instagram(video_url, thumb_url, caption)
+                else:
+                    print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")
+                    post_result = None
 
-            if isinstance(post_result, dict) and post_result.get('already_posted'):
-                print(f"{Fore.YELLOW}⚠ State already marked POSTED. Skipping archive/database work.{Style.RESET_ALL}")
-                return
+                if isinstance(post_result, dict) and post_result.get('already_posted'):
+                    print(f"{Fore.YELLOW}⚠ State already marked POSTED. Skipping archive/database work.{Style.RESET_ALL}")
+                    return
 
-            # Handle both dict (new) and string (legacy) return types
-            if isinstance(post_result, dict):
-                post_id = post_result.get('post_id', 'unknown')
-                instagram_permalink = post_result.get('permalink')
-            else:
-                post_id = 'dry-run'
-                instagram_permalink = None
+                if isinstance(post_result, dict):
+                    post_id = post_result.get('post_id', 'unknown')
+                    instagram_permalink = post_result.get('permalink')
+                else:
+                    post_id = 'dry-run'
+                    instagram_permalink = None
 
-            print(f"{Fore.CYAN}▶ Archiving Data and Updating Database...{Style.RESET_ALL}")
-            self.step_15_archive(
-                daily_data,
-                metadata,
-                final_png,
-                final_mp4,
-                image_json,
-                post_id,
-                instagram_permalink,
-                blend_option,
-                creature,
-                environment,
-            )
+                print(f"{Fore.CYAN}▶ Archiving Data and Updating Database...{Style.RESET_ALL}")
+                self.step_15_archive(
+                    daily_data,
+                    metadata,
+                    final_png,
+                    final_mp4,
+                    image_json,
+                    post_id,
+                    instagram_permalink,
+                    blend_option,
+                    creature,
+                    environment,
+                )
 
-            # Send dry-run completion notification if not posting
-            if not self.post_to_instagram:
-                notifier = get_notifier()
-                notifier.notify_dry_run_complete(self.run_date, self.mode, self.output_dir)
+                # Send dry-run completion notification if not posting
+                if not self.post_to_instagram:
+                    notifier = get_notifier()
+                    notifier.notify_dry_run_complete(self.run_date, self.mode, self.output_dir)
 
-            print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
+                print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
+            except PipelineStageError as exc:
+                if (
+                    exc.fallback_eligible
+                    and self.post_to_instagram
+                    and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False)
+                    and not self.in_emergency_fallback
+                ):
+                    notifier = get_notifier()
+                    notifier.notify_warning(
+                        run_date=self.run_date,
+                        step=exc.stage,
+                        message=f"{exc.message} Emergency fallback will be attempted.",
+                        details_tail=exc.details,
+                    )
+                    if self._run_emergency_fallback(exc.stage, exc.message):
+                        print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
+                        return
+
+                    fatal_message = self._last_emergency_fallback_error or exc.message
+                    fatal_details = self._merge_details(exc.details, self._last_emergency_fallback_details)
+                    self.log_error('Emergency Post Fallback', fatal_message, fatal_details)
+
+                self.log_error(exc.stage, exc.message, exc.details)
         finally:
             self._stop_heartbeat_thread()
             self._cleanup_non_authoritative_daily_state()
@@ -534,9 +616,18 @@ class WHOOPPipeline:
         try:
             return json.loads(path.read_text(encoding='utf-8'))
         except FileNotFoundError:
-            self.log_error(label, f'{label} not found - prompts.py failed')
+            raise PipelineStageError(
+                stage='Prompt Output Loading',
+                message=f'{label} not found - prompts.py failed',
+                fallback_eligible=True,
+            )
         except json.JSONDecodeError as e:
-            self.log_error(label, f'{label} is invalid JSON: {e}')
+            raise PipelineStageError(
+                stage='Prompt Output Loading',
+                message=f'{label} is invalid JSON: {e}',
+                details=str(e),
+                fallback_eligible=True,
+            ) from e
 
     def _load_required_text_outputs(self) -> tuple[str, str, str]:
         try:
@@ -545,7 +636,12 @@ class WHOOPPipeline:
             environment = (self.output_dir / 'environment.txt').read_text(encoding='utf-8').strip()
             return blend_option, creature, environment
         except FileNotFoundError as e:
-            self.log_error('Prompt Outputs', f'Missing prompt output file: {e.filename}')
+            raise PipelineStageError(
+                stage='Prompt Output Loading',
+                message=f'Missing prompt output file: {e.filename}',
+                details=str(e),
+                fallback_eligible=True,
+            ) from e
 
     def _load_or_init_manual_session(self) -> dict:
         if self.session_file.exists():
@@ -1210,22 +1306,51 @@ class WHOOPPipeline:
             print(f"{Fore.RED}Script Error STDOUT:\n{result.stdout}{Style.RESET_ALL}")
             print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
             details_tail = self._build_subprocess_details_tail(result)
-            self.log_error(step_name, f'Script exited with code {result.returncode}', details_tail)
+            # Keep non-retryable WHOOP / lookup failures emergency-fallback eligible.
+            raise PipelineStageError(
+                stage=step_name,
+                message=f'Script exited with code {result.returncode}',
+                details=details_tail,
+                fallback_eligible=True,
+            )
         print(f"{Fore.GREEN}✅ {step_name} completed{Style.RESET_ALL}")
         self._set_heartbeat_context(status='STARTING', note=f'Completed {step_name}.', pulse=True)
 
-        with open(self.output_dir / 'daily_data.json', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(self.output_dir / 'daily_data.json', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            raise PipelineStageError(
+                stage=step_name,
+                message=f'Failed to load daily_data.json: {e}',
+                details=str(e),
+                fallback_eligible=True,
+            ) from e
 
     def step_4_6_prompts(self):
-        self.safe_step('LLM Prompts (Interpretation -> Video)', 'src/scripts/prompts.py', ['--step', 'all'])
+        self.safe_step(
+            'LLM Prompts (Interpretation -> Video)',
+            'src/scripts/prompts.py',
+            ['--step', 'all'],
+            fallback_eligible=True,
+        )
 
     def step_7_generate_image(self, image_json: dict) -> Path:
         args = ['--json', str(self.output_dir / 'image_prompt.json'), '--out', str(self.output_dir / 'generated_art.png')]
-        self.safe_step('Image Generation', 'src/scripts/image_gen.py', args, status=self._current_generation_status())
+        self.safe_step(
+            'Image Generation',
+            'src/scripts/image_gen.py',
+            args,
+            status=self._current_generation_status(),
+            fallback_eligible=True,
+        )
         art_path = self.output_dir / 'generated_art.png'
         if not art_path.exists():
-            self.log_error('Image Generation', f'Expected output missing: {art_path}')
+            raise PipelineStageError(
+                stage='Image Generation',
+                message=f'Expected output missing: {art_path}',
+                fallback_eligible=True,
+            )
         return art_path
 
     def step_9_generate_video(self, art_path: Path, video_prompt_path: Path) -> Path:
@@ -1250,7 +1375,12 @@ class WHOOPPipeline:
             self._set_heartbeat_context(status=generation_status, note='Video generation completed.', pulse=True)
             return out_path
         except Exception as e:
-            self.log_error('Video Generation', str(e))
+            raise PipelineStageError(
+                stage='Video Generation',
+                message=str(e),
+                details=str(e),
+                fallback_eligible=True,
+            ) from e
 
     def step_10a_render_image(self, art_path: Path, daily_data: dict, metadata: dict) -> Path:
         print(f"{Fore.CYAN}▶ Rendering Static Card...{Style.RESET_ALL}")
@@ -1269,7 +1399,14 @@ class WHOOPPipeline:
             '--output',
             str(final_png),
         ]
-        self.safe_step('Render Static Card', 'src/scripts/composite.py', args)
+        self.safe_step('Render Static Card', 'src/scripts/composite.py', args, fallback_eligible=True)
+
+        if not final_png.exists():
+            raise PipelineStageError(
+                stage='Render Static Card',
+                message=f'Expected output missing: {final_png}',
+                fallback_eligible=True,
+            )
 
         print(f"{Fore.GREEN}✅ Render Static Card completed{Style.RESET_ALL}")
         return final_png
@@ -1282,9 +1419,10 @@ class WHOOPPipeline:
         if self.asset_source != 'manual_telegram':
             art_path = self.output_dir / 'generated_art.png'
             if video_path.stat().st_mtime < art_path.stat().st_mtime:
-                self.log_error(
-                    'Render Animated Card',
-                    f'Video file ({video_path.name}) is older than art — stale data from a previous run. Aborting.',
+                raise PipelineStageError(
+                    stage='Render Animated Card',
+                    message=f'Video file ({video_path.name}) is older than art — stale data from a previous run. Aborting.',
+                    fallback_eligible=True,
                 )
 
         args = [
@@ -1299,10 +1437,14 @@ class WHOOPPipeline:
             '--output',
             str(final_mp4),
         ]
-        self.safe_step('Render Animated Card', 'src/scripts/composite.py', args)
+        self.safe_step('Render Animated Card', 'src/scripts/composite.py', args, fallback_eligible=True)
 
         if not final_mp4.exists():
-            self.log_error('Render Animated Card', f'Expected output missing: {final_mp4}')
+            raise PipelineStageError(
+                stage='Render Animated Card',
+                message=f'Expected output missing: {final_mp4}',
+                fallback_eligible=True,
+            )
 
         print(f"{Fore.GREEN}✅ Render Animated Card completed{Style.RESET_ALL}")
         return final_mp4
@@ -1337,9 +1479,10 @@ class WHOOPPipeline:
                 ssh_user = (os.getenv('VPS_SSH_USER') or '').strip()
                 ssh_path = (os.getenv('VPS_SSH_PATH') or '').strip()
                 if not (ssh_host and ssh_user and ssh_path):
-                    self.log_error(
-                        'VPS Upload',
-                        'VPS_SSH_HOST/VPS_SSH_USER/VPS_SSH_PATH are required for live_vps media mode.',
+                    raise PipelineStageError(
+                        stage='VPS Upload',
+                        message='VPS_SSH_HOST/VPS_SSH_USER/VPS_SSH_PATH are required for live_vps media mode.',
+                        fallback_eligible=True,
                     )
                 else:
                     mounted_upload_dir = Path(ssh_path)
@@ -1353,7 +1496,12 @@ class WHOOPPipeline:
                                 f"{mounted_upload_dir}{Style.RESET_ALL}"
                             )
                         except Exception as e:
-                            self.log_error('VPS Upload', 'Failed to copy media into mounted VPS upload path.', str(e))
+                            raise PipelineStageError(
+                                stage='VPS Upload',
+                                message='Failed to copy media into mounted VPS upload path.',
+                                details=str(e),
+                                fallback_eligible=True,
+                            ) from e
                     else:
                         target = f'{ssh_user}@{ssh_host}'
                         ssh_opts = [
@@ -1364,7 +1512,12 @@ class WHOOPPipeline:
                         mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
                         if mkdir_result.returncode != 0:
                             details = self._build_subprocess_details_tail(mkdir_result)
-                            self.log_error('VPS Upload', 'Failed to create remote VPS upload directory.', details)
+                            raise PipelineStageError(
+                                stage='VPS Upload',
+                                message='Failed to create remote VPS upload directory.',
+                                details=details,
+                                fallback_eligible=True,
+                            )
 
                         for local_path, remote_name in uploads:
                             remote_target = f'{target}:{ssh_path.rstrip("/")}/{remote_name}'
@@ -1372,40 +1525,262 @@ class WHOOPPipeline:
                             scp_result = subprocess.run(scp_cmd, capture_output=True, text=True)
                             if scp_result.returncode != 0:
                                 details = self._build_subprocess_details_tail(scp_result)
-                                self.log_error('VPS Upload', f'Failed to upload {local_path.name} to VPS.', details)
+                                raise PipelineStageError(
+                                    stage='VPS Upload',
+                                    message=f'Failed to upload {local_path.name} to VPS.',
+                                    details=details,
+                                    fallback_eligible=True,
+                                )
 
         vps_base = vps_base.rstrip("/")
         video_url = f'{vps_base}/{remote_video_name}'
         thumb_url = f'{vps_base}/{remote_thumb_name}'
 
         if 'mock' not in vps_base and self.post_to_instagram:
-            for label, url in (('video', video_url), ('thumbnail', thumb_url)):
-                reachable = False
-                last_err = None
-                for attempt in range(3):
-                    try:
-                        head = requests.head(url, timeout=20, allow_redirects=True)
-                        if head.status_code in (405, 403):
-                            # Some static servers block HEAD; fallback to GET probe.
-                            get_resp = requests.get(url, timeout=20, stream=True)
-                            get_resp.close()
-                            if get_resp.status_code < 400:
-                                reachable = True
-                                break
-                        elif head.status_code < 400:
-                            reachable = True
-                            break
-                        last_err = f"HTTP {head.status_code}"
-                    except Exception as e:
-                        last_err = str(e)
-                    if attempt < 2:
-                        time.sleep(2)
-                if not reachable:
-                    self.log_error('VPS Upload', f'Public {label} URL is not reachable: {url}', last_err)
+            try:
+                self._ensure_public_urls_reachable(
+                    (('video', video_url), ('thumbnail', thumb_url)),
+                )
+            except Exception as e:
+                raise PipelineStageError(
+                    stage='VPS Upload',
+                    message=str(e),
+                    details=str(e),
+                    fallback_eligible=True,
+                ) from e
 
         print(f"{Fore.GREEN}✅ VPS assets ready: {video_url}{Style.RESET_ALL}")
         self._set_heartbeat_context(status='STARTING', note='VPS media upload completed.', pulse=True)
         return video_url, thumb_url
+
+    def _ensure_public_urls_reachable(self, media_urls: tuple[tuple[str, str], ...]):
+        for label, url in media_urls:
+            reachable = False
+            last_err = None
+            for attempt in range(3):
+                try:
+                    head = requests.head(url, timeout=20, allow_redirects=True)
+                    if head.status_code in (405, 403):
+                        get_resp = requests.get(url, timeout=20, stream=True)
+                        get_resp.close()
+                        if get_resp.status_code < 400:
+                            reachable = True
+                            break
+                    elif head.status_code < 400:
+                        reachable = True
+                        break
+                    last_err = f"HTTP {head.status_code}"
+                except Exception as e:
+                    last_err = str(e)
+                if attempt < 2:
+                    time.sleep(2)
+            if not reachable:
+                raise RuntimeError(f'Public {label} URL is not reachable: {url} ({last_err})')
+
+    def _run_emergency_fallback(self, trigger_stage: str, reason: str) -> bool:
+        self._last_emergency_fallback_error = None
+        self._last_emergency_fallback_details = None
+        self._last_emergency_fallback_classification = None
+        self.in_emergency_fallback = True
+
+        try:
+            from database_manager import CardDatabase
+            from emergency_fallback_manager import EmergencyFallbackManager, FallbackUnavailableError
+
+            manager = EmergencyFallbackManager()
+            try:
+                manifest = manager.load_and_validate_manifest()
+            except FallbackUnavailableError as e:
+                self._set_emergency_fallback_failure('manifest_invalid', str(e), str(e))
+                return False
+
+            try:
+                manager.verify_integrity()
+            except FallbackUnavailableError as e:
+                self._set_emergency_fallback_failure('asset_integrity_failed', str(e), str(e))
+                return False
+
+            self._active_emergency_fallback_version = manifest['version']
+
+            self.asset_source = 'emergency_fallback'
+            self._set_heartbeat_context(
+                status='EMERGENCY_FALLBACK_RUNNING',
+                note=f'Emergency post fallback active after {trigger_stage} failure.',
+                pulse=True,
+            )
+
+            if self.daily_run.is_owner():
+                self.daily_run.update_status(
+                    status='EMERGENCY_FALLBACK_RUNNING',
+                    note=f'Emergency post fallback active after {trigger_stage} failure.',
+                    extra={
+                        'asset_source': 'emergency_fallback',
+                        'fallback_trigger_stage': trigger_stage,
+                        'fallback_reason': reason,
+                        'fallback_version': manifest['version'],
+                    },
+                )
+
+            notifier = get_notifier()
+            notifier.notify_emergency_fallback_activated(
+                run_date=self.run_date,
+                trigger_stage=trigger_stage,
+                fallback_version=manifest['version'],
+            )
+
+            self._ensure_owner_runtime_dirs()
+            try:
+                copied_paths = manager.copy_to_run_output(self.output_dir)
+            except Exception as e:
+                self._set_emergency_fallback_failure(
+                    'asset_integrity_failed',
+                    'Failed to stage fallback media into run output.',
+                    str(e),
+                )
+                return False
+
+            publish_mode: str | None = None
+            video_url: str | None = None
+            thumb_url: str | None = None
+            prehosted_failure: str | None = None
+
+            try:
+                strategy = manager.get_publish_strategy()
+            except FallbackUnavailableError as e:
+                self._set_emergency_fallback_failure('manifest_invalid', str(e), str(e))
+                return False
+
+            try:
+                self._ensure_public_urls_reachable(
+                    (('fallback video', strategy['video_url']), ('fallback thumbnail', strategy['thumb_url'])),
+                )
+                publish_mode = strategy['mode']
+                video_url = strategy['video_url']
+                thumb_url = strategy['thumb_url']
+            except Exception as e:
+                prehosted_failure = str(e)
+                try:
+                    video_url, thumb_url = self.step_12_upload_vps(
+                        copied_paths['mp4_path'],
+                        copied_paths['png_path'],
+                    )
+                    publish_mode = 'runtime_vps_upload'
+                except PipelineStageError as upload_error:
+                    self._set_emergency_fallback_failure(
+                        'runtime_upload_failed',
+                        'Runtime VPS upload strategy failed.',
+                        self._merge_details(
+                            f'[prehosted_unreachable] {prehosted_failure}',
+                            upload_error.message,
+                            upload_error.details,
+                        ),
+                    )
+                    return False
+                except Exception as upload_error:
+                    self._set_emergency_fallback_failure(
+                        'runtime_upload_failed',
+                        'Runtime VPS upload strategy failed.',
+                        self._merge_details(
+                            f'[prehosted_unreachable] {prehosted_failure}',
+                            str(upload_error),
+                        ),
+                    )
+                    return False
+
+            self._active_emergency_fallback_publish_mode = publish_mode
+
+            caption = manager.build_fallback_caption(self.run_date)
+            try:
+                post_result = self.step_14_post_instagram(
+                    video_url,
+                    thumb_url,
+                    caption,
+                    success_notification_mode='fallback',
+                    fallback_eligible_on_publish_failure=False,
+                )
+            except PipelineStageError as e:
+                classification = 'instagram_token_failed' if e.stage == 'Instagram Token' else 'instagram_publish_failed'
+                self._set_emergency_fallback_failure(
+                    classification,
+                    e.message,
+                    self._merge_details(
+                        e.details,
+                        prehosted_failure and f'[prehosted_unreachable] {prehosted_failure}',
+                    ),
+                )
+                return False
+            except Exception as e:
+                self._set_emergency_fallback_failure(
+                    'instagram_publish_failed',
+                    str(e),
+                    self._merge_details(
+                        str(e),
+                        prehosted_failure and f'[prehosted_unreachable] {prehosted_failure}',
+                    ),
+                )
+                return False
+
+            if post_result.get('already_posted'):
+                return True
+
+            post_id = post_result.get('post_id')
+            instagram_permalink = post_result.get('permalink')
+
+            try:
+                manager.write_emergency_log(
+                    self.output_dir,
+                    trigger_stage=trigger_stage,
+                    reason=reason,
+                    publish_mode=publish_mode,
+                    video_url=video_url,
+                    thumb_url=thumb_url,
+                    instagram_post_id=post_id,
+                    instagram_permalink=instagram_permalink,
+                )
+            except Exception as e:
+                notifier.notify_warning(
+                    run_date=self.run_date,
+                    step='Emergency Fallback Archive',
+                    message='Emergency fallback posted, but emergency_fallback_used.json could not be written.',
+                    details_tail=str(e),
+                )
+
+            try:
+                CardDatabase().insert_fallback_post(
+                    {
+                        'run_date': self.run_date,
+                        'asset_source': 'emergency_fallback',
+                        'fallback_version': manifest['version'],
+                        'fallback_trigger_stage': trigger_stage,
+                        'fallback_reason': reason,
+                        'title': manifest['title'],
+                        'scene_description': manifest['scene_description'],
+                        'publish_mode': publish_mode,
+                        'instagram_post_id': post_id,
+                        'instagram_permalink': instagram_permalink,
+                        'video_path_or_url': video_url,
+                        'image_path_or_url': thumb_url,
+                    }
+                )
+            except Exception as e:
+                notifier.notify_warning(
+                    run_date=self.run_date,
+                    step='Emergency Fallback Database',
+                    message='Emergency fallback posted, but fallback_posts insert failed.',
+                    details_tail=str(e),
+                )
+
+            return True
+        except FallbackUnavailableError as e:
+            self._set_emergency_fallback_failure('manifest_invalid', f'Emergency fallback unavailable: {e}', str(e))
+            return False
+        except Exception as e:
+            self._set_emergency_fallback_failure('instagram_publish_failed', f'Emergency fallback failed: {e}', str(e))
+            return False
+        finally:
+            self.in_emergency_fallback = False
+            self._active_emergency_fallback_version = None
+            self._active_emergency_fallback_publish_mode = None
 
     def step_13_build_caption(self, metadata: dict, daily_data: dict, _interpretation: str) -> str:
         self._set_heartbeat_context(status='STARTING', note='Building Instagram caption.', pulse=True)
@@ -1427,7 +1802,15 @@ class WHOOPPipeline:
         self._set_heartbeat_context(status='STARTING', note='Instagram caption built.', pulse=True)
         return caption
 
-    def step_14_post_instagram(self, video_url: str, thumb_url: str, caption: str):
+    def step_14_post_instagram(
+        self,
+        video_url: str,
+        thumb_url: str,
+        caption: str,
+        *,
+        success_notification_mode: str = 'normal',
+        fallback_eligible_on_publish_failure: bool = True,
+    ):
         state = self.daily_run.load_state() or {}
         if (state.get('status') or '').strip().upper() == 'POSTED':
             existing_post_id = state.get('instagram_post_id')
@@ -1437,6 +1820,7 @@ class WHOOPPipeline:
                 'already_posted': True,
                 'post_id': existing_post_id,
                 'permalink': existing_permalink,
+                'mock': False,
             }
 
         from instagram_token_manager import get_instagram_token_manager
@@ -1446,13 +1830,24 @@ class WHOOPPipeline:
             access_token = token_manager.get_valid_token()
             user_id = token_manager.get_user_id()
         except Exception as e:
+            if self.in_emergency_fallback:
+                raise PipelineStageError(
+                    stage='Instagram Token',
+                    message=f'Failed to fetch Instagram token during emergency fallback: {e}',
+                    details=str(e),
+                ) from e
             self.log_error('Instagram Token', str(e))
 
         if not self.post_to_instagram or not access_token or access_token == 'mock':
             print(f"{Fore.YELLOW}⚠ Running in MOCK/DRY mode. Skipping actual Instagram post.{Style.RESET_ALL}")
             print(f"{Fore.CYAN}▶ Posting to Instagram (Mock)...{Style.RESET_ALL}")
             # P3: Don't send success notification for dry runs (per contract)
-            return 'mock_ig_12345'
+            return {
+                'already_posted': False,
+                'post_id': 'mock_ig_12345',
+                'permalink': None,
+                'mock': True,
+            }
 
         print(f"{Fore.CYAN}▶ Posting to Instagram (Real)...{Style.RESET_ALL}")
         self._set_heartbeat_context(status='POSTING', note='Posting media to Instagram.', pulse=True)
@@ -1469,30 +1864,62 @@ class WHOOPPipeline:
                 permalink = poster.get_permalink(post_id)
                 
                 print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
+                success_note = (
+                    'Emergency fallback Instagram publish succeeded.'
+                    if success_notification_mode == 'fallback'
+                    else 'Instagram publish succeeded.'
+                )
                 self._mark_posted_terminal_success(
                     post_id=post_id,
                     permalink=permalink,
-                    note='Instagram publish succeeded.',
+                    note=success_note,
                 )
                 
                 # Send success notification with MP4 and permalink
                 final_mp4 = self.output_dir / 'card_final.mp4'
                 notifier = get_notifier()
-                notifier.notify_success_posted(
-                    run_date=self.run_date,
-                    final_mp4_path=final_mp4,
-                    instagram_permalink=permalink or 'Permalink unavailable'
-                )
+                if success_notification_mode == 'fallback':
+                    notifier.notify_emergency_fallback_posted(
+                        run_date=self.run_date,
+                        final_mp4_path=final_mp4,
+                        instagram_permalink=permalink or 'Permalink unavailable',
+                        fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
+                    )
+                else:
+                    notifier.notify_success_posted(
+                        run_date=self.run_date,
+                        final_mp4_path=final_mp4,
+                        instagram_permalink=permalink or 'Permalink unavailable'
+                    )
                 
                 # Return both post_id and permalink as dict for archive step
-                return {'post_id': post_id, 'permalink': permalink}
+                return {
+                    'already_posted': False,
+                    'post_id': post_id,
+                    'permalink': permalink,
+                    'mock': False,
+                }
             
             # Processing failed
-            self.log_error('Instagram Posting', 'Media processing failed on Instagram side.')
-            
+            if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
+                raise PipelineStageError(
+                    stage='Instagram Posting',
+                    message='Media processing failed on Instagram side.',
+                    fallback_eligible=True,
+                )
+            raise RuntimeError('Media processing failed on Instagram side.')
+
+        except PipelineStageError:
+            raise
         except Exception as e:
-            # P0: Catch exceptions from instagram_poster and send notification before exiting
-            self.log_error('InstagramPosting', f'Instagram posting failed: {str(e)}')
+            if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
+                raise PipelineStageError(
+                    stage='Instagram Posting',
+                    message=f'Instagram posting failed: {str(e)}',
+                    details=str(e),
+                    fallback_eligible=True,
+                ) from e
+            raise
 
     def step_15_archive(
         self,

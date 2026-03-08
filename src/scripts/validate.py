@@ -174,6 +174,24 @@ def validate_environment():
         print_info("Tip: If running dry-run, set PIPELINE_POST_TO_INSTAGRAM=false")
         sys.exit(1)
 
+    if post_to_instagram and env_bool("EMERGENCY_FALLBACK_ENABLED", default=False):
+        validate_emergency_fallback_readiness()
+
+
+def validate_emergency_fallback_readiness():
+    """Validate the private emergency fallback manifest and local assets."""
+    print_info("Emergency fallback: validating private manifest and local assets")
+    try:
+        from emergency_fallback_manager import EmergencyFallbackManager
+
+        manager = EmergencyFallbackManager()
+        manager.load_and_validate_manifest()
+        manager.verify_integrity()
+    except Exception as e:
+        print_error(f"Emergency fallback validation failed: {e}")
+        sys.exit(1)
+    print_success("Emergency fallback readiness validated")
+
 def validate_file_structure():
     """Verify required files and directories exist."""
     project_root = get_project_root()
