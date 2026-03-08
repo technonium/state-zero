@@ -1342,24 +1342,37 @@ class WHOOPPipeline:
                         'VPS_SSH_HOST/VPS_SSH_USER/VPS_SSH_PATH are required for live_vps media mode.',
                     )
                 else:
-                    target = f'{ssh_user}@{ssh_host}'
-                    ssh_opts = [
-                        '-o', 'StrictHostKeyChecking=no',
-                        '-o', 'UserKnownHostsFile=/dev/null',
-                    ]
-                    mkdir_cmd = ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(ssh_path)}"]
-                    mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
-                    if mkdir_result.returncode != 0:
-                        details = self._build_subprocess_details_tail(mkdir_result)
-                        self.log_error('VPS Upload', 'Failed to create remote VPS upload directory.', details)
+                    mounted_upload_dir = Path(ssh_path)
+                    if mounted_upload_dir.exists():
+                        try:
+                            ensure_path(mounted_upload_dir)
+                            for local_path, remote_name in uploads:
+                                shutil.copy2(local_path, mounted_upload_dir / remote_name)
+                            print(
+                                f"{Fore.GREEN}✅ Media copied directly to mounted VPS path → "
+                                f"{mounted_upload_dir}{Style.RESET_ALL}"
+                            )
+                        except Exception as e:
+                            self.log_error('VPS Upload', 'Failed to copy media into mounted VPS upload path.', str(e))
+                    else:
+                        target = f'{ssh_user}@{ssh_host}'
+                        ssh_opts = [
+                            '-o', 'StrictHostKeyChecking=no',
+                            '-o', 'UserKnownHostsFile=/dev/null',
+                        ]
+                        mkdir_cmd = ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(ssh_path)}"]
+                        mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
+                        if mkdir_result.returncode != 0:
+                            details = self._build_subprocess_details_tail(mkdir_result)
+                            self.log_error('VPS Upload', 'Failed to create remote VPS upload directory.', details)
 
-                    for local_path, remote_name in uploads:
-                        remote_target = f'{target}:{ssh_path.rstrip("/")}/{remote_name}'
-                        scp_cmd = ['scp', *ssh_opts, str(local_path), remote_target]
-                        scp_result = subprocess.run(scp_cmd, capture_output=True, text=True)
-                        if scp_result.returncode != 0:
-                            details = self._build_subprocess_details_tail(scp_result)
-                            self.log_error('VPS Upload', f'Failed to upload {local_path.name} to VPS.', details)
+                        for local_path, remote_name in uploads:
+                            remote_target = f'{target}:{ssh_path.rstrip("/")}/{remote_name}'
+                            scp_cmd = ['scp', *ssh_opts, str(local_path), remote_target]
+                            scp_result = subprocess.run(scp_cmd, capture_output=True, text=True)
+                            if scp_result.returncode != 0:
+                                details = self._build_subprocess_details_tail(scp_result)
+                                self.log_error('VPS Upload', f'Failed to upload {local_path.name} to VPS.', details)
 
         vps_base = vps_base.rstrip("/")
         video_url = f'{vps_base}/{remote_video_name}'
