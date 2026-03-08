@@ -1343,7 +1343,11 @@ class WHOOPPipeline:
                     )
                 else:
                     target = f'{ssh_user}@{ssh_host}'
-                    mkdir_cmd = ['ssh', target, f"mkdir -p {shlex.quote(ssh_path)}"]
+                    ssh_opts = [
+                        '-o', 'StrictHostKeyChecking=no',
+                        '-o', 'UserKnownHostsFile=/dev/null',
+                    ]
+                    mkdir_cmd = ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(ssh_path)}"]
                     mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
                     if mkdir_result.returncode != 0:
                         details = self._build_subprocess_details_tail(mkdir_result)
@@ -1351,7 +1355,7 @@ class WHOOPPipeline:
 
                     for local_path, remote_name in uploads:
                         remote_target = f'{target}:{ssh_path.rstrip("/")}/{remote_name}'
-                        scp_cmd = ['scp', str(local_path), remote_target]
+                        scp_cmd = ['scp', *ssh_opts, str(local_path), remote_target]
                         scp_result = subprocess.run(scp_cmd, capture_output=True, text=True)
                         if scp_result.returncode != 0:
                             details = self._build_subprocess_details_tail(scp_result)
