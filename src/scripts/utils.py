@@ -1,9 +1,12 @@
 import os
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 VALID_MEDIA_MODES = ("local_test", "live_vps")
 PROJECT_ROOT_SENTINELS = (".git", "requirements.txt", "Dockerfile")
+DEFAULT_PIPELINE_TIMEZONE = "Asia/Kolkata"
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -111,6 +114,30 @@ def get_media_mode() -> str:
         return "local_test"
 
     return "live_vps"
+
+
+def get_pipeline_timezone_name() -> str:
+    configured = os.getenv("PIPELINE_TIMEZONE", "").strip()
+    return configured or DEFAULT_PIPELINE_TIMEZONE
+
+
+def get_pipeline_timezone() -> ZoneInfo:
+    return ZoneInfo(get_pipeline_timezone_name())
+
+
+def get_pipeline_now() -> datetime:
+    return datetime.now(get_pipeline_timezone())
+
+
+def get_pipeline_today():
+    return get_pipeline_now().date()
+
+
+def get_pipeline_run_date_str() -> str:
+    configured = os.getenv("PIPELINE_DATE", "").strip()
+    if configured:
+        return configured
+    return get_pipeline_today().isoformat()
 
 
 def resolve_path(relative_path: str) -> Path:

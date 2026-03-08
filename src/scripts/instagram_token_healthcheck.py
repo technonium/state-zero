@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from instagram_token_manager import get_instagram_token_manager
 from notifier import get_notifier
-from utils import get_project_root, get_state_root, ensure_path
+from utils import get_project_root, get_state_root, ensure_path, get_pipeline_run_date_str
 
 load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
 
@@ -54,7 +54,7 @@ def main():
     notifier = get_notifier()
     report = manager.inspect_token_health()
 
-    run_date = datetime.now().date().isoformat()
+    run_date = get_pipeline_run_date_str()
     state["last_checked_at"] = report.get("checked_at")
     state["last_report"] = report
     state["auto_refresh_mode"] = manager.auto_refresh_mode

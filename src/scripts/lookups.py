@@ -1,15 +1,17 @@
 import os
 import json
 import yaml
-from pathlib import Path
 from datetime import datetime, timedelta, date
-import pytz
 import argparse
 import sys
 import asyncio
 import logging
 from whoop_client import WHOOPClient, WhoopAPIError
-from utils import get_project_root, get_astrology_root, get_output_root
+from utils import (
+    get_astrology_root,
+    get_output_root,
+    get_pipeline_run_date_str,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,10 @@ SIGN_LORDS = {
 SPECIAL_ASPECT_OFFSETS = {
     'Mars': [4, 8], 'Jupiter': [5, 9], 'Saturn': [3, 10],
 }
+
+
+class WhoopRecoveryNotReady(Exception):
+    """Raised when today's WHOOP recovery entry has not landed yet."""
 
 
 def _safe_ms(value) -> float:
@@ -393,6 +399,9 @@ def get_whoop_data(target_date: date = None):
     try:
         return asyncio.run(_fetch_whoop_data(target_date))
     except WhoopAPIError as e:
+        if e.status_code == 404 and "No recovery entry found" in e.message:
+            print(f"⚠ [WHOOP] Recovery not ready yet: {e.message}")
+            raise WhoopRecoveryNotReady(e.message) from e
         if e.status_code == 401:
             print(f"❌ [WHOOP] Auth error (401): {e.message}")
             print("   → Run src/scripts/auth_whoop.py to get a fresh token.")
@@ -435,9 +444,6 @@ def main():
     args = parser.parse_args()
 
     # Default to today's date if not specified
-    india_tz = pytz.timezone('Asia/Kolkata')
-    now_india = datetime.now(india_tz)
-    
     if args.date:
         try:
             target_date = datetime.strptime(args.date, "%Y-%m-%d").date()
@@ -445,11 +451,14 @@ def main():
             print("❌ Invalid date format. Please use YYYY-MM-DD")
             sys.exit(1)
     else:
-        target_date = now_india.date()
+        target_date = date.fromisoformat(get_pipeline_run_date_str())
 
     # REAL DATA MODE - Call WHOOP API (no mock path)
     print(f"▶ Fetching WHOOP data for {target_date}...")
-    whoop_data = get_whoop_data(target_date)
+    try:
+        whoop_data = get_whoop_data(target_date)
+    except WhoopRecoveryNotReady:
+        sys.exit(2)
     strain = whoop_data["strain"]
     recovery_pct = whoop_data["recovery"]
     sleep_score_pct = whoop_data["sleep_score"]

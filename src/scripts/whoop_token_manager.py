@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import datetime, timedelta
 import httpx
-from utils import get_state_root
+from utils import get_state_root, get_pipeline_run_date_str
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +200,7 @@ class WHOOPTokenManager:
         try:
             from notifier import get_notifier
 
-            run_date = datetime.now().date().isoformat()
+            run_date = get_pipeline_run_date_str()
             get_notifier().notify_warning(
                 run_date=run_date,
                 step="WhoopTokenRefresh",
@@ -214,7 +214,7 @@ class WHOOPTokenManager:
         try:
             from notifier import get_notifier
 
-            run_date = datetime.now().date().isoformat()
+            run_date = get_pipeline_run_date_str()
             get_notifier().notify_error(
                 run_date=run_date,
                 step="WhoopTokenRefresh",
