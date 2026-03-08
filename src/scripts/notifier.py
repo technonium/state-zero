@@ -331,26 +331,74 @@ class Notifier:
             LOCAL_LOG.info("Success notifications disabled")
             return False
         
+        return self._send_post_success(
+            run_date=run_date,
+            final_mp4_path=final_mp4_path,
+            instagram_permalink=instagram_permalink,
+            document_caption=f"🎉 SUCCESS | {run_date}\nPosted to Instagram!",
+            message_title="✅ <b>Posted to Instagram</b>",
+            version_label=None,
+        )
+
+    def notify_emergency_fallback_activated(
+        self,
+        run_date: str,
+        trigger_stage: str,
+        fallback_version: str,
+    ) -> bool:
+        """Send status notification when emergency fallback activates."""
+        message = (
+            f"Emergency fallback activated because {trigger_stage} failed. "
+            f"Posting {fallback_version}."
+        )
+        return self.notify_status(run_date, "EMERGENCY_POST_FALLBACK", message)
+
+    def notify_emergency_fallback_posted(
+        self,
+        run_date: str,
+        final_mp4_path: Path,
+        instagram_permalink: str,
+        fallback_version: str,
+    ) -> bool:
+        """Send success notification after an emergency fallback post succeeds."""
+        return self._send_post_success(
+            run_date=run_date,
+            final_mp4_path=final_mp4_path,
+            instagram_permalink=instagram_permalink,
+            document_caption=f"⚠️ FALLBACK SUCCESS | {run_date}\nEmergency fallback posted.",
+            message_title="⚠️ <b>Emergency Fallback Posted</b>",
+            version_label=fallback_version,
+        )
+
+    def _send_post_success(
+        self,
+        *,
+        run_date: str,
+        final_mp4_path: Path,
+        instagram_permalink: str,
+        document_caption: str,
+        message_title: str,
+        version_label: str | None,
+    ) -> bool:
+        """Send a post-success notification with MP4 and permalink."""
         timestamp = datetime.now(self.timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
         run_date_escaped = self._escape_html(run_date)
         permalink = (instagram_permalink or 'Unavailable').strip()
-        
-        # Send the MP4 as document
-        caption = f"🎉 SUCCESS | {run_date}\nPosted to Instagram!"
-        doc_sent = self._send_document(final_mp4_path, caption)
-        
-        # Always send the permalink message
-        text = f"✅ <b>Posted to Instagram</b>\n"
+
+        doc_sent = self._send_document(final_mp4_path, document_caption)
+
+        text = f"{message_title}\n"
         text += f"<b>Date:</b> {run_date_escaped}\n"
+        if version_label:
+            text += f"<b>Version:</b> {self._escape_html(version_label)}\n"
         if permalink.startswith(("http://", "https://")):
             href = self._escape_html(permalink)
             text += f"<b>Link:</b> <a href=\"{href}\">{href}</a>\n"
         else:
             text += f"<b>Link:</b> {self._escape_html(permalink)}\n"
         text += f"\n<i>{self._escape_html(timestamp)}</i>"
-        
+
         msg_sent = self._send_message(text, parse_mode='HTML')
-        
         return doc_sent and msg_sent
     
     def notify_dry_run_complete(self, run_date: str, mode: str = 'automatic', output_dir: Path = None) -> bool:
@@ -416,6 +464,26 @@ def notify_status(run_date: str, status: str, message: str) -> bool:
 def notify_success_posted(run_date: str, final_mp4_path: Path, instagram_permalink: str) -> bool:
     """Send success notification with MP4 and permalink."""
     return get_notifier().notify_success_posted(run_date, final_mp4_path, instagram_permalink)
+
+
+def notify_emergency_fallback_activated(run_date: str, trigger_stage: str, fallback_version: str) -> bool:
+    """Send status notification when emergency fallback activates."""
+    return get_notifier().notify_emergency_fallback_activated(run_date, trigger_stage, fallback_version)
+
+
+def notify_emergency_fallback_posted(
+    run_date: str,
+    final_mp4_path: Path,
+    instagram_permalink: str,
+    fallback_version: str,
+) -> bool:
+    """Send success notification for an emergency fallback post."""
+    return get_notifier().notify_emergency_fallback_posted(
+        run_date,
+        final_mp4_path,
+        instagram_permalink,
+        fallback_version,
+    )
 
 def notify_dry_run_complete(run_date: str, mode: str = 'automatic', output_dir = None) -> bool:
     """Send dry run complete notification."""

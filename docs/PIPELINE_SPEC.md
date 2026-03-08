@@ -100,6 +100,7 @@ PIPELINE_MODE=telegram    # Mode 2
 | `INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED` | Enable scheduled token health checker alerts (default: true) |
 | `INSTAGRAM_TOKEN_ALERT_DAYS` | Comma-separated alert thresholds in days (default: `14,7,3,1`) |
 | `VPS_PUBLIC_BASE_URL` | Public base URL for hosted files, e.g. `https://your-ip/media` |
+| `EMERGENCY_FALLBACK_ENABLED` | `true` enables the private `error_404_v1` emergency post fallback after eligible pipeline failures |
 | `VPS_SSH_HOST` | Host IP or domain for SCP/SSH uploading final assets to VPS |
 | `VPS_SSH_USER` | Target user for the VPS connection |
 | `VPS_SSH_PATH` | Server directory path for uploaded assets |
@@ -163,6 +164,8 @@ Important:
 
 - `validate.py` requires VPS vars when `PIPELINE_POST_TO_INSTAGRAM=true`:
   - `VPS_PUBLIC_BASE_URL`, `VPS_SSH_HOST`, `VPS_SSH_USER`, `VPS_SSH_PATH`.
+- When `EMERGENCY_FALLBACK_ENABLED=true`, `validate.py` also checks the private fallback manifest, local fallback media integrity, and required prehosted fallback URLs before expensive generation starts.
+- ngrok is for `local_test` only. Production emergency fallback manifests must use stable VPS-hosted public URLs, not ngrok URLs.
 - WHOOP mock data (`PIPELINE_MOCK_DATA`) is no longer supported — real WHOOP API data is always required.
 - Python 3.10+ is required; Python 3.9 is unsupported.
 - LLM keys are now canonical:
@@ -180,6 +183,7 @@ PIPELINE_POST_TO_INSTAGRAM=true
 PIPELINE_MANUAL_DEADLINE_MODE=run_date
 PIPELINE_MANUAL_MATCH_STRICT=false
 INSTAGRAM_AUTO_REFRESH_MODE=hybrid
+EMERGENCY_FALLBACK_ENABLED=false
 ```
 
 2) **Production manual-first (dry-run)**

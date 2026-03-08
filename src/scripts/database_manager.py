@@ -12,7 +12,7 @@ class CardDatabase:
         self.init_database()
 
     def init_database(self):
-        """Create cards table if not exists"""
+        """Create cards and fallback post tables if not exists."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -51,6 +51,30 @@ class CardDatabase:
         except sqlite3.OperationalError:
             # Column doesn't exist, add it
             cursor.execute("ALTER TABLE cards ADD COLUMN instagram_permalink TEXT")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS fallback_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_date TEXT NOT NULL UNIQUE,
+                asset_source TEXT NOT NULL DEFAULT 'emergency_fallback',
+                fallback_version TEXT NOT NULL,
+                fallback_trigger_stage TEXT NOT NULL,
+                fallback_reason TEXT NOT NULL,
+                publish_mode TEXT,
+                title TEXT NOT NULL,
+                scene_description TEXT NOT NULL,
+                instagram_post_id TEXT,
+                instagram_permalink TEXT,
+                video_path_or_url TEXT,
+                image_path_or_url TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        try:
+            cursor.execute("SELECT publish_mode FROM fallback_posts LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE fallback_posts ADD COLUMN publish_mode TEXT")
 
         conn.commit()
         conn.close()
@@ -100,9 +124,43 @@ class CardDatabase:
         finally:
             conn.close()
 
+    def insert_fallback_post(self, fallback_data: dict):
+        """Insert a new emergency fallback post record."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("""
+                INSERT INTO fallback_posts (
+                    run_date, asset_source, fallback_version, fallback_trigger_stage,
+                    fallback_reason, publish_mode, title, scene_description, instagram_post_id,
+                    instagram_permalink, video_path_or_url, image_path_or_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                fallback_data.get('run_date', 'Unknown Date'),
+                fallback_data.get('asset_source', 'emergency_fallback'),
+                fallback_data.get('fallback_version', 'unknown'),
+                fallback_data.get('fallback_trigger_stage', 'unknown'),
+                fallback_data.get('fallback_reason', 'unknown'),
+                fallback_data.get('publish_mode', ''),
+                fallback_data.get('title', 'ERROR 404'),
+                fallback_data.get('scene_description', 'Emergency fallback posted.'),
+                fallback_data.get('instagram_post_id', ''),
+                fallback_data.get('instagram_permalink', ''),
+                fallback_data.get('video_path_or_url', ''),
+                fallback_data.get('image_path_or_url', ''),
+            ))
+            conn.commit()
+            print("✅ Successfully inserted fallback post into database")
+        except sqlite3.IntegrityError as e:
+            print(f"❌ Failed to insert fallback post - likely duplicate run date: {e}")
+        finally:
+            conn.close()
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--insert', action='store_true', help='Insert a new record')
+    parser.add_argument('--insert-fallback', action='store_true', help='Insert a new fallback record')
     parser.add_argument('--file', help='Path to the JSON payload file')
     args = parser.parse_args()
 
@@ -118,6 +176,19 @@ def main():
             with open(payload_path, 'r') as f:
                 card_data = json.load(f)
             db.insert_card(card_data)
+        else:
+            print(f"❌ Could not find {payload_path}")
+
+    if args.insert_fallback:
+        if args.file:
+            payload_path = Path(args.file)
+        else:
+            payload_path = get_output_root() / 'emergency_fallback_used.json'
+
+        if payload_path.exists():
+            with open(payload_path, 'r') as f:
+                fallback_data = json.load(f)
+            db.insert_fallback_post(fallback_data)
         else:
             print(f"❌ Could not find {payload_path}")
 
