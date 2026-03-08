@@ -1,6 +1,7 @@
 import os
 import sys
 import yaml
+from datetime import date as date_cls
 from pathlib import Path
 from colorama import init, Fore, Style
 from dotenv import load_dotenv
@@ -110,6 +111,14 @@ def validate_environment():
     print(f"   Pipeline mode: {mode}")
     print(f"   Post to Instagram: {post_to_instagram}")
     print(f"   Media mode: {media_mode}")
+
+    configured_run_date = (os.getenv("PIPELINE_DATE") or "").strip()
+    if configured_run_date:
+        try:
+            date_cls.fromisoformat(configured_run_date)
+        except ValueError:
+            print_error("PIPELINE_DATE must be a valid YYYY-MM-DD date.")
+            sys.exit(1)
 
     if media_mode not in VALID_MEDIA_MODES:
         print_error(

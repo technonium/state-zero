@@ -1,7 +1,10 @@
+import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -27,12 +30,19 @@ class _FakeDailyRun:
     def is_owner(self):
         return False
 
+    def current_status(self):
+        status = self._state.get("status")
+        return str(status).strip().upper() if status else None
+
 
 class _FakeNotifier:
     def notify_emergency_fallback_activated(self, **kwargs):
         return True
 
     def notify_warning(self, **kwargs):
+        return True
+
+    def notify_dry_run_complete(self, *args, **kwargs):
         return True
 
 
@@ -146,10 +156,13 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline._set_heartbeat_context = lambda **kwargs: None
         pipeline._build_subprocess_details_tail = lambda result: "stderr tail"
         pipeline._handle_retryable_lookup_not_ready = lambda details: self.fail("unexpected retryable lookup path")
+        pipeline._handle_retryable_lookup_external_failure = lambda details: self.fail(
+            "unexpected transient external retry path"
+        )
 
         failed = subprocess.CompletedProcess(
             args=["lookups.py"],
-            returncode=1,
+            returncode=4,
             stdout="lookup stdout",
             stderr="lookup stderr",
         )
@@ -159,6 +172,148 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.stage, "Data Retrieve & Dasha Lookups")
         self.assertTrue(ctx.exception.fallback_eligible)
+        self.assertEqual(ctx.exception.message, "Script reported a terminal lookup failure")
+
+    def test_retryable_lookup_failure_before_rescue_releases_for_retry(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.base_dir = PROJECT_ROOT
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._build_subprocess_details_tail = lambda result: "stderr tail"
+        pipeline._handle_retryable_lookup_not_ready = lambda details: self.fail("unexpected whoop-not-ready path")
+
+        seen = {}
+
+        def _record_retry(details):
+            seen["details"] = details
+            raise SystemExit(0)
+
+        pipeline._handle_retryable_lookup_external_failure = _record_retry
+
+        failed = subprocess.CompletedProcess(
+            args=["lookups.py"],
+            returncode=3,
+            stdout="lookup stdout",
+            stderr="lookup stderr",
+        )
+        with patch("pipeline.subprocess.run", return_value=failed):
+            with self.assertRaises(SystemExit) as ctx:
+                WHOOPPipeline.step_2_3_lookups(pipeline)
+
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(seen["details"], "stderr tail")
+
+    def test_terminal_rescue_run_converts_whoop_not_ready_to_fallback_eligible_error(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        stop_calls = []
+        pipeline._stop_heartbeat_thread = lambda: stop_calls.append("stopped")
+        pipeline.daily_run = types.SimpleNamespace(
+            mark_retryable_failure=lambda **kwargs: self.fail("should not mark retryable on rescue path"),
+            release_claim=lambda: self.fail("should not release claim on rescue path"),
+        )
+
+        with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "true"}, clear=False):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline._handle_retryable_lookup_not_ready(pipeline, "whoop still missing")
+
+        self.assertEqual(ctx.exception.stage, "WHOOP Data Unavailable")
+        self.assertTrue(ctx.exception.fallback_eligible)
+        self.assertIn("Terminal rescue run", ctx.exception.message)
+        self.assertEqual(stop_calls, ["stopped"])
+
+    def test_terminal_rescue_run_stops_real_heartbeat_thread_before_escalation(self):
+        fail = self.fail
+
+        class _HeartbeatDailyRun:
+            def is_owner(self):
+                return True
+
+            def heartbeat(self, **kwargs):
+                return kwargs
+
+            def mark_retryable_failure(self, **kwargs):
+                fail("should not mark retryable on rescue path")
+
+            def release_claim(self):
+                fail("should not release claim on rescue path")
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.run_date = "2026-03-08"
+        pipeline.daily_run = _HeartbeatDailyRun()
+        pipeline._heartbeat_stop = threading.Event()
+        pipeline._heartbeat_thread = None
+        pipeline._heartbeat_lock = threading.Lock()
+        pipeline._heartbeat_status = "STARTING"
+        pipeline._heartbeat_note = "testing"
+
+        WHOOPPipeline._start_heartbeat_thread(pipeline)
+        heartbeat_thread = pipeline._heartbeat_thread
+        self.assertIsNotNone(heartbeat_thread)
+        self.assertTrue(heartbeat_thread.is_alive())
+
+        with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "true"}, clear=False):
+            with self.assertRaises(PipelineStageError):
+                WHOOPPipeline._handle_retryable_lookup_not_ready(pipeline, "whoop still missing")
+
+        time.sleep(0.05)
+        self.assertIsNone(pipeline._heartbeat_thread)
+        self.assertFalse(heartbeat_thread.is_alive())
+
+    def test_caption_build_failure_is_fallback_eligible(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.step_13_build_caption = lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("caption broke"))
+
+        with self.assertRaises(PipelineStageError) as ctx:
+            WHOOPPipeline._build_caption_or_raise(
+                pipeline,
+                {"title": "ERROR 404"},
+                {"date": "2026-03-08"},
+            )
+
+        self.assertEqual(ctx.exception.stage, "Caption Build")
+        self.assertTrue(ctx.exception.fallback_eligible)
+        self.assertIn("Caption building failed unexpectedly.", ctx.exception.message)
+
+    def test_run_does_not_require_interpretation_file_for_normal_post_path(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            pipeline.run_date = "2026-03-08"
+            pipeline.output_dir = output_dir
+            pipeline.mode = "automatic"
+            pipeline.post_to_instagram = False
+            pipeline.media_mode = "live_vps"
+            pipeline.run_token = "token123"
+            pipeline.daily_run = _FakeDailyRun()
+            pipeline._claim_daily_run_or_exit = lambda: None
+            pipeline._ensure_owner_runtime_dirs = lambda: output_dir.mkdir(parents=True, exist_ok=True)
+            pipeline._stop_heartbeat_thread = lambda: None
+            pipeline._cleanup_non_authoritative_daily_state = lambda: None
+            pipeline.step_1_validate = lambda: None
+            pipeline.step_2_3_lookups = lambda: {"date": "2026-03-08", "date_display": "08 MAR 2026", "dasha": {}}
+            pipeline.step_4_6_prompts = lambda: None
+            pipeline._load_required_json = lambda path, label: (
+                {"prompt": "x"} if label == "image_prompt.json" else {"title": "ERROR 404"}
+            )
+            pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
+            art_path = output_dir / "art.png"
+            video_path = output_dir / "video.mp4"
+            final_png = output_dir / "card_final.png"
+            final_mp4 = output_dir / "card_final.mp4"
+            art_path.write_bytes(b"art")
+            video_path.write_bytes(b"video")
+            final_png.write_bytes(b"png")
+            final_mp4.write_bytes(b"mp4")
+            pipeline.step_7_generate_image = lambda image_json: art_path
+            pipeline.step_9_generate_video = lambda art, prompt_path: video_path
+            pipeline.step_10a_render_image = lambda art, daily_data, metadata: final_png
+            pipeline.step_10b_render_video = lambda video, daily_data, metadata: final_mp4
+            pipeline.step_15_archive = lambda *args, **kwargs: None
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+
+            with patch("pipeline._setup_global_exception_handler", lambda instance: None):
+                with patch("pipeline.get_notifier", return_value=_FakeNotifier()):
+                    pipeline.run()
 
     def test_instagram_post_mock_mode_returns_consistent_dict(self):
         fake_module = types.ModuleType("instagram_token_manager")
@@ -324,6 +479,319 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertTrue(success)
         self.assertEqual(log_publish_modes, ["runtime_vps_upload"])
         self.assertEqual(inserted_rows[0]["publish_mode"], "runtime_vps_upload")
+
+    def test_emergency_fallback_already_posted_still_writes_log_and_db(self):
+        inserted_rows = []
+        emergency_logs = []
+
+        fake_fallback_module = types.ModuleType("emergency_fallback_manager")
+
+        class _FakeFallbackUnavailableError(RuntimeError):
+            pass
+
+        class _FakeManager:
+            def load_and_validate_manifest(self):
+                return {
+                    "version": "error_404_v1",
+                    "title": "ERROR 404",
+                    "scene_description": "fallback scene",
+                }
+
+            def verify_integrity(self):
+                return True
+
+            def copy_to_run_output(self, output_dir):
+                mp4_path = output_dir / "card_final.mp4"
+                png_path = output_dir / "card_final.png"
+                mp4_path.write_bytes(b"video")
+                png_path.write_bytes(b"image")
+                return {"mp4_path": mp4_path, "png_path": png_path}
+
+            def get_publish_strategy(self):
+                return {
+                    "mode": "prehosted",
+                    "video_url": "https://prehosted.example/video.mp4",
+                    "thumb_url": "https://prehosted.example/thumb.png",
+                }
+
+            def build_fallback_caption(self, run_date):
+                return f"caption {run_date}"
+
+            def write_emergency_log(self, output_dir, **kwargs):
+                emergency_logs.append(kwargs)
+                return output_dir / "emergency_fallback_used.json"
+
+        fake_fallback_module.EmergencyFallbackManager = _FakeManager
+        fake_fallback_module.FallbackUnavailableError = _FakeFallbackUnavailableError
+
+        fake_db_module = types.ModuleType("database_manager")
+
+        class _FakeCardDatabase:
+            def insert_fallback_post(self, payload):
+                inserted_rows.append(payload)
+
+        fake_db_module.CardDatabase = _FakeCardDatabase
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            pipeline.run_date = "2026-03-08"
+            pipeline.output_dir = output_dir
+            pipeline.daily_run = _FakeDailyRun()
+            pipeline.asset_source = "auto_api"
+            pipeline.in_emergency_fallback = False
+            pipeline._last_emergency_fallback_error = None
+            pipeline._last_emergency_fallback_details = None
+            pipeline._last_emergency_fallback_classification = None
+            pipeline._active_emergency_fallback_version = None
+            pipeline._active_emergency_fallback_publish_mode = None
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+            pipeline._ensure_owner_runtime_dirs = lambda: output_dir.mkdir(parents=True, exist_ok=True)
+            pipeline._ensure_public_urls_reachable = lambda media_urls: True
+            pipeline.step_12_upload_vps = lambda final_mp4, cover_image: self.fail("runtime upload should not run")
+            pipeline.step_14_post_instagram = lambda *args, **kwargs: {
+                "already_posted": True,
+                "post_id": "123",
+                "permalink": "https://instagram.example/p/123",
+                "mock": False,
+            }
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "emergency_fallback_manager": fake_fallback_module,
+                    "database_manager": fake_db_module,
+                },
+            ):
+                with patch("pipeline.get_notifier", return_value=_FakeNotifier()):
+                    success = WHOOPPipeline._run_emergency_fallback(
+                        pipeline,
+                        "Instagram Posting",
+                        "rerun after crash",
+                    )
+
+        self.assertTrue(success)
+        self.assertEqual(len(emergency_logs), 1)
+        self.assertTrue(emergency_logs[0]["reused_existing_post"])
+        self.assertEqual(len(inserted_rows), 1)
+        self.assertEqual(inserted_rows[0]["instagram_post_id"], "123")
+
+    def test_step_14_publish_failure_in_emergency_fallback_does_not_recurse(self):
+        fake_token_module = types.ModuleType("instagram_token_manager")
+
+        class _HealthyTokenManager:
+            def get_valid_token(self):
+                return "token"
+
+            def get_user_id(self):
+                return "123"
+
+        fake_token_module.get_instagram_token_manager = lambda: _HealthyTokenManager()
+
+        fake_poster_module = types.ModuleType("instagram_poster")
+
+        class _BrokenPoster:
+            def __init__(self, access_token, user_id):
+                self.access_token = access_token
+                self.user_id = user_id
+
+            def create_media_container(self, video_url, thumb_url, caption):
+                raise RuntimeError("publish broke")
+
+        fake_poster_module.InstagramPoster = _BrokenPoster
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.daily_run = _FakeDailyRun()
+        pipeline.post_to_instagram = True
+        pipeline.in_emergency_fallback = True
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline.run_date = "2026-03-08"
+        pipeline._active_emergency_fallback_version = "error_404_v1"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._mark_posted_terminal_success = lambda **kwargs: self.fail("should not mark posted on publish failure")
+
+        with patch.dict(
+            sys.modules,
+            {
+                "instagram_token_manager": fake_token_module,
+                "instagram_poster": fake_poster_module,
+            },
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                WHOOPPipeline.step_14_post_instagram(
+                    pipeline,
+                    "https://example.com/video.mp4",
+                    "https://example.com/thumb.png",
+                    "caption",
+                    fallback_eligible_on_publish_failure=False,
+                )
+
+        self.assertEqual(str(ctx.exception), "publish broke")
+
+    def test_unexpected_lookup_exit_code_is_not_fallback_eligible(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.base_dir = PROJECT_ROOT
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._build_subprocess_details_tail = lambda result: "stderr tail"
+        pipeline._handle_retryable_lookup_not_ready = lambda details: self.fail("unexpected retryable lookup path")
+        pipeline._handle_retryable_lookup_external_failure = lambda details: self.fail(
+            "unexpected transient external retry path"
+        )
+
+        failed = subprocess.CompletedProcess(
+            args=["lookups.py"],
+            returncode=1,
+            stdout="lookup stdout",
+            stderr="lookup stderr",
+        )
+        with patch("pipeline.subprocess.run", return_value=failed):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline.step_2_3_lookups(pipeline)
+
+        self.assertFalse(ctx.exception.fallback_eligible)
+
+    def test_post_publish_ownership_loss_recovers_posted_state(self):
+        warnings = []
+
+        class _RecoveryDailyRun:
+            def is_owner(self):
+                return True
+
+            def mark_posted(self, **kwargs):
+                raise pipeline_module.OwnershipLostError("ownership moved")
+
+            def mark_posted_after_publish(self, **kwargs):
+                self.recovered_kwargs = kwargs
+                return kwargs
+
+        import pipeline as pipeline_module
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.daily_run = _RecoveryDailyRun()
+        pipeline._heartbeat_lock = threading.Lock()
+        pipeline._heartbeat_status = "POSTING"
+        pipeline._heartbeat_note = "Posting"
+        pipeline._notify_post_success_cleanup_warning = lambda *args: warnings.append(args)
+        pipeline._merge_details = WHOOPPipeline._merge_details.__get__(pipeline, WHOOPPipeline)
+
+        WHOOPPipeline._mark_posted_terminal_success(
+            pipeline,
+            post_id="123",
+            permalink="https://instagram.example/p/123",
+            note="Instagram publish succeeded.",
+        )
+
+        self.assertEqual(pipeline.daily_run.recovered_kwargs["post_id"], "123")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("Forced POSTED state recovery", warnings[0][1])
+
+    def test_claim_skip_posted_triggers_archive_recovery_check(self):
+        recovered_states = []
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.run_date = "2026-03-08"
+        pipeline.daily_run = types.SimpleNamespace(
+            acquire=lambda: ("skip_posted", {"status": "POSTED", "instagram_post_id": "123"}),
+        )
+        pipeline._recover_posted_archive_if_needed = lambda state: recovered_states.append(state)
+
+        with self.assertRaises(SystemExit) as ctx:
+            WHOOPPipeline._claim_daily_run_or_exit(pipeline)
+
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(recovered_states, [{"status": "POSTED", "instagram_post_id": "123"}])
+
+    def test_posted_archive_recovery_reuses_existing_run_artifacts(self):
+        archived = []
+
+        fake_db_module = types.ModuleType("database_manager")
+
+        class _FakeCardDatabase:
+            def has_card_for_date(self, run_date):
+                return False
+
+        fake_db_module.CardDatabase = _FakeCardDatabase
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            pipeline.run_date = "2026-03-08"
+            pipeline.output_dir = output_dir
+            pipeline.post_to_instagram = True
+            pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
+            pipeline._merge_details = WHOOPPipeline._merge_details.__get__(pipeline, WHOOPPipeline)
+            pipeline._notify_post_success_cleanup_warning = lambda *args, **kwargs: self.fail("recovery should succeed")
+            pipeline.step_15_archive = lambda *args: archived.append(args)
+
+            (output_dir / "daily_data.json").write_text(json.dumps({"date": "2026-03-08", "dasha": {}}), encoding="utf-8")
+            (output_dir / "card_metadata.json").write_text(
+                json.dumps({"title": "ERROR 404", "scene_description": "fallback scene"}),
+                encoding="utf-8",
+            )
+            (output_dir / "image_prompt.json").write_text(json.dumps({"prompt": "x"}), encoding="utf-8")
+            (output_dir / "card_final.png").write_bytes(b"png")
+            (output_dir / "card_final.mp4").write_bytes(b"mp4")
+
+            with patch.dict(sys.modules, {"database_manager": fake_db_module}):
+                WHOOPPipeline._recover_posted_archive_if_needed(
+                    pipeline,
+                    {"instagram_post_id": "123", "instagram_permalink": "https://instagram.example/p/123"},
+                )
+
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0][5], "123")
+        self.assertEqual(archived[0][6], "https://instagram.example/p/123")
+
+    def test_archive_failure_after_post_is_warning_only(self):
+        class _RecordingNotifier(_FakeNotifier):
+            def __init__(self):
+                self.warning_calls = []
+
+            def notify_warning(self, **kwargs):
+                self.warning_calls.append(kwargs)
+                return True
+
+        notifier = _RecordingNotifier()
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.base_dir = PROJECT_ROOT
+        pipeline.post_to_instagram = True
+        pipeline.run_date = "2026-03-08"
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            pipeline.output_dir = output_dir
+            final_png = output_dir / "card_final.png"
+            final_mp4 = output_dir / "card_final.mp4"
+            final_png.write_bytes(b"png")
+            final_mp4.write_bytes(b"mp4")
+
+            failed = subprocess.CompletedProcess(
+                args=["database_manager.py"],
+                returncode=1,
+                stdout="db stdout",
+                stderr="db stderr",
+            )
+            with patch("pipeline.subprocess.run", return_value=failed):
+                with patch("pipeline.get_notifier", return_value=notifier):
+                    WHOOPPipeline.step_15_archive(
+                        pipeline,
+                        daily_data={"date": "2026-03-08", "dasha": {}},
+                        metadata={"title": "ERROR 404", "scene_description": "fallback scene"},
+                        final_png=final_png,
+                        final_mp4=final_mp4,
+                        image_json={"prompt": "x"},
+                        post_id="123",
+                        instagram_permalink="https://instagram.example/p/123",
+                        blend_option="blend",
+                        creature="creature",
+                        environment="environment",
+                    )
+
+        self.assertEqual(len(notifier.warning_calls), 1)
+        self.assertEqual(notifier.warning_calls[0]["step"], "Database Archive")
 
 
 if __name__ == "__main__":

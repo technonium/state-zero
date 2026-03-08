@@ -173,6 +173,7 @@ class EmergencyFallbackManager:
         thumb_url: str,
         instagram_post_id: str | None,
         instagram_permalink: str | None,
+        reused_existing_post: bool = False,
     ) -> Path:
         manifest = self._require_manifest()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -183,6 +184,7 @@ class EmergencyFallbackManager:
             "fallback_trigger_stage": trigger_stage,
             "fallback_reason": reason,
             "publish_mode": publish_mode,
+            "reused_existing_post": reused_existing_post,
             "title": manifest["title"],
             "scene_description": manifest["scene_description"],
             "instagram_post_id": instagram_post_id,

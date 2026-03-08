@@ -80,7 +80,7 @@ class CardDatabase:
         conn.close()
 
     def insert_card(self, card_data: dict):
-        """Insert new card record"""
+        """Insert or update a card record for a run date."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -93,6 +93,28 @@ class CardDatabase:
                     dasha_sookshma, dasha_prana, image_path, video_path,
                     image_prompt_json, instagram_post_id, instagram_permalink
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(date) DO UPDATE SET
+                    title=excluded.title,
+                    scene_description=excluded.scene_description,
+                    environment=excluded.environment,
+                    creature=excluded.creature,
+                    blend_option=excluded.blend_option,
+                    energy_zone=excluded.energy_zone,
+                    recovery_pct=excluded.recovery_pct,
+                    sleep_score_pct=excluded.sleep_score_pct,
+                    strain=excluded.strain,
+                    sleep_hours=excluded.sleep_hours,
+                    depth_level=excluded.depth_level,
+                    dasha_maha=excluded.dasha_maha,
+                    dasha_antar=excluded.dasha_antar,
+                    dasha_pratyantar=excluded.dasha_pratyantar,
+                    dasha_sookshma=excluded.dasha_sookshma,
+                    dasha_prana=excluded.dasha_prana,
+                    image_path=excluded.image_path,
+                    video_path=excluded.video_path,
+                    image_prompt_json=excluded.image_prompt_json,
+                    instagram_post_id=excluded.instagram_post_id,
+                    instagram_permalink=excluded.instagram_permalink
             """, (
                 card_data.get('date', 'Unknown Date'),
                 card_data.get('title', 'Unknown Title'),
@@ -118,9 +140,21 @@ class CardDatabase:
                 card_data.get('instagram_permalink', '')
             ))
             conn.commit()
-            print("✅ Successfully inserted card into database")
+            print("✅ Successfully upserted card into database")
         except sqlite3.IntegrityError as e:
-            print(f"❌ Failed to insert card - likely duplicate date: {e}")
+            print(f"❌ Failed to upsert card: {e}")
+        finally:
+            conn.close()
+
+    def has_card_for_date(self, run_date: str) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            row = cursor.execute(
+                "SELECT 1 FROM cards WHERE date = ? LIMIT 1",
+                (run_date,),
+            ).fetchone()
+            return row is not None
         finally:
             conn.close()
 
@@ -136,6 +170,18 @@ class CardDatabase:
                     fallback_reason, publish_mode, title, scene_description, instagram_post_id,
                     instagram_permalink, video_path_or_url, image_path_or_url
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_date) DO UPDATE SET
+                    asset_source=excluded.asset_source,
+                    fallback_version=excluded.fallback_version,
+                    fallback_trigger_stage=excluded.fallback_trigger_stage,
+                    fallback_reason=excluded.fallback_reason,
+                    publish_mode=excluded.publish_mode,
+                    title=excluded.title,
+                    scene_description=excluded.scene_description,
+                    instagram_post_id=excluded.instagram_post_id,
+                    instagram_permalink=excluded.instagram_permalink,
+                    video_path_or_url=excluded.video_path_or_url,
+                    image_path_or_url=excluded.image_path_or_url
             """, (
                 fallback_data.get('run_date', 'Unknown Date'),
                 fallback_data.get('asset_source', 'emergency_fallback'),
@@ -151,9 +197,9 @@ class CardDatabase:
                 fallback_data.get('image_path_or_url', ''),
             ))
             conn.commit()
-            print("✅ Successfully inserted fallback post into database")
+            print("✅ Successfully upserted fallback post into database")
         except sqlite3.IntegrityError as e:
-            print(f"❌ Failed to insert fallback post - likely duplicate run date: {e}")
+            print(f"❌ Failed to upsert fallback post: {e}")
         finally:
             conn.close()
 

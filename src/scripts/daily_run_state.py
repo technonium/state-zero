@@ -140,10 +140,48 @@ class DailyRunStateManager:
             payload.update(extra)
         return self._update_state(status="POSTED", note=note, extra=payload, touch_heartbeat=True)
 
+    def mark_posted_after_publish(
+        self,
+        *,
+        post_id: str | None,
+        permalink: str | None,
+        note: str | None = None,
+        extra: dict | None = None,
+    ) -> dict:
+        previous = self.load_state() or {}
+        previous_token = previous.get("run_token")
+        now_iso = self.now_iso()
+        state = dict(previous)
+        state.update(
+            {
+                "date": self.run_date,
+                "status": "POSTED",
+                "run_token": self.run_token,
+                "timezone": str(self.tz),
+                "owner_pid": os.getpid(),
+                "updated_at": now_iso,
+                "last_heartbeat_at": now_iso,
+                "posted_at": now_iso,
+                "instagram_post_id": post_id,
+                "instagram_permalink": permalink,
+                "post_sync_recovered": True,
+            }
+        )
+        if note is not None:
+            state["note"] = note
+        if "created_at" not in state:
+            state["created_at"] = now_iso
+        if previous_token and previous_token != self.run_token:
+            state["post_sync_recovered_from_run_token"] = previous_token
+        if extra:
+            state.update(extra)
+        self._write_json_atomic(self.state_path, state)
+        return state
+
     def release_claim(self):
         claim = self.load_claim() or {}
         claim_token = claim.get("run_token")
-        if claim_token and claim_token != self.run_token:
+        if claim_token != self.run_token:
             self._owns_claim = False
             return
         try:
@@ -289,5 +327,12 @@ class DailyRunStateManager:
 
     def _write_json_atomic(self, path: Path, payload: dict):
         tmp_path = path.with_suffix(f"{path.suffix}.tmp.{self.run_token}")
-        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        os.replace(tmp_path, path)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
