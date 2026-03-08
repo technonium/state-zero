@@ -123,12 +123,15 @@ class InstagramPoster:
             return "mock_creation_id_123"
 
         url = f"{self.base_url}/{self.user_id}/media"
+        share_to_feed = (os.getenv("INSTAGRAM_SHARE_TO_FEED", "false") or "false").strip().lower()
+        if share_to_feed not in {"true", "false"}:
+            share_to_feed = "false"
         payload = {
             'media_type': 'REELS',
             'video_url': video_url,
             'cover_url': cover_url,
             'caption': caption,
-            'share_to_feed': 'true',
+            'share_to_feed': share_to_feed,
             'access_token': self.access_token
         }
         
