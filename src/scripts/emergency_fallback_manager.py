@@ -1,7 +1,9 @@
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image
@@ -197,7 +199,25 @@ class EmergencyFallbackManager:
             "prehosted_thumb_url": manifest["prehosted_thumb_url"],
         }
         log_path = output_dir / "emergency_fallback_used.json"
-        log_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=log_path.parent,
+                delete=False,
+            ) as handle:
+                json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+                tmp_path = handle.name
+            os.replace(tmp_path, log_path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
         return log_path
 
     def _require_manifest(self) -> dict:

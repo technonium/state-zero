@@ -149,6 +149,59 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertTrue(output_dir.is_dir())
         self.assertTrue(log_path.is_file())
 
+    def test_write_emergency_log_fsyncs_before_replace_and_preserves_payload(self):
+        tmpdir, manager, _fallback_root = self._build_manager_with_temp_runtime()
+        self.addCleanup(tmpdir.cleanup)
+
+        manager.manifest = {
+            "version": "error_404_v1",
+            "title": "ERROR 404",
+            "scene_description": "fallback scene",
+            "local_png_path": "fallback/error_404_v1/card.png",
+            "local_mp4_path": "fallback/error_404_v1/card.mp4",
+            "prehosted_video_url": "https://example.com/fallback/error_404_v1/card.mp4",
+            "prehosted_thumb_url": "https://example.com/fallback/error_404_v1/card.png",
+        }
+
+        output_dir = Path(tmpdir.name) / "runtime" / "output" / "fsync-run-dir"
+        with patch("emergency_fallback_manager.os.fsync") as fsync_mock:
+            log_path = manager.write_emergency_log(
+                output_dir,
+                trigger_stage="Image Generation",
+                reason="failed",
+                publish_mode="prehosted",
+                video_url="https://example.com/fallback/error_404_v1/card.mp4",
+                thumb_url="https://example.com/fallback/error_404_v1/card.png",
+                instagram_post_id="123",
+                instagram_permalink="https://instagram.example/p/123",
+                reused_existing_post=True,
+            )
+
+        fsync_mock.assert_called_once()
+        self.assertTrue(log_path.is_file())
+        self.assertEqual(
+            json.loads(log_path.read_text(encoding="utf-8")),
+            {
+                "run_date": "fsync-run-dir",
+                "asset_source": "emergency_fallback",
+                "fallback_version": "error_404_v1",
+                "fallback_trigger_stage": "Image Generation",
+                "fallback_reason": "failed",
+                "publish_mode": "prehosted",
+                "reused_existing_post": True,
+                "title": "ERROR 404",
+                "scene_description": "fallback scene",
+                "instagram_post_id": "123",
+                "instagram_permalink": "https://instagram.example/p/123",
+                "video_path_or_url": "https://example.com/fallback/error_404_v1/card.mp4",
+                "image_path_or_url": "https://example.com/fallback/error_404_v1/card.png",
+                "local_png_path": "fallback/error_404_v1/card.png",
+                "local_mp4_path": "fallback/error_404_v1/card.mp4",
+                "prehosted_video_url": "https://example.com/fallback/error_404_v1/card.mp4",
+                "prehosted_thumb_url": "https://example.com/fallback/error_404_v1/card.png",
+            },
+        )
+
     def test_non_retryable_lookup_failure_is_fallback_eligible(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.base_dir = PROJECT_ROOT

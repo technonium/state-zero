@@ -1,5 +1,6 @@
 import json
 import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -23,7 +24,25 @@ def _load_state(path: Path) -> dict:
 
 def _save_state(path: Path, state: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            json.dump(state, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            tmp_path = handle.name
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _parse_thresholds(raw: str) -> list[int]:
