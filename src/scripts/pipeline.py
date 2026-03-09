@@ -4,6 +4,7 @@ import random
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 import uuid
@@ -832,8 +833,39 @@ class WHOOPPipeline:
                 if self._is_session_reusable(session):
                     return session
                 print(f"{Fore.YELLOW}⚠ Existing manual session is stale/terminal. Starting a fresh session.{Style.RESET_ALL}")
-            except Exception:
-                pass
+            except (json.JSONDecodeError, ValueError, KeyError, TypeError) as e:
+                corrupt_backup = self.session_file.with_suffix('.corrupt.json')
+                backup_saved = False
+                backup_error = None
+                try:
+                    shutil.copy2(self.session_file, corrupt_backup)
+                    backup_saved = True
+                except OSError as copy_error:
+                    backup_error = str(copy_error)
+                backup_status = (
+                    f'Backup saved to {corrupt_backup.name}'
+                    if backup_saved
+                    else f'Backup could not be saved ({backup_error or "unknown error"})'
+                )
+                print(
+                    f"{Fore.YELLOW}⚠ Existing manual session is corrupt or unreadable "
+                    f"({e}). Starting a fresh session. {backup_status}{Style.RESET_ALL}"
+                )
+                notifier = get_notifier()
+                notifier.notify_warning(
+                    run_date=self.run_date,
+                    step='ManualSessionLoad',
+                    message=(
+                        f'manual_session.json was corrupt or unreadable ({e}). Starting a fresh session. '
+                        'last_update_id and asset refs may be lost, so watch for duplicate Telegram '
+                        f'prompts or missed manual asset recovery. {backup_status}.'
+                    ),
+                    details_tail=(
+                        f'backup={corrupt_backup}'
+                        if backup_saved
+                        else f'backup_copy_failed path={corrupt_backup} error={backup_error or "unknown error"}'
+                    ),
+                )
 
         last_update_id = self._get_latest_update_id()
         session = {
@@ -862,7 +894,14 @@ class WHOOPPipeline:
         return session
 
     def _migrate_manual_session(self, session: dict) -> dict:
-        tg = session.setdefault('telegram', {})
+        if not isinstance(session, dict):
+            raise TypeError('manual_session root must be a JSON object')
+        tg = session.get('telegram')
+        if tg is None:
+            tg = {}
+            session['telegram'] = tg
+        elif not isinstance(tg, dict):
+            raise TypeError('manual_session.telegram must be a JSON object')
         tg.setdefault('last_update_id', 0)
         tg.setdefault('prompt_message_id', None)
         reply_ids = tg.get('accepted_reply_message_ids')
@@ -871,7 +910,7 @@ class WHOOPPipeline:
         if tg.get('prompt_message_id'):
             try:
                 reply_ids.append(int(tg['prompt_message_id']))
-            except Exception:
+            except (ValueError, TypeError):
                 pass
         # Preserve order while deduping.
         tg['accepted_reply_message_ids'] = list(dict.fromkeys(reply_ids))
@@ -899,8 +938,30 @@ class WHOOPPipeline:
         session_deadline = self._get_session_deadline(session)
         return self._now() < session_deadline
 
+    def _write_json_atomic(self, path: Path, payload: dict):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                'w',
+                encoding='utf-8',
+                dir=path.parent,
+                delete=False,
+            ) as handle:
+                json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+                tmp_path = handle.name
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     def _save_manual_session(self, session: dict):
-        self.session_file.write_text(json.dumps(session, indent=2), encoding='utf-8')
+        self._write_json_atomic(self.session_file, session)
 
     def _telegram_api(self, method: str, *, data=None, files=None, timeout=60, use_get=False) -> dict:
         url = f'https://api.telegram.org/bot{self.bot_token}/{method}'
@@ -1265,11 +1326,11 @@ class WHOOPPipeline:
 
     def _get_session_deadline(self, session: dict) -> datetime:
         raw = session.get('deadline_local')
-        if not raw:
+        if not raw or not isinstance(raw, str):
             return self.deadline_dt
         try:
             return datetime.fromisoformat(raw)
-        except Exception:
+        except ValueError:
             return self.deadline_dt
 
     def _mark_session(self, session: dict, status: str, note: str | None = None):
@@ -2156,8 +2217,7 @@ class WHOOPPipeline:
         }
 
         payload_path = self.output_dir / 'last_archived_payload.json'
-        with open(payload_path, 'w', encoding='utf-8') as f:
-            json.dump(archive_payload, f, indent=2)
+        self._write_json_atomic(payload_path, archive_payload)
 
         if self.post_to_instagram:
             cmd = [

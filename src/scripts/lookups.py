@@ -7,6 +7,7 @@ import argparse
 import sys
 import asyncio
 import logging
+import tempfile
 import httpx
 from whoop_client import WHOOPClient, WhoopAPIError
 from utils import (
@@ -45,6 +46,29 @@ class RetryableLookupFailure(Exception):
 LOOKUP_EXIT_WHOOP_NOT_READY = 2
 LOOKUP_EXIT_RETRYABLE_EXTERNAL_FAILURE = 3
 LOOKUP_EXIT_TERMINAL_FAILURE = 4
+
+
+def _write_json_atomic(path: Path, payload: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            'w',
+            encoding='utf-8',
+            dir=path.parent,
+            delete=False,
+        ) as handle:
+            json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            tmp_path = handle.name
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _safe_ms(value) -> float:
@@ -399,9 +423,7 @@ def build_daily_data(strain: float, recovery_pct: int, sleep_score_pct: int, sle
     # causing daily_data.json to be written to the wrong output/{date}/ folder.
     run_date = str(target_date)
     output_dir = get_output_root() / run_date
-    output_dir.mkdir(parents=True, exist_ok=True)
-    with open(output_dir / 'daily_data.json', 'w') as f:
-        json.dump(output, f, indent=2)
+    _write_json_atomic(output_dir / 'daily_data.json', output)
 
     return output
 
