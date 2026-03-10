@@ -41,7 +41,7 @@ Based on the environment type, you MUST use the corresponding materials for `ren
 
 ### LOW Energy Environments:
 - **Frozen/Ice:** Transparent ice, frost, frozen atmospheric effects
-- **Crystal Caves:** Angular crystals, gems, prismatic light refraction
+- **Crystal Caves:** Angular crystals, gems, prismatic light refraction — volumetric transparency, realistic glass-like refraction, 3D depth and bloom through crystal surfaces
 - **Stone Monuments:** Weathered stone, granite, ancient carved formations
 - **Mist/Fog Realms:** Volumetric fog, obscured visibility, moisture
 - **Void/Space (Low):** Cosmic dust, minimal light, deep space darkness
@@ -64,6 +64,22 @@ Based on the environment type, you MUST use the corresponding materials for `ren
 
 **ACTION:** Find the environment type in the list above and copy its materials string into `rendering.material_quality`.
 
+### MATERIAL QUALITY BEHAVIORAL MODULATION
+
+After copying materials from the table above, adjust intensity qualifiers to match the behavioral art keywords `{art_keywords}`. Change only intensity words — keep all material type descriptors intact.
+
+| Art Keyword Zone | Intensity adjustment |
+|---|---|
+| luminous, expansive, serene, flowing, balanced, harmonious | Keep or amplify — "glow" → "radiant glow", "intense" stays "intense" |
+| drifting, muted, detached, rhythmic, moderate, indifferent | Reduce — "intense heat glow" → "subdued heat glow", "glowing" → "faintly glowing", "intense" → "moderate" |
+| still, subdued, restrained, heavy, dim, pressured | Further reduce — "intense" → "dimmed", "glow" → "barely glowing", "glowing" → "faint residual glow" |
+| crushing, collapsed, smoldering, suffocating, devastated | Near-extinction — "intense" → "smoldering", "glow" → "dying glow", "glowing" → "cooling embers" |
+
+**Example:** Volcanic materials = "Volcanic rock, magma, lava flows, intense heat glow"
+- Art keywords "drifting, muted, detached" → "Volcanic rock, magma, lava flows, subdued heat glow"
+- Art keywords "still, subdued" → "Volcanic rock, magma, lava flows, dimmed barely-glowing heat"
+- Art keywords "luminous, expansive" → "Volcanic rock, magma, lava flows, intense heat glow" (unchanged)
+
 ---
 
 ## BLEND OPTION SELECTION (AI-DRIVEN)
@@ -72,13 +88,6 @@ Based on the environment type, you MUST use the corresponding materials for `ren
 
 **Selection criteria:**
 
-1. **Primary influence:** The art keywords `{art_keywords}` — these reflect the behavioral/emotional state and should heavily influence your choice:
-   - Heavy/still keywords (crushing, collapsed, sinking, heavy, still, subdued, smoldering, suffocating) → **lean toward Option A**
-   - Light/flow keywords (luminous, flowing, rhythmic, drifting, serene, expansive, balanced, harmonious, muted) → **lean toward Option B**
-   - Volatile/distortion keywords (volatile, fractured, turbulent, suspended, dissociated, brittle, unstable, devastated) → **lean toward Option C**
-
-2. **Secondary considerations:**
-   - **Environment redundancy:** Does the environment `{environment}` already provide pattern-based or physics-based qualities?
 1.  **Primary influence:** The art keywords `{art_keywords}` — these reflect the behavioral/emotional state and should heavily influence your choice:
     -   Heavy/still keywords (crushing, collapsed, sinking, heavy, still, subdued, smoldering, suffocating) → **lean toward Option A**
     -   Light/flow keywords (luminous, flowing, rhythmic, drifting, serene, expansive, balanced, harmonious, muted) → **lean toward Option B**
@@ -92,14 +101,14 @@ Based on the environment type, you MUST use the corresponding materials for `ren
         -   Massive creatures (Whale, Elephant) → gravitational weight suggests Option C (physics)
         -   Delicate creatures (Moth, Butterfly) → fine patterns suggest Option B
         -   Ancient/static creatures (Turtle, Serpent) → pure sculptural suggests Option A
-    -   **Interpretation resonance:** Does the theme `{theme_essence}` suggest a specific approach?
+    -   **Interpretation resonance:** Does the interpretation `{interpretation}` suggest a specific approach?
         -   Transformation/flow themes → patterns (Option B)
         -   Pressure/gravity/collapse themes → physics (Option C)
         -   Permanence/endurance themes → pure sculptural (Option A)
 
 3.  **Critical constraint:** Do NOT make automatic environment-based assumptions. Just because the environment is Crystalline doesn't mean Option B is automatic. Consider the full scene.
 
-**Your task:** Analyze the art keywords, environment, creature, and {theme_essence}. Choose Option A, B, or C. State your choice and provide a brief justification (1 sentence).
+**Your task:** Analyze the art keywords, environment, creature, and the interpretation `{interpretation}`. Choose Option A, B, or C. State your choice and provide a brief justification (1 sentence).
 
 **Example decision process:**
 ```
@@ -120,22 +129,28 @@ Once you've selected your option above, apply these language rules:
 
 ### Option A — Sculptural 100%
 - Creature IS the geology, pure sculptural forms
-- **Required phrases:** "formations barely evoke essence", "geological features", "natural erosion patterns", "accidental arrangement", "viewer's pareidolia"
-- **creature_integration.visibility example:** "Geological formations barely evoke [QUALITY: the creature's abstract essence — e.g. 'ancient stillness', 'fluid permanence', 'crushing weight'] through natural erosion patterns — massive stone structures whose accidental arrangement might suggest [QUALITY] to the viewer's imagination, nothing more"
+- **Required phrases:** "formations barely evoke", "geological features", "natural erosion patterns", "accidental arrangement", "viewer's pareidolia"
+- **creature_integration.visibility example:** "Geological formations barely evoke [QUALITY] through natural erosion patterns — massive stone structures whose accidental arrangement might suggest [QUALITY] to the viewer's imagination, nothing more"
+- **core_concept phrasing (condensed):** "massive [environment] formations through natural erosion patterns, accidental geological arrangement carrying [QUALITY] to the viewer's imagination"
 - NO secondary texture mentioned
 
 ### Option B — Sculptural 60-70% + Pattern-Based 30-40%
 - Sculptural primary, with delicate crystal/frost/light patterns threading through
 - **Required phrases:** "geological formations" + "patterns that might suggest", "viewer's pareidolia"
 - **CRYSTALLINE OVERRIDE:** If environment is "Crystalline (Active)", the sculptural mass itself IS optically active crystal. Describe with: "subsurface light scattering", "internal refraction", "volumetric mineral glow". The mass IS crystal, not stone decorated with crystal.
-- **creature_integration.visibility example:** "Sculptural geological masses dominate, with delicate [secondary texture] threading through that might suggest [QUALITY: abstract essence — e.g. 'swift precision', 'delicate tracing', 'pointed focus'] — the viewer's pareidolia connects [pattern details] to [QUALITY], but landscape remains primary"
+- **creature_integration.visibility example:** "Sculptural geological masses dominate, with delicate [secondary texture] threading through that might suggest [QUALITY] — the viewer's pareidolia connects [pattern details] to [QUALITY], but landscape remains primary"
+- **core_concept phrasing (condensed):** "sculptural [environment] masses dominate, delicate [secondary texture: heat refraction / frost tracery / light patterns] threading through, viewer's pareidolia finding [QUALITY] in [secondary texture details]"
 - Secondary is ALWAYS subordinate, never equal
+- **FORBIDDEN in core_concept when Option B selected:** "barely evoke", "natural erosion patterns", "accidental arrangement" — these are Option A phrases. Do NOT use them. core_concept must start with "sculptural [environment] masses dominate"
 
 ### Option C — Sculptural 60-70% + Physics 30-40%
 - Sculptural primary, with spatial distortion/gravitational lensing adding uncanny tension
 - **Required phrases:** "geological formations" + "gravitational lensing", "atmospheric phenomenon", "spatial warping"
-- **creature_integration.visibility example:** "Massive geological formations barely evoke [QUALITY: abstract essence — e.g. 'oceanic weight', 'gravitational mass', 'crushing permanence'] through natural arrangement — gravitational lensing around formation edges creates subtle spatial distortion that adds uncanny tension, purely atmospheric phenomenon enhancing the viewer's perception"
+- **creature_integration.visibility example:** "Massive geological formations barely evoke [QUALITY] through natural arrangement — gravitational lensing around formation edges creates subtle spatial distortion that adds uncanny tension, purely atmospheric phenomenon enhancing the viewer's perception"
+- **core_concept phrasing (condensed):** "massive [environment] formations carrying [QUALITY], subtle spatial distortion warping the atmosphere around geological forms"
 - Physics effects are environmental, not dominant
+
+**Important:** `creature_integration.visibility` gets the full expanded language. `core_concept` gets the condensed version. Both must use language matching YOUR SELECTED OPTION. Both use [QUALITY] — the creature's physical essence in geological terms, drawn from the table below.
 
 ---
 
@@ -148,20 +163,35 @@ The creature name (`{creature}`) is **FORBIDDEN** in all descriptive/positive fi
 - `mandatory_exclusions` — creature name here is fine
 
 **Forbidden (all other fields):**
-- `core_concept` — NO creature name, describe only landscape qualities
+- `core_concept` — NO creature name, use [QUALITY] only
 - `composition.midground` — NO creature name
 - `creature_integration.visibility` — NO creature name, use [QUALITY] only
 
-**How to reference the creature's essence without naming it:**
+**How to derive [QUALITY] — the creature's physical essence in geological terms:**
 
-| Creature type | Abstract quality to use |
-|---------------|------------------------|
-| Fast/aerial (Falcon, Eagle, Hawk) | "swift precision", "pointed focus", "velocity", "diving clarity" |
-| Aquatic (Whale, Shark, Octopus) | "oceanic pressure", "fluid depth", "weight from below" |
-| Large/heavy (Elephant, Bear, Bison) | "gravitational mass", "crushing permanence", "ancient stillness" |
-| Delicate (Moth, Butterfly, Dragonfly) | "fragile tracery", "ephemeral pattern", "delicate threading" |
-| Serpentine (Snake, Eel) | "sinuous flow", "serpentine depth", "coiling tension" |
-| Ancient (Turtle, Crocodile) | "primordial patience", "enduring weight", "geological time" |
+Look at the creature, find the closest archetype below, and pick the quality phrase that best fits the current art keywords and environment. These are starting points — not fixed rules. If nothing fits, derive your own following the same pattern.
+
+| Creature archetype | Example quality phrases |
+|---|---|
+| **Aerial / Speed** (falcons, hawks, swifts, hornets) | "swift precision", "pointed focus", "velocity", "diving sharpness" |
+| **Soaring / Vast** (eagles, condors, albatross, cranes) | "thermal drift", "suspended mass", "expansive stillness" |
+| **Aquatic / Fluid** (whales, sharks, dolphins, rays, jellyfish) | "oceanic pressure", "fluid depth", "submerged weight" |
+| **Serpentine / Coiling** (snakes, eels, centipedes, anacondas) | "coiling tension", "sinuous flow", "constricting depth" |
+| **Massive / Heavy** (elephants, bears, bison, hippos, rhinos) | "gravitational mass", "crushing permanence", "ancient stillness" |
+| **Ancient / Armored** (turtles, crocodiles, beetles, crabs, nautilus) | "primordial patience", "armored density", "geological time" |
+| **Arachnid / Angular** (scorpions, spiders, mantis, lobsters) | "angular precision", "geometric density", "tense stillness" |
+| **Delicate / Ephemeral** (moths, butterflies, dragonflies, fireflies) | "fragile tracery", "ephemeral pattern", "delicate threading" |
+| **Canine / Pack** (wolves, foxes, jackals, hyenas) | "lean tension", "predatory stillness", "low-center weight" |
+| **Feline / Predator** (lions, tigers, leopards, jaguars) | "coiled readiness", "compressed power", "muscular density" |
+| **Avian / Patient** (owls, vultures, ravens, herons) | "patient weight", "hollow density", "watchful mass" |
+| **Mythological / Hybrid** (gryphons, phoenixes, dragons, chimeras) | "composite mass", "ancient fusion", "primordial scale" |
+
+**Deriving your own:** Describe how the creature's *body* would feel as stone or landscape — its mass, density, tension, flow, or precision. Physical and geological only. NOT what the creature does, NOT its personality or mythology.
+
+**CRITICAL — these quality phrases will cause creature bleed. AVOID them:**
+- Behavioral: "storm command", "watchful patience", "hunting focus" → produce recognizable creature poses
+- Character: "sovereign stillness", "regal weight", "noble mass" → produce humanoid/throne forms
+- Action: "poised to strike", "mid-flight tension" → produce literal creature action
 
 ---
 
@@ -187,6 +217,29 @@ Based on depth level and environment:
 
 ---
 
+## DEPTH VISUAL PHRASE FOR CORE_CONCEPT
+
+**CRITICAL:** Do NOT write the depth label (SURFACE / MID-DEPTH / DEEP / ABYSS) literally in `core_concept`. These are system category labels — the image generator has no idea what they mean. Translate to spatial visual language using the table below and the specific environment chosen.
+
+You have `{depth_level}` and `{depth_keywords}` available. Use them to derive a concrete spatial phrase.
+
+| Depth Level | Depth Keywords | Visual phrase pattern for core_concept |
+|---|---|---|
+| SURFACE | Celestial, Elevated, Bright, Open | "above towering [environment] formations under open [sky/void]" |
+| MID-DEPTH | Sheltered, Cavern, Enclosed, Filtered | "within enclosed [environment] [chambers/caverns] with filtered [light/glow]" |
+| DEEP | Subterranean, Obscured, Limited, Buried | "deep in subterranean [environment] with limited [glow/illumination]" |
+| ABYSS | Void, Compressed, Primordial, Darkness | "at the primordial [environment] core, near-darkness pressing in from all sides" |
+
+**Examples (combine depth pattern + specific environment):**
+- Volcanic + MID-DEPTH → "within enclosed volcanic chambers with filtered magma glow"
+- Ice + SURFACE → "above towering glacier peaks under open alien sky"
+- Ocean + DEEP → "deep in subterranean ocean trenches with limited bioluminescent illumination"
+- Volcanic + ABYSS → "at the primordial volcanic core, near-darkness pressing in from all sides"
+
+The phrasing is yours — adapt the pattern to fit the specific environment. Never use the raw depth label.
+
+---
+
 ## COLOR TEMPERATURE MAPPING
 
 From behavioral body keywords and environment:
@@ -200,6 +253,7 @@ Adjust for environment type (volcanic = inherently warm, ice = inherently cool)
 
 ---
 
+
 ## FORBIDDEN LANGUAGE
 
 **NEVER use anywhere in the JSON:**
@@ -212,11 +266,12 @@ Adjust for environment type (volcanic = inherently warm, ice = inherently cool)
 
 ## REQUIRED LANGUAGE
 
-**MUST appear in appropriate fields:**
-- `creature_integration.visibility`: "formations barely evoke", "geological formations", "viewer's pareidolia" or "viewer's imagination perceives"
-- Option A specific: "accidental arrangement", "natural erosion patterns"
-- Option B specific: "patterns that might suggest" (for secondary only)
-- Option C specific: "atmospheric phenomenon", "gravitational lensing" (for secondary only)
+**MUST appear in `creature_integration.visibility` — use per your selected option:**
+- Option A: "formations barely evoke", "geological formations", "accidental arrangement", "natural erosion patterns", "viewer's pareidolia"
+- Option B: "geological masses dominate", "geological formations", "patterns that might suggest", "viewer's pareidolia"
+- Option C: "geological formations", "formations barely evoke", "gravitational lensing", "atmospheric phenomenon", "viewer's pareidolia"
+
+**core_concept uses only the CONDENSED phrasing from each option's guide — NOT the full visibility language.**
 
 ---
 
@@ -238,7 +293,7 @@ Fill ALL placeholders below using the input data and rules above:
 
 ```json
 {
-  "core_concept": "Surreal alien {environment} at {depth_level} where [APPLY BLEND OPTION LANGUAGE — describe landscape formations using abstract qualities; DO NOT write the creature name {creature}], felt state: {theme_essence}, more landscape than creature",
+  "core_concept": "Surreal alien {environment} [SPATIAL LOCATION: use DEPTH VISUAL PHRASE mapping — translate {depth_level} + {depth_keywords} into spatial visual language for this specific {environment}; NEVER write the depth label literally] where [APPLY YOUR SELECTED BLEND OPTION LANGUAGE from core_concept phrasing guide — describe landscape formations only; DO NOT write the creature name {creature}; NO abstract creature quality phrases], felt state: {one_liner}, more landscape than creature",
 
   "style_aesthetic": {
     "era": "1970s-1980s science fiction",
@@ -248,10 +303,10 @@ Fill ALL placeholders below using the input data and rules above:
   },
 
   "rendering": {
-    "technique": "high detail digital art with vintage film effects",
+    "technique": "high detail volumetric 3D digital art with vintage film effects — cinematic photographic render quality, NOT illustration",
     "contrast": "[APPLY CONTRAST MAPPING from art keywords]",
     "definition": "clear forms with atmospheric depth",
-    "material_quality": "[LOOKUP from Material Quality table above using environment type]",
+    "material_quality": "[LOOKUP from Material Quality table above using environment type, THEN MODULATE intensity qualifiers per MATERIAL QUALITY BEHAVIORAL MODULATION section using art keywords {art_keywords}]",
     "avoid": [
       "soft painterly brush strokes",
       "2D cartoon style",
@@ -289,7 +344,7 @@ Fill ALL placeholders below using the input data and rules above:
   "lighting": {
     "time": "[APPLY Lighting Time Mapping based on {depth_level} and {environment}]",
     "quality": "[Derive from art keywords] with [recovery_zone-based intensity: HIGH=bright / MID=moderate / LOW=dim] bloom",
-    "atmosphere": "{art_keywords}",
+    "atmosphere": "[In 1-2 short phrases describe how light and air physically behave — e.g. 'light settles without drama, air still and undisturbed' or 'light harsh and cutting, atmosphere charged at every surface'. Physical language only. Do NOT copy art keywords literally.]",
     "glow": "[ENVIRONMENT-SPECIFIC glow sources: magma orange / ice blue / lightning white / plasma purple / etc.]"
   },
 
@@ -303,7 +358,7 @@ Fill ALL placeholders below using the input data and rules above:
   "environment_details": {
     "setting": "{environment} at {depth_level}",
     "terrain": "[Combine environment materials + depth manifestation: e.g. 'subterranean volcanic chambers with limited magma glow' or 'elevated ice peaks under open sky']",
-    "atmosphere": "{one_liner}, depth layers creating spatial separation",
+    "atmosphere": "[In 1-2 short phrases describe what the physical {environment} looks like carrying this state — what the viewer sees in the materials, formations, and air. Visual description of the place only, NOT behavioral or emotional text. depth layers creating spatial separation]",
     "celestial": "{moon_count} moons, [visibility modifier: bright at SURFACE / dimmed at MID-DEPTH / faint at DEEP / barely visible at ABYSS]"
   },
 
@@ -328,6 +383,9 @@ Fill ALL placeholders below using the input data and rules above:
     "no text or typography",
     "no borders or frames",
     "no 2D cartoon style",
+    "no 2D illustration or flat art style",
+    "no concept art or digital painting style",
+    "no comic or graphic novel aesthetic",
     "no obvious literal {creature}",
     "no recognizable creature shapes",
     "no modern 3D render aesthetic"
@@ -361,12 +419,19 @@ Before outputting the JSON, verify:
 - [ ] Brightness minimum enforced: {visibility_range} stated in consistency_anchors
 - [ ] All effects described as "subtle" where applicable
 - [ ] Aspect ratio is "VERTICAL 3:4 PORTRAIT"
-- [ ] Behavioral theme `{theme_essence}` reflected in core_concept felt state (no planet names, no house numbers, no astrology)
+- [ ] Behavioral one-liner `{one_liner}` reflected in core_concept felt state (no planet names, no house numbers, no astrology)
 - [ ] `avoid` array includes "{creature}-shaped objects" and "{creature} anatomy"
 - [ ] `"text": "NO TEXT, NO TITLES, NO OVERLAYS"` present in technical_specifications
 - [ ] Sky description includes "{moon_count} moons in upper third"
 - [ ] Depth level {depth_level} influences lighting.time and composition.sky appropriately
 - [ ] If environment is "Crystalline (Active)" AND YOUR SELECTED OPTION is "B", Crystalline Override applied
+- [ ] `core_concept` uses blend-appropriate language matching YOUR SELECTED OPTION (not default Option A phrasing when B or C was selected)
+- [ ] `core_concept` does NOT contain a raw depth label (SURFACE/MID-DEPTH/DEEP/ABYSS) — must be spatial visual language
+- [ ] `rendering.material_quality` intensity qualifiers adjusted for art keywords (not blindly copied from table)
+- [ ] `lighting.atmosphere` is 1-2 short physical phrases describing light/air behavior — NOT raw art keywords
+- [ ] `environment_details.atmosphere` is 1-2 short visual phrases describing the physical space — NOT behavioral or emotional text
+- [ ] `rendering.technique` specifies volumetric 3D cinematic quality — output must NOT look like 2D illustration, flat art, or digital painting
+- [ ] `creature_integration.visibility` and `core_concept` use [QUALITY] from the creature archetype table — physical/atmospheric descriptor only, NOT behavioral or character-based
 
 ---
 
