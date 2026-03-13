@@ -421,7 +421,8 @@ class PromptOrchestrator:
                 "Crystal Caves — Angular crystals, gems, prismatic light refraction",
                 "Stone Monuments — Weathered stone, granite, ancient carved formations",
                 "Mist/Fog Realms — Volumetric fog, obscured visibility, moisture",
-                "Void/Space (Low) — Cosmic dust, minimal light, deep space darkness"
+                "Void/Space (Low) — Cosmic dust, minimal light, deep space darkness",
+                "Glacial Valley — Polished bedrock, glacial moraine, still cold tarns, smooth U-shaped rock walls, ancient carved silence"
             ],
             "MEDIUM": [
                 "Ocean/Underwater — Water, caustics, marine light patterns, aquatic depth",
