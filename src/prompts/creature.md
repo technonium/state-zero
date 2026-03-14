@@ -53,11 +53,12 @@ The Maha/Antar planets set the backdrop and season. They should color the creatu
 ## Selection Range
 
 Draw from these categories — mythology and hybrid archetypes are the primary range, not the exception:
+- Real animals (only if genuinely the most symbolically precise option for today's planetary combination)
 - Hindu/Vedic mythological creatures
 - World mythology (Greek, Norse, Japanese, Egyptian, Mesoamerican, Celtic, etc.)
 - Alien or invented creatures
 - Hybrid archetypes
-- Real animals (only if genuinely the most symbolically precise option for today's planetary combination)
+
 
 Real animals are the default trap — they are easy to justify but rarely the sharpest symbolic fit. Exhaust mythology and hybrid options first. The first creature that comes to mind is rarely the most precise one. Sit with the Prana and Sookshma combination before committing.
 

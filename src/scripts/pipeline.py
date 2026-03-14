@@ -815,8 +815,14 @@ class WHOOPPipeline:
     def _load_required_text_outputs(self) -> tuple[str, str, str]:
         try:
             blend_option = (self.output_dir / 'blend_option.txt').read_text(encoding='utf-8').strip()
-            creature = (self.output_dir / 'creature.txt').read_text(encoding='utf-8').strip()
-            environment = (self.output_dir / 'environment.txt').read_text(encoding='utf-8').strip()
+            creature_path = self.output_dir / 'creature_selected.txt'
+            if not creature_path.exists():
+                creature_path = self.output_dir / 'creature.txt'
+            creature = creature_path.read_text(encoding='utf-8').strip()
+            environment_path = self.output_dir / 'environment_selected.txt'
+            if not environment_path.exists():
+                environment_path = self.output_dir / 'environment.txt'
+            environment = environment_path.read_text(encoding='utf-8').strip()
             return blend_option, creature, environment
         except FileNotFoundError as e:
             raise PipelineStageError(

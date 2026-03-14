@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import json
 
+from creature_utils import split_creature_output
 from environment_utils import split_environment_output
 from utils import get_database_root, ensure_path, get_output_root
 
@@ -202,6 +203,8 @@ class CardDatabase:
                 FROM cards
                 WHERE energy_zone = ?
                   AND date < ?
+                  AND COALESCE(instagram_post_id, '') != ''
+                  AND instagram_post_id NOT LIKE 'mock_%'
                 ORDER BY date DESC
                 LIMIT ?
                 """,
@@ -214,6 +217,32 @@ class CardDatabase:
                     names.append(environment_name)
                     continue
                 parsed_name, _parsed_reason = split_environment_output(environment or "")
+                if parsed_name:
+                    names.append(parsed_name)
+            return names
+        finally:
+            conn.close()
+
+    def get_recent_creature_names(self, before_date: str, limit: int = 10) -> list[str]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            rows = cursor.execute(
+                """
+                SELECT creature
+                FROM cards
+                WHERE date < ?
+                  AND COALESCE(instagram_post_id, '') != ''
+                  AND instagram_post_id NOT LIKE 'mock_%'
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                (before_date, limit),
+            ).fetchall()
+
+            names = []
+            for (creature,) in rows:
+                parsed_name, _parsed_reason = split_creature_output(creature or "")
                 if parsed_name:
                     names.append(parsed_name)
             return names

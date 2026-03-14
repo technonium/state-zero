@@ -49,6 +49,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
                     "energy_zone": "LOW",
                     "image_path": "/tmp/image.png",
                     "video_path": "/tmp/video.mp4",
+                    "instagram_post_id": f"ig_{run_date}",
                 }
             )
 
@@ -116,6 +117,50 @@ class EnvironmentSelectionTests(unittest.TestCase):
         self.assertEqual(result, "Glacial Valley")
         self.assertEqual(debug_payload["final_selection_source"], "repaired")
         self.assertEqual(debug_payload["final_name"], "Glacial Valley")
+
+    def test_recent_environment_names_exclude_mock_posts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                db = CardDatabase()
+                db.insert_card(
+                    {
+                        "date": "2026-03-08",
+                        "title": "Real Environment Title",
+                        "scene_description": "scene",
+                        "environment": "Frozen/Ice — stored reason",
+                        "environment_name": "Frozen/Ice",
+                        "environment_reason": "stored reason",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "instagram_post_id": "ig_real_123",
+                    }
+                )
+                db.insert_card(
+                    {
+                        "date": "2026-03-07",
+                        "title": "Mock Environment Title",
+                        "scene_description": "scene",
+                        "environment": "Crystal Caves — stored reason",
+                        "environment_name": "Crystal Caves",
+                        "environment_reason": "stored reason",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "instagram_post_id": "mock_ig_12345",
+                    }
+                )
+
+                names = db.get_recent_environment_names("LOW", "2026-03-09", limit=5)
+
+        self.assertEqual(names, ["Frozen/Ice"])
 
     def test_extract_valid_environment_name_prefers_explicit_choice_cue(self):
         repaired_name, status = extract_valid_environment_name(

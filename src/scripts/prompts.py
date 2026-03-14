@@ -6,6 +6,7 @@ import requests
 from pathlib import Path
 from dotenv import load_dotenv
 from database_manager import CardDatabase
+from creature_utils import format_creature_output, normalize_creature_name, split_creature_output
 from environment_utils import (
     extract_valid_environment_name,
     format_environment_output,
@@ -437,6 +438,8 @@ class PromptOrchestrator:
         dasha = daily_data.get('dasha', {})
         natal = daily_data.get('natal_context', {})
         planets_detail = dasha.get('planets_detail', {})
+        run_date = daily_data.get('date') or os.getenv('PIPELINE_DATE')
+        recent_creature_context = self._resolve_recent_creatures(run_date)
 
         placeholders = {
             'natal_chart': self.format_natal_chart(natal),
@@ -446,13 +449,177 @@ class PromptOrchestrator:
             'pratyantar_planet': self._format_planet_detail(dasha.get('pratyantar'), planets_detail),
             'sookshma_planet': self._format_planet_detail(dasha.get('sookshma'), planets_detail),
             'prana_planet': self._format_planet_detail(dasha.get('prana'), planets_detail),
+            'recent_creatures': recent_creature_context['recent_creatures_prompt'],
         }
 
         filled_prompt = self.fill_template(template, placeholders)
         self.save_output('last_prompt_creature.txt', filled_prompt)
-        creature_output = self.call_llm(filled_prompt)
-        self.save_output('creature.txt', creature_output)
-        return creature_output
+        retry_prompt_path = self.output_dir / 'last_prompt_creature_retry.txt'
+        resolved_creature_path = self.output_dir / 'creature_selected.txt'
+        first_raw_output = self.call_llm(filled_prompt)
+        first_name, first_reason = split_creature_output(first_raw_output)
+        first_norm = normalize_creature_name(first_name)
+        first_canonical_output = format_creature_output(first_name, first_reason) if first_name else ""
+
+        banned_recent_names = recent_creature_context['banned_recent_names']
+        retry_triggered = False
+        retry_raw_output = ""
+        retry_name = ""
+        retry_reason = ""
+        retry_canonical_output = ""
+        final_output = first_canonical_output or first_raw_output
+        final_name = first_name
+        final_reason = first_reason
+        retained_parseable_source = 'first'
+        should_retry = not first_norm or (
+            recent_creature_context['db_lookup_status'] == 'ok'
+            and first_norm in banned_recent_names
+        )
+
+        if should_retry:
+            retry_triggered = True
+            retry_prompt = self._build_creature_retry_prompt(
+                filled_prompt,
+                first_raw_output,
+                first_name,
+                recent_creature_context['recent_creature_names'],
+                is_repeat=bool(first_norm and first_norm in banned_recent_names),
+            )
+            self.save_output('last_prompt_creature_retry.txt', retry_prompt)
+            retry_raw_output = self.call_llm(retry_prompt)
+            retry_name, retry_reason = split_creature_output(retry_raw_output)
+            retry_norm = normalize_creature_name(retry_name)
+            retry_canonical_output = format_creature_output(retry_name, retry_reason) if retry_name else ""
+
+            if retry_norm and retry_norm not in banned_recent_names:
+                final_output = retry_canonical_output
+                final_name = retry_name
+                final_reason = retry_reason
+                retained_parseable_source = 'retry'
+                final_selection_source = 'corrective_retry_valid'
+            elif retry_name:
+                final_output = retry_canonical_output
+                final_name = retry_name
+                final_reason = retry_reason
+                retained_parseable_source = 'retry'
+                final_selection_source = 'repeat_after_retry_warning'
+            elif first_name:
+                final_output = first_canonical_output
+                final_name = first_name
+                final_reason = first_reason
+                retained_parseable_source = 'first'
+                final_selection_source = 'repeat_after_retry_warning'
+            else:
+                raise RuntimeError("Creature selection failed: both attempts were unparseable.")
+        else:
+            if retry_prompt_path.exists():
+                retry_prompt_path.unlink()
+            if recent_creature_context['db_lookup_status'] != 'ok':
+                final_selection_source = 'history_lookup_failed_no_guard'
+            else:
+                final_selection_source = 'llm_valid'
+
+        self.save_output('creature.txt', final_output)
+        self.save_output('creature_selected.txt', final_output)
+        self.save_json_output(
+            'creature_selection_debug.json',
+            {
+                'run_date': run_date,
+                'db_lookup_status': recent_creature_context['db_lookup_status'],
+                'db_lookup_error': recent_creature_context['db_lookup_error'],
+                'raw_recent_history': recent_creature_context['raw_recent_history'],
+                'normalized_banned_names': recent_creature_context['normalized_banned_names'],
+                'recent_creatures_prompt_names': recent_creature_context['recent_creature_names'],
+                'first_raw_output': first_raw_output,
+                'first_parsed_name': first_name,
+                'first_parsed_reason': first_reason,
+                'first_canonical_output': first_canonical_output,
+                'retry_triggered': retry_triggered,
+                'retry_raw_output': retry_raw_output,
+                'retry_parsed_name': retry_name,
+                'retry_parsed_reason': retry_reason,
+                'retry_canonical_output': retry_canonical_output,
+                'final_name': final_name,
+                'final_reason': final_reason,
+                'final_output': final_output,
+                'final_selection_source': final_selection_source,
+                'retained_parseable_source': retained_parseable_source,
+            },
+        )
+        return final_output
+
+    def _resolve_recent_creatures(self, run_date: str | None) -> dict:
+        raw_recent_history = []
+        db_lookup_status = 'ok'
+        db_lookup_error = None
+
+        if run_date:
+            try:
+                raw_recent_history = CardDatabase().get_recent_creature_names(run_date, limit=10)
+            except Exception as e:
+                db_lookup_status = 'failed'
+                db_lookup_error = str(e)
+                print(f"⚠️  Creature history lookup failed: {e}")
+        else:
+            db_lookup_status = 'missing_run_date'
+            db_lookup_error = 'Missing run date; creature recency guard disabled.'
+
+        recent_creature_names = []
+        normalized_banned_names = []
+        banned_recent_names = set()
+
+        if db_lookup_status == 'ok':
+            for name in raw_recent_history:
+                normalized_name = normalize_creature_name(name)
+                if not normalized_name or normalized_name in banned_recent_names:
+                    continue
+                banned_recent_names.add(normalized_name)
+                normalized_banned_names.append(normalized_name)
+                recent_creature_names.append(name)
+
+        recent_creatures_prompt = "\n".join(f"- {name}" for name in recent_creature_names)
+        if not recent_creatures_prompt:
+            recent_creatures_prompt = "None — no restriction."
+
+        return {
+            'db_lookup_status': db_lookup_status,
+            'db_lookup_error': db_lookup_error,
+            'raw_recent_history': raw_recent_history,
+            'normalized_banned_names': normalized_banned_names,
+            'recent_creature_names': recent_creature_names,
+            'recent_creatures_prompt': recent_creatures_prompt,
+            'banned_recent_names': banned_recent_names,
+        }
+
+    def _build_creature_retry_prompt(
+        self,
+        filled_prompt: str,
+        previous_output: str,
+        previous_name: str,
+        recent_creature_names: list[str],
+        *,
+        is_repeat: bool,
+    ) -> str:
+        if is_repeat and previous_name:
+            retry_reason = (
+                f'Your previous choice "{previous_name}" is invalid because it appears in the recent-creatures exclusion list.'
+            )
+        else:
+            retry_reason = 'Your previous response could not be parsed into a valid creature name.'
+
+        recent_names_text = ", ".join(recent_creature_names) if recent_creature_names else "None"
+        return (
+            f"{filled_prompt}\n\n"
+            "---\n\n"
+            "## Correction\n\n"
+            f"{retry_reason}\n"
+            f"Recent banned creatures: {recent_names_text}\n"
+            "Return one different creature in the exact required format.\n"
+            "Do not repeat any banned creature.\n"
+            "Do not explain the correction.\n\n"
+            "Previous response:\n"
+            f"{previous_output.strip()}"
+        )
 
     def get_environment_entries(self, energy_zone: str) -> list[str]:
         return list(ENVIRONMENT_OPTIONS.get(energy_zone, ENVIRONMENT_OPTIONS["MEDIUM"]))
