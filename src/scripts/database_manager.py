@@ -249,6 +249,31 @@ class CardDatabase:
         finally:
             conn.close()
 
+    def get_recent_titles(self, before_date: str, limit: int = 10) -> list[str]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            rows = cursor.execute(
+                """
+                SELECT title
+                FROM cards
+                WHERE date < ?
+                  AND COALESCE(instagram_post_id, '') != ''
+                  AND instagram_post_id NOT LIKE 'mock_%'
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                (before_date, limit),
+            ).fetchall()
+
+            titles = []
+            for (title,) in rows:
+                if title:
+                    titles.append(title)
+            return titles
+        finally:
+            conn.close()
+
     def has_card_for_date(self, run_date: str) -> bool:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()

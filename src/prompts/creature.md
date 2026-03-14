@@ -64,6 +64,14 @@ Real animals are the default trap — they are easy to justify but rarely the sh
 
 ---
 
+## Recent Creatures (Do Not Repeat)
+
+{recent_creatures}
+
+Select a creature that has not appeared in this list. If the list shows "None", no restriction applies.
+
+---
+
 ## Instructions
 
 - Select ONE creature archetype

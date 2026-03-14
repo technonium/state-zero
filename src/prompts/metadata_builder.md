@@ -15,6 +15,14 @@ Generate two fields from today's data. Return raw JSON only.
 
 ---
 
+## Recent Titles (Do Not Repeat)
+
+{recent_titles}
+
+The generated title must not exactly match any title in this list. If the list shows "None", no restriction applies.
+
+---
+
 ## TITLE
 
 A codename for this landscape. Sounds like a place that exists, not a phrase or a feeling.
