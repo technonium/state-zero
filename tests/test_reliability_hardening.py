@@ -632,6 +632,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                         "energy_zone": "LOW",
                         "image_path": "/tmp/first.png",
                         "video_path": "/tmp/first.mp4",
+                        "instagram_post_id": "ig_real_123",
                     }
                 )
 
