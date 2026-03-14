@@ -262,6 +262,7 @@ Critical: Pick based on theme, not creature
 | Stone Monuments | Weathered stone, granite |
 | Mist/Fog Realms | Volumetric fog |
 | Void/Space (Low) | Cosmic dust, minimal light |
+| Glacial Valley | Polished bedrock, glacial moraine |
 
 ---
 

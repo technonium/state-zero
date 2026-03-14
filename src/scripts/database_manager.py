@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import json
 
+from environment_utils import split_environment_output
 from utils import get_database_root, ensure_path, get_output_root
 
 class CardDatabase:
@@ -23,6 +24,8 @@ class CardDatabase:
                 title TEXT NOT NULL,
                 scene_description TEXT NOT NULL,
                 environment TEXT NOT NULL,
+                environment_name TEXT,
+                environment_reason TEXT,
                 creature TEXT NOT NULL,
                 blend_option TEXT NOT NULL,
                 energy_zone TEXT NOT NULL,
@@ -52,6 +55,16 @@ class CardDatabase:
             # Column doesn't exist, add it
             cursor.execute("ALTER TABLE cards ADD COLUMN instagram_permalink TEXT")
 
+        try:
+            cursor.execute("SELECT environment_name FROM cards LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE cards ADD COLUMN environment_name TEXT")
+
+        try:
+            cursor.execute("SELECT environment_reason FROM cards LIMIT 1")
+        except sqlite3.OperationalError:
+            cursor.execute("ALTER TABLE cards ADD COLUMN environment_reason TEXT")
+
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS fallback_posts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,8 +89,36 @@ class CardDatabase:
         except sqlite3.OperationalError:
             cursor.execute("ALTER TABLE fallback_posts ADD COLUMN publish_mode TEXT")
 
+        self._backfill_environment_fields(cursor)
         conn.commit()
         conn.close()
+
+    def _backfill_environment_fields(self, cursor):
+        rows = cursor.execute(
+            """
+            SELECT id, environment, environment_name, environment_reason
+            FROM cards
+            WHERE environment IS NOT NULL
+              AND (environment_name IS NULL OR environment_reason IS NULL)
+            """
+        ).fetchall()
+
+        updates = []
+        for card_id, environment, environment_name, environment_reason in rows:
+            parsed_name, parsed_reason = split_environment_output(environment or "")
+            next_name = environment_name if environment_name is not None else (parsed_name or None)
+            next_reason = environment_reason if environment_reason is not None else (parsed_reason or None)
+            updates.append((next_name, next_reason, card_id))
+
+        if updates:
+            cursor.executemany(
+                """
+                UPDATE cards
+                SET environment_name = ?, environment_reason = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
 
     def insert_card(self, card_data: dict):
         """Insert or update a card record for a run date."""
@@ -87,16 +128,19 @@ class CardDatabase:
         try:
             cursor.execute("""
                 INSERT INTO cards (
-                    date, title, scene_description, environment, creature, blend_option,
+                    date, title, scene_description, environment, environment_name,
+                    environment_reason, creature, blend_option,
                     energy_zone, recovery_pct, sleep_score_pct, strain, sleep_hours,
                     depth_level, dasha_maha, dasha_antar, dasha_pratyantar,
                     dasha_sookshma, dasha_prana, image_path, video_path,
                     image_prompt_json, instagram_post_id, instagram_permalink
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(date) DO UPDATE SET
                     title=excluded.title,
                     scene_description=excluded.scene_description,
                     environment=excluded.environment,
+                    environment_name=excluded.environment_name,
+                    environment_reason=excluded.environment_reason,
                     creature=excluded.creature,
                     blend_option=excluded.blend_option,
                     energy_zone=excluded.energy_zone,
@@ -120,6 +164,8 @@ class CardDatabase:
                 card_data.get('title', 'Unknown Title'),
                 card_data.get('scene_description', 'No description'),
                 card_data.get('environment', 'Unknown'),
+                card_data.get('environment_name'),
+                card_data.get('environment_reason'),
                 card_data.get('creature', 'Unknown'),
                 card_data.get('blend_option', 'Option A'),
                 card_data.get('energy_zone', 'Unknown'),
@@ -143,6 +189,34 @@ class CardDatabase:
             print("✅ Successfully upserted card into database")
         except sqlite3.IntegrityError as e:
             print(f"❌ Failed to upsert card: {e}")
+        finally:
+            conn.close()
+
+    def get_recent_environment_names(self, energy_zone: str, before_date: str, limit: int = 5) -> list[str]:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            rows = cursor.execute(
+                """
+                SELECT environment_name, environment
+                FROM cards
+                WHERE energy_zone = ?
+                  AND date < ?
+                ORDER BY date DESC
+                LIMIT ?
+                """,
+                (energy_zone, before_date, limit),
+            ).fetchall()
+
+            names = []
+            for environment_name, environment in rows:
+                if environment_name:
+                    names.append(environment_name)
+                    continue
+                parsed_name, _parsed_reason = split_environment_output(environment or "")
+                if parsed_name:
+                    names.append(parsed_name)
+            return names
         finally:
             conn.close()
 

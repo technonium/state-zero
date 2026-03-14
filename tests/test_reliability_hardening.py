@@ -438,6 +438,8 @@ class ReliabilityHardeningTests(unittest.TestCase):
                     "title": "ERROR 404",
                     "scene_description": "fallback scene",
                     "environment": "environment",
+                    "environment_name": "environment",
+                    "environment_reason": None,
                     "creature": "creature",
                     "blend_option": "blend",
                     "energy_zone": None,
@@ -458,6 +460,40 @@ class ReliabilityHardeningTests(unittest.TestCase):
                     "instagram_permalink": "https://instagram.example/p/123",
                 },
             )
+
+    def test_step_15_archive_prefers_resolved_environment_for_normalized_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.post_to_instagram = False
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+            final_png = pipeline.output_dir / "card_final.png"
+            final_mp4 = pipeline.output_dir / "card_final.mp4"
+            final_png.write_bytes(b"png")
+            final_mp4.write_bytes(b"mp4")
+            (pipeline.output_dir / "environment_selected.txt").write_text(
+                "Glacial Valley — Resolved selection",
+                encoding="utf-8",
+            )
+
+            WHOOPPipeline.step_15_archive(
+                pipeline,
+                daily_data={"date": "2026-03-09", "dasha": {}, "sleep_hours": 8.0},
+                metadata={"title": "ERROR 404", "scene_description": "fallback scene"},
+                final_png=final_png,
+                final_mp4=final_mp4,
+                image_json={"prompt": "x"},
+                post_id="123",
+                instagram_permalink="https://instagram.example/p/123",
+                blend_option="blend",
+                creature="creature",
+                environment="Totally Invalid Realm",
+            )
+
+            payload = json.loads((pipeline.output_dir / "last_archived_payload.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["environment"], "Totally Invalid Realm")
+            self.assertEqual(payload["environment_name"], "Glacial Valley")
+            self.assertEqual(payload["environment_reason"], "Resolved selection")
 
     def test_lookups_write_json_atomic_fsyncs_and_round_trips_payload(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -561,7 +597,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 row = conn.execute(
                     """
                     SELECT title, scene_description, image_path, video_path,
-                           instagram_post_id, instagram_permalink
+                           instagram_post_id, instagram_permalink, environment_name, environment_reason
                     FROM cards
                     WHERE date = ?
                     """,
@@ -578,8 +614,35 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 "/tmp/second.mp4",
                 "456",
                 "https://instagram.example/p/456",
+                None,
+                None,
             ),
         )
+
+    def test_recent_environment_names_fall_back_to_parsing_raw_environment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                db = CardDatabase()
+                db.insert_card(
+                    {
+                        "date": "2026-03-08",
+                        "title": "First Title",
+                        "scene_description": "scene",
+                        "environment": "Stone Monuments — weathered silence",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/first.png",
+                        "video_path": "/tmp/first.mp4",
+                    }
+                )
+
+                conn = sqlite3.connect(db.db_path)
+                conn.execute("UPDATE cards SET environment_name = NULL, environment_reason = NULL WHERE date = ?", ("2026-03-08",))
+                conn.commit()
+                conn.close()
+
+                recent_names = db.get_recent_environment_names("LOW", "2026-03-09", limit=5)
+
+        self.assertEqual(recent_names, ["Stone Monuments"])
 
     def test_mark_posted_after_publish_records_recovery_metadata(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -45,6 +45,7 @@ Based on the environment type, you MUST use the corresponding materials for `ren
 - **Stone Monuments:** Weathered stone, granite, ancient carved formations
 - **Mist/Fog Realms:** Volumetric fog, obscured visibility, moisture
 - **Void/Space (Low):** Cosmic dust, minimal light, deep space darkness
+- **Glacial Valley:** Polished bedrock, glacial moraine, still cold tarns, smooth U-shaped rock walls, ancient carved silence
 
 ### MEDIUM Energy Environments:
 - **Ocean/Underwater:** Water, caustics, marine light patterns, aquatic depth

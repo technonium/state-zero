@@ -55,6 +55,7 @@ Use the single most characteristic motion for this environment. One motion acros
 - **Crystal Caves** — internal light shifts and refracts within crystal mass; a slow prismatic color rotation moves across formation surfaces
 - **Crystalline (Active)** — internal light refracts and shifts slightly within formation mass; geometry holds still
 - **Frozen/Ice** — near absolute stillness; frost crystallizes at one edge; light shifts slowly across ice planes
+- **Glacial Valley** — near absolute stillness; a thin mist drifts slowly across the valley floor; light shifts faintly across polished stone
 - **Ocean/Underwater** — one slow caustic ripple crosses a formation surface and fades
 - **Forest/Jungle** — canopy breathes once; a single patch of filtered light shifts across the ground
 - **Cave Systems** — thin air current stirs fine particles near the base; stone formations hold in absolute stillness

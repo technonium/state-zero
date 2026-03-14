@@ -5,12 +5,48 @@ import argparse
 import requests
 from pathlib import Path
 from dotenv import load_dotenv
+from database_manager import CardDatabase
+from environment_utils import (
+    extract_valid_environment_name,
+    format_environment_output,
+    select_least_recent_candidate,
+    split_environment_output,
+    normalize_environment_name,
+)
 from utils import get_project_root, get_output_root
 
 load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
 
 # Import OpenRouter client for LLM calls
 from openrouter_client import create_llm_client, OpenRouterError, LLMProviderError
+
+
+ENVIRONMENT_OPTIONS = {
+    "LOW": [
+        "Frozen/Ice — Transparent ice, frost, frozen atmospheric effects",
+        "Crystal Caves — Angular crystals, gems, prismatic light refraction",
+        "Stone Monuments — Weathered stone, granite, ancient carved formations",
+        "Mist/Fog Realms — Volumetric fog, obscured visibility, moisture",
+        "Void/Space (Low) — Cosmic dust, minimal light, deep space darkness",
+        "Glacial Valley — Polished bedrock, glacial moraine, still cold tarns, smooth U-shaped rock walls, ancient carved silence",
+    ],
+    "MEDIUM": [
+        "Ocean/Underwater — Water, caustics, marine light patterns, aquatic depth",
+        "Forest/Jungle — Bark, leaves, roots, organic growth, green filtered light",
+        "Wind/Sky Realms — Clouds, air currents, atmospheric layers, open sky",
+        "Cave Systems — Limestone, dripping water, stalactites, subterranean chambers",
+        "Desert (Calm) — Sand, sandstone, dunes, warm earth tones",
+        "Bioluminescent — Organic tissue, natural glow, living light sources",
+    ],
+    "HIGH": [
+        "Volcanic — Volcanic rock, magma, lava flows, intense heat glow",
+        "Lightning/Storm — Energy arcs, charged atmosphere, electrical discharge",
+        "Plasma/Nebula — glowing plasma, cosmic gas, stellar nursery effects",
+        "Crystalline (Active) — Growing crystals, sharp formations, intense light refraction",
+        "Desert (Intense) — Cracked earth, heat distortion, scorched terrain",
+        "Fire Realms — Fire, smoke, ash, ember glow, combustion",
+    ],
+}
 
 class PromptOrchestrator:
     def __init__(self, llm_api_key: str, openrouter_api_key: str = None):
@@ -323,6 +359,11 @@ class PromptOrchestrator:
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(content)
 
+    def save_json_output(self, filename: str, payload: dict):
+        output_path = self.output_dir / filename
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
     def format_natal_chart(self, natal_context: dict) -> str:
         PLANET_ORDER = ['Sun', 'Moon', 'Mars', 'Mercury', 'Jupiter', 'Venus', 'Saturn', 'Rahu', 'Ketu']
         ascendant    = natal_context.get('ascendant', 'Unknown')
@@ -413,42 +454,86 @@ class PromptOrchestrator:
         self.save_output('creature.txt', creature_output)
         return creature_output
 
-    def get_environment_options(self, energy_zone: str) -> str:
+    def get_environment_entries(self, energy_zone: str) -> list[str]:
+        return list(ENVIRONMENT_OPTIONS.get(energy_zone, ENVIRONMENT_OPTIONS["MEDIUM"]))
+
+    def get_environment_options(self, energy_zone: str, options: list[str] | None = None) -> str:
         """Build environment options list based on energy zone"""
-        ENVIRONMENT_OPTIONS = {
-            "LOW": [
-                "Frozen/Ice — Transparent ice, frost, frozen atmospheric effects",
-                "Crystal Caves — Angular crystals, gems, prismatic light refraction",
-                "Stone Monuments — Weathered stone, granite, ancient carved formations",
-                "Mist/Fog Realms — Volumetric fog, obscured visibility, moisture",
-                "Void/Space (Low) — Cosmic dust, minimal light, deep space darkness",
-                "Glacial Valley — Polished bedrock, glacial moraine, still cold tarns, smooth U-shaped rock walls, ancient carved silence"
-            ],
-            "MEDIUM": [
-                "Ocean/Underwater — Water, caustics, marine light patterns, aquatic depth",
-                "Forest/Jungle — Bark, leaves, roots, organic growth, green filtered light",
-                "Wind/Sky Realms — Clouds, air currents, atmospheric layers, open sky",
-                "Cave Systems — Limestone, dripping water, stalactites, subterranean chambers",
-                "Desert (Calm) — Sand, sandstone, dunes, warm earth tones",
-                "Bioluminescent — Organic tissue, natural glow, living light sources"
-            ],
-            "HIGH": [
-                "Volcanic — Volcanic rock, magma, lava flows, intense heat glow",
-                "Lightning/Storm — Energy arcs, charged atmosphere, electrical discharge",
-                "Plasma/Nebula — glowing plasma, cosmic gas, stellar nursery effects",
-                "Crystalline (Active) — Growing crystals, sharp formations, intense light refraction",
-                "Desert (Intense) — Cracked earth, heat distortion, scorched terrain",
-                "Fire Realms — Fire, smoke, ash, ember glow, combustion"
-            ]
+        selected_options = list(options) if options is not None else self.get_environment_entries(energy_zone)
+        return "\n".join([f"- {opt}" for opt in selected_options])
+
+    def _resolve_environment_candidates(self, energy_zone: str, run_date: str | None) -> dict:
+        full_options = self.get_environment_entries(energy_zone)
+        recent_names = []
+        db_lookup_status = 'ok'
+        db_lookup_error = None
+        soft_fallback = False
+        candidate_source = 'filtered_candidates'
+
+        if run_date:
+            try:
+                recent_names = CardDatabase().get_recent_environment_names(energy_zone, run_date, limit=5)
+            except Exception as e:
+                db_lookup_status = 'failed'
+                db_lookup_error = str(e)
+                candidate_source = 'history_lookup_failed_full_catalog'
+                print(f"⚠️  Environment history lookup failed: {e}")
+        else:
+            db_lookup_status = 'missing_run_date'
+            candidate_source = 'history_lookup_failed_full_catalog'
+            db_lookup_error = 'Missing run date; using full environment list.'
+
+        if db_lookup_status == 'ok':
+            recent_lookup = {normalize_environment_name(name) for name in recent_names if normalize_environment_name(name)}
+            filtered_options = []
+            excluded_names = []
+
+            for option in full_options:
+                option_name, _option_reason = split_environment_output(option)
+                if normalize_environment_name(option_name) in recent_lookup:
+                    excluded_names.append(option_name)
+                else:
+                    filtered_options.append(option)
+
+            if filtered_options:
+                return {
+                    'full_options': full_options,
+                    'candidate_options': filtered_options,
+                    'recent_names': recent_names,
+                    'excluded_names': excluded_names,
+                    'db_lookup_status': db_lookup_status,
+                    'db_lookup_error': db_lookup_error,
+                    'soft_fallback': soft_fallback,
+                    'candidate_source': candidate_source,
+                }
+
+            soft_fallback = True
+            candidate_source = 'soft_fallback_full_catalog'
+            print(f"⚠️  Environment candidate list exhausted for {energy_zone}; using full zone catalog.")
+            excluded_names = [split_environment_output(option)[0] for option in full_options]
+        else:
+            excluded_names = []
+
+        return {
+            'full_options': full_options,
+            'candidate_options': full_options,
+            'recent_names': recent_names,
+            'excluded_names': excluded_names,
+            'db_lookup_status': db_lookup_status,
+            'db_lookup_error': db_lookup_error,
+            'soft_fallback': soft_fallback,
+            'candidate_source': candidate_source,
         }
-        options = ENVIRONMENT_OPTIONS.get(energy_zone, ENVIRONMENT_OPTIONS["MEDIUM"])
-        return "\n".join([f"- {opt}" for opt in options])
 
     def generate_environment(self, daily_data: dict, interpretation: str) -> str:
         """Generate environment type (energy-constrained, independent of creature)"""
         template = self.load_template('environment')
         energy_zone = daily_data.get('energy_zone', 'MEDIUM')
-        environment_options = self.get_environment_options(energy_zone)
+        run_date = daily_data.get('date') or os.getenv('PIPELINE_DATE')
+        candidate_context = self._resolve_environment_candidates(energy_zone, run_date)
+        candidate_options = candidate_context['candidate_options']
+        candidate_names = [split_environment_output(option)[0] for option in candidate_options]
+        environment_options = self.get_environment_options(energy_zone, candidate_options)
 
         placeholders = {
             'energy_zone': energy_zone,
@@ -458,9 +543,58 @@ class PromptOrchestrator:
 
         filled_prompt = self.fill_template(template, placeholders)
         self.save_output('last_prompt_environment.txt', filled_prompt)
-        environment_output = self.call_llm(filled_prompt)
-        self.save_output('environment.txt', environment_output)
-        return environment_output
+        raw_environment_output = self.call_llm(filled_prompt)
+        self.save_output('environment.txt', raw_environment_output)
+
+        parsed_name, parsed_reason = split_environment_output(raw_environment_output)
+        allowed_lookup = {
+            normalize_environment_name(name): name
+            for name in candidate_names
+            if normalize_environment_name(name)
+        }
+        parsed_norm = normalize_environment_name(parsed_name)
+        final_selection_source = 'llm_valid'
+        repair_status = 'not_needed'
+
+        if parsed_norm in allowed_lookup:
+            final_name = allowed_lookup[parsed_norm]
+            final_reason = parsed_reason
+        else:
+            repaired_name, repair_status = extract_valid_environment_name(raw_environment_output, candidate_names)
+            if repaired_name:
+                final_name = repaired_name
+                final_reason = parsed_reason
+                final_selection_source = 'repaired'
+            else:
+                final_name = select_least_recent_candidate(candidate_names, candidate_context['recent_names'])
+                final_reason = 'Selected deterministically after invalid environment output.'
+                final_selection_source = 'deterministic_fallback'
+
+        final_environment_output = format_environment_output(final_name, final_reason)
+        self.save_output('environment_selected.txt', final_environment_output)
+        self.save_json_output(
+            'environment_selection_debug.json',
+            {
+                'run_date': run_date,
+                'energy_zone': energy_zone,
+                'db_lookup_status': candidate_context['db_lookup_status'],
+                'db_lookup_error': candidate_context['db_lookup_error'],
+                'recent_same_zone_history': candidate_context['recent_names'],
+                'excluded_names': candidate_context['excluded_names'],
+                'candidate_names': candidate_names,
+                'candidate_source': candidate_context['candidate_source'],
+                'soft_fallback': candidate_context['soft_fallback'],
+                'raw_output': raw_environment_output,
+                'parsed_name': parsed_name,
+                'parsed_reason': parsed_reason,
+                'repair_status': repair_status,
+                'final_selection_source': final_selection_source,
+                'final_name': final_name,
+                'final_reason': final_reason,
+                'final_output': final_environment_output,
+            },
+        )
+        return final_environment_output
 
     def build_image_json(self, daily_data: dict, interpretation: str, creature: str, environment: str) -> dict:
         """Build complete image generation JSON with blend option selection"""
@@ -678,7 +812,10 @@ def main():
     else:
         if args.step == 'video':
             try:
-                with open(orchestrator.output_dir / 'environment.txt', 'r') as f:
+                environment_path = orchestrator.output_dir / 'environment_selected.txt'
+                if not environment_path.exists():
+                    environment_path = orchestrator.output_dir / 'environment.txt'
+                with open(environment_path, 'r') as f:
                     environment = f.read().strip()
                 with open(orchestrator.output_dir / 'blend_option.txt', 'r') as f:
                     blend_option = f.read().strip()

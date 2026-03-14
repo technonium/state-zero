@@ -25,7 +25,9 @@ A codename for this landscape. Sounds like a place that exists, not a phrase or 
 - Must NOT be a literal keyword translation — find what lies beneath it
 - Burned words — never use: VOID, WEIGHT, DRIFT, DEPTH, HOLLOW, STATIC, EDGE, HOLD, RUSH, GRIND
 
-Good: ASH MERIDIAN, AMBER DUNE, IRON MIST, STORM BONE, CINDER PLAIN, COLD LATTICE, EMBER SHELF, PALE TRANSIT, DUST MERIDIAN, CARBON VEIL
+Good: ASH MERIDIAN, AMBER DUNE, IRON MIST, STORM BONE, CINDER PLAIN, COLD LATTICE, EMBER SHELF, PALE TRANSIT, CARBON VEIL, FERRIC SHOAL, CHALK BASIN, SLATE REACH, OCHRE BLUFF, QUARTZ SCARP, RIME PLATEAU, CLAY MARGIN, LOAM PASSAGE, SILT TERRACE, SHALE CORONA
+
+These are style and pattern references only — you are not required to use any of these words. If the inputs suggest something entirely new, follow that.
 
 Bad: LOW GRIND (gym phrase), NO RUSH (casual phrase), LIVE EDGE (product name), THICK FOG (literal keyword), VOID WEIGHT (burned words)
 
