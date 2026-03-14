@@ -52,14 +52,14 @@ The Maha/Antar planets set the backdrop and season. They should color the creatu
 
 ## Selection Range
 
-Draw from ANY of these categories — do not default to Vedic:
-- Real animals (including insects, deep-sea, prehistoric)
+Draw from these categories — mythology and hybrid archetypes are the primary range, not the exception:
 - Hindu/Vedic mythological creatures
 - World mythology (Greek, Norse, Japanese, Egyptian, Mesoamerican, Celtic, etc.)
 - Alien or invented creatures
 - Hybrid archetypes
+- Real animals (only if genuinely the most symbolically precise option for today's planetary combination)
 
-Variety is expected. If today's Prana planet is different from yesterday's, the creature should reflect that shift — even if Maha stays Venus for years.
+Real animals are the default trap — they are easy to justify but rarely the sharpest symbolic fit. Exhaust mythology and hybrid options first. The first creature that comes to mind is rarely the most precise one. Sit with the Prana and Sookshma combination before committing.
 
 ---
 
@@ -78,7 +78,7 @@ Variety is expected. If today's Prana planet is different from yesterday's, the 
 
 [Creature Name] — [one sentence explaining why this creature embodies TODAY's energy, referencing which planets drove the choice]
 
-Output only this, nothing else.
+Output only this, nothing else. Do not explain rejected creatures or show your reasoning.
 
 **Example:**
-"Serpent — shedding skin embodies the detachment theme of Ketu Prana, patient movement reflects Saturn Sookshma's disciplined pressure, silent intelligence mirrors the intuitive career awareness of Mercury in the 10th."
+"Narasimha — the threshold-crossing form crossing between realms embodies Venus Prana's disruption of comfort, the lion-human hybrid reflects Mercury Sookshma's dual nature operating outside its own rules, the liminal strike mirrors the 8th house activation."

@@ -29,6 +29,7 @@ from utils import (
     ensure_path,
     get_pipeline_run_date_str,
 )
+from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
 from daily_run_state import DailyRunStateManager, OwnershipLostError
 
@@ -2191,11 +2192,18 @@ class WHOOPPipeline:
         environment: str = None,
     ):
         self._set_heartbeat_context(status='STARTING', note='Archiving payload and inserting into database.', pulse=True)
+        resolved_environment_path = self.output_dir / 'environment_selected.txt'
+        resolved_environment_text = environment
+        if resolved_environment_path.exists():
+            resolved_environment_text = resolved_environment_path.read_text(encoding='utf-8').strip()
+        environment_name, environment_reason = split_environment_output(resolved_environment_text or "")
         archive_payload = {
             'date': daily_data.get('date'),
             'title': metadata.get('title'),
             'scene_description': metadata.get('scene_description'),
             'environment': environment,
+            'environment_name': environment_name or None,
+            'environment_reason': environment_reason or None,
             'creature': creature,
             'blend_option': blend_option,
             'energy_zone': daily_data.get('energy_zone'),
