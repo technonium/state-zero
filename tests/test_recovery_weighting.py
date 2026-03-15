@@ -41,6 +41,12 @@ class RecoveryPromptRegressionTests(unittest.TestCase):
             "If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched.",
             content,
         )
+        self.assertIn("These are four equal options — not a ranked list", content)
+        self.assertIn("Zoom is not the default", content)
+        self.assertIn("never through luminance decay over time", content)
+        self.assertIn("The last frame must be at least as readable as the first", content)
+        self.assertIn("static hold, no movement, fixed axis", content)
+        self.assertIn("For ABYSS, the camera must not be aimed upward toward any bright zone.", content)
 
 
 class VideoPromptWiringTests(unittest.TestCase):

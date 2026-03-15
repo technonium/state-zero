@@ -1,5 +1,10 @@
 # Astrology YAML Generator
 
+Operator note:
+- This is public code for a private-data workflow.
+- By default it targets the detected private `astrology/` directory under `STATE_ZERO_PRIVATE_ROOT`.
+- It is meant to generate `natal.yaml` and `dasha_periods.yaml` outside the repository tree.
+
 This project now includes one public command that can generate the two private astrology lookup files used by State Zero:
 
 - `natal.yaml`

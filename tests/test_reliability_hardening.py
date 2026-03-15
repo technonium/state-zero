@@ -15,14 +15,16 @@ from unittest.mock import patch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = PROJECT_ROOT / "src/scripts"
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 import lookups as lookups_module
 from daily_run_state import DailyRunStateManager
-from instagram_token_healthcheck import _format_expiry_window, _load_state, _save_state
 from instagram_token_manager import InstagramTokenManager
 from database_manager import CardDatabase
+from ops.instagram_token_healthcheck import _format_expiry_window, _load_state, _save_state
 from pipeline import WHOOPPipeline
 
 
@@ -216,7 +218,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 "consecutive_refresh_failures": 1,
             }
 
-            with patch("instagram_token_healthcheck.os.fsync") as fsync_mock:
+            with patch("ops.instagram_token_healthcheck.os.fsync") as fsync_mock:
                 _save_state(state_path, state)
 
             fsync_mock.assert_called_once()

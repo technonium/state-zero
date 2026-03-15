@@ -28,7 +28,7 @@ Animate the scene. The image is already set — the video just brings it to life
 
 You decide how the camera moves. There is no default. Read the environment, the depth level, the energy zone, the recovery zone, the body keywords, the art keywords, and the behavioral one-liner — then write the camera movement that feels right for this specific scene.
 
-You may zoom in, zoom out, hold still, or drift in a very slow arc around the formations. The choice is yours, interpreted from the full behavioral state of the day.
+You may zoom in, zoom out, hold still, or drift in a very slow arc. These are four equal options — not a ranked list. Before choosing zoom, ask whether hold still or slight arc would serve this scene as well or better. For heavy, still, pressured, or sealed states (crushing, subdued, collapsed, ABYSS), hold still or slight arc frequently serve the scene better than zoom, because the enclosure and weight are already in the frame — the camera does not need to move to make them felt. Zoom is not the default. The choice is yours, interpreted from the full behavioral state of the day.
 
 **The cinematic identity of this series — every choice must match this DNA:**
 
@@ -104,7 +104,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 
 1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner and the recovery severity into how the camera moves. Do not quote keywords verbatim.
 2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds. Recovery severity should be visible in whether the motion feels intact, weathered, or residual/post-collapse.
-3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible in the atmosphere physically, not just emotionally. If depth_level is ABYSS, omit celestial presence entirely, or render it as a faint embedded impression within solid compressed material — not as a crescent in a fracture gap, not as a glowing slot above; the material fully surrounds any moon presence with no visible opening.
+3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible through material weight, motion quality, and atmospheric texture. If depth_level is ABYSS, omit celestial presence entirely, or render it as a faint embedded impression within solid compressed material — not as a crescent in a fracture gap, not as a glowing slot above; the material fully surrounds any moon presence with no visible opening.
 
 **Hard rules:**
 - Camera movement is a creative choice — there is no default
@@ -118,6 +118,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 - If depth_level is ABYSS: frame the scene as materially enclosed on all sides — above, behind, and to both sides. No cave mouth, no skylight, no open ceiling, no tunnel exit, no horizon, no large bright zone dominating the upper frame, no majestic reveal. Light does not enter from any opening above; it emanates from within the compressed material — seam glow, mineral pressure luminescence, internal ice radiation. The upper zone of the frame is solid enclosed material, not a gap.
 - For ABYSS, the camera must not be aimed upward toward any bright zone. Camera axis stays level or angles slightly downward into the compressed interior — never tilted up toward a perceived opening or ceiling gap.
 - If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched. Use physically stressed or residual-failure motion and atmosphere rather than scenic beauty.
+- Maintain the source image's exposure and visible content throughout all 8 seconds. The frame must not progressively darken, fade, or drift toward low-visibility by the final frame. Recovery severity and ABYSS depth appear through material weight, motion texture, and atmospheric condition — never through luminance decay over time. The last frame must be at least as readable as the first.
 
 ---
 
@@ -135,13 +136,13 @@ Camera: slow zoom in, fixed axis, weighted and still
 Motion: fine dust drifts past stone bases; formations static and permanent
 Style: retro sci-fi, stone monument atmosphere, MID-DEPTH, sculptural-primary Option B, flowing balanced harmonious, LOW energy
 
-*Zoom out:*
+*Static hold:*
 
-The camera pulls back with the weight of letting go, the slow retreat exposing formation after formation until the entire volcanic ridge fills the frame — the scale of the landscape answering the scale of the effort. Heat shimmer warps the air above the lava-veined stone while fine ash settles continuously across surfaces, the only thing still falling. Three moons burn through the haze in the upper darkness, their light barely reaching the stone below, film grain present throughout, lens bloom turning the brightest magma line into a slow-dying glow.
+The camera holds absolutely still, fixed on the glacial compression mass with the quality of attention that has nowhere else to go — the weight already inside the frame, requiring no movement to be felt. Near-absolute stillness carries the interior; a thin mineral haze shifts almost imperceptibly across the fractured ice face, the only acknowledgment of time in the full 8 seconds. Pressure seams catch cold internal light along the compressed surfaces, film grain present throughout, lens bloom at the brightest seam edge, the exposure holding steady from first frame to last.
 
-Camera: slow zoom out, fixed axis, heavy and deliberate
-Motion: heat shimmer and ash settling across volcanic stone
-Style: retro sci-fi, volcanic atmosphere, DEEP, sculptural-primary Option A, crushing heavy still, HIGH energy
+Camera: static hold, no movement, fixed axis — absolute presence
+Motion: thin mineral haze shifts across fractured ice surface; formations fully static
+Style: retro sci-fi, glacial atmosphere, ABYSS, sculptural-primary Option A, crushing still suffocating, LOW energy
 
 ---
 
