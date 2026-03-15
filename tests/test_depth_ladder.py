@@ -56,12 +56,21 @@ class PromptRegressionTests(unittest.TestCase):
         self.assertNotIn("{moon_count} moons in sky", content)
 
     def test_video_prompt_contains_abyss_fracture_guidance(self):
-        content = (REPO_ROOT / "src/prompts/video.md").read_text()
-        self.assertIn("a crescent or point glimpsed through a fracture, or absent", content)
-        self.assertIn(
-            "If depth_level is ABYSS: scene must feel sealed and compressed.",
-            content,
-        )
+        content = (REPO_ROOT / "src/prompts/video.md").read_text().lower()
+        self.assertIn("omit celestial presence entirely, or render it as a faint embedded impression within solid compressed material", content)
+        self.assertIn("no cave mouth", content)
+        self.assertIn("no skylight", content)
+        self.assertIn("no tunnel exit", content)
+        self.assertIn("camera must not be aimed upward toward any bright zone", content)
+        self.assertIn("light does not enter from any opening above", content)
+
+    def test_json_builder_contains_abyss_opening_bans(self):
+        content = (REPO_ROOT / "src/prompts/json_builder.md").read_text().lower()
+        self.assertIn("dominant bright zone in the upper third of the frame", content)
+        self.assertIn("the upper portion of the image is enclosed material, not a luminous aperture", content)
+        self.assertIn("omit entirely, or render as a faint shape impression fully embedded within solid compressed material", content)
+        self.assertIn("light in abyss does not arrive from any above-direction source; it emanates from within the compressed material itself", content)
+        self.assertIn("abyss shows no cave mouth, skylight, tunnel exit, horizon, scenic opening, or dominant bright zone in the upper frame", content)
 
 
 if __name__ == "__main__":
