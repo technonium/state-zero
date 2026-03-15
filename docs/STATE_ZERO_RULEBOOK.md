@@ -302,6 +302,8 @@ Critical: Pick based on theme, not creature
 
 **Why the matrix:** A 45% recovery after 8h of great sleep and a 45% recovery after 5h of terrible sleep are not the same felt state. Recovery sets the baseline energy; Sleep Score reveals what the nervous system did with it overnight. Together they produce the true daily texture.
 
+**Modeling note:** This 12-state matrix is intentionally overcomplete for creative coverage. In real WHOOP data, some Recovery × Sleep Score combinations may be physiologically rare or effectively unreachable because recovery is partly derived from sleep, but they are kept here as design guardrails rather than a claim that every quadrant occurs frequently.
+
 ### Zone Reference
 
 | Metric | Zones |
