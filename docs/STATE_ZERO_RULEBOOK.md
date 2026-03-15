@@ -368,6 +368,8 @@ Critical: Pick based on theme, not creature
 
 **Spatial ladder:** SURFACE means you are on the landscape under open sky. MID-DEPTH means you are at the edge of shelter with partial sky still visible. DEEP means you are in the landscape, fully inside a chamber with a readable ceiling and directional light from above. ABYSS means you are inside the material itself: sealed, compressed, and lit only by fractures, pressure seams, or mineral/internal glow.
 
+**ABYSS visual test:** The viewer should feel pressed inside the material from all sides, not standing at the base of a chamber looking upward at an opening. No cave mouth, skylight, horizon, large scenic opening, or dominant bright zone in the upper frame. Light in ABYSS emanates from within the compressed material — it does not arrive from any directional source above.
+
 **AI determines depth manifestation for the chosen environment:**
 
 **Volcanic Depths:**

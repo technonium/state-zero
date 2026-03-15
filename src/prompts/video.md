@@ -104,7 +104,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 
 1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner and the recovery severity into how the camera moves. Do not quote keywords verbatim.
 2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds. Recovery severity should be visible in whether the motion feels intact, weathered, or residual/post-collapse.
-3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible in the atmosphere physically, not just emotionally. If depth_level is ABYSS, celestial presence must be a crescent or point glimpsed through a fracture, or absent.
+3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible in the atmosphere physically, not just emotionally. If depth_level is ABYSS, omit celestial presence entirely, or render it as a faint embedded impression within solid compressed material — not as a crescent in a fracture gap, not as a glowing slot above; the material fully surrounds any moon presence with no visible opening.
 
 **Hard rules:**
 - Camera movement is a creative choice — there is no default
@@ -115,7 +115,8 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 - All motion subtle and atmospheric
 - Film grain and lens bloom persist throughout
 - 8 seconds, single-take — never write "seamless loop" or "looping"
-- If depth_level is ABYSS: scene must feel sealed and compressed. No open-sky framing, no broad atmospheric glow falling from above, no majestic scale reveal. Light comes from fractures and internal pressure only.
+- If depth_level is ABYSS: frame the scene as materially enclosed on all sides — above, behind, and to both sides. No cave mouth, no skylight, no open ceiling, no tunnel exit, no horizon, no large bright zone dominating the upper frame, no majestic reveal. Light does not enter from any opening above; it emanates from within the compressed material — seam glow, mineral pressure luminescence, internal ice radiation. The upper zone of the frame is solid enclosed material, not a gap.
+- For ABYSS, the camera must not be aimed upward toward any bright zone. Camera axis stays level or angles slightly downward into the compressed interior — never tilted up toward a perceived opening or ceiling gap.
 - If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched. Use physically stressed or residual-failure motion and atmosphere rather than scenic beauty.
 
 ---
