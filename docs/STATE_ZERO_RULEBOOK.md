@@ -352,23 +352,45 @@ Critical: Pick based on theme, not creature
 | Sleep Score % | Level | Keywords | Visibility |
 |--------------|-------|----------|------------|
 | 82%+ | **SURFACE** | Celestial, Elevated, Bright, Open | 70-100% visible |
-| 76-82% | **MID-DEPTH** | Sheltered, Cavern, Enclosed, Filtered | 50-70% visible |
-| 65-76% | **DEEP** | Subterranean, Obscured, Limited, Buried | 40-50% visible |
-| 0-65% | **ABYSS** | Void, Compressed, Primordial, Darkness | 40% minimum |
+| 76-82% | **MID-DEPTH** | Beneath, Overhang, Partial-sky, One-direction-light | 50-70% visible |
+| 65-76% | **DEEP** | Chamber, Ceiling-visible, Shaft-light, Distant-opening | 40-50% visible |
+| 0-65% | **ABYSS** | Sealed, Compression-fractures, Interior-pressure, No-above | 40% minimum |
+
+**Depth is light direction, not just position:** SURFACE = light from everywhere. MID-DEPTH = light from one direction. DEEP = light as a shaft from above. ABYSS = no light from above, only from fractures within the material.
+
+**Spatial ladder:** SURFACE means you are on the landscape under open sky. MID-DEPTH means you are at the edge of shelter with partial sky still visible. DEEP means you are in the landscape, fully inside a chamber with a readable ceiling and directional light from above. ABYSS means you are inside the material itself: sealed, compressed, and lit only by fractures, pressure seams, or mineral/internal glow.
 
 **AI determines depth manifestation for the chosen environment:**
 
 **Volcanic Depths:**
-- Surface: Floating lava islands in sky
-- Mid-Depth: Underground magma chambers
-- Deep: Deep core with limited glow
-- Abyss: Primordial volcanic heart, near-darkness
+- Surface: Exposed lava ridges and obsidian fields under open sky
+- Mid-Depth: Beneath crater lips and rock overhangs, partial sky visible, furnace light from one direction
+- Deep: Inside subterranean magma chambers, vaulted ceiling visible above, a directed shaft of vent-light from a distant opening
+- Abyss: Sealed magma core, material pressing from all sides, dull ember-light only through compression fractures
 
-**Ice Depths:**
-- Surface: Glacier peaks under open sky
-- Mid-Depth: Ice caves with filtered light
-- Deep: Subglacial blue glow depths
-- Abyss: Deep frozen void, single moon beam
+**Glacial Valley Depths:**
+- Surface: Exposed valley floor under open sky, polished rock and cold tarns clearly visible
+- Mid-Depth: Beneath moraine shelves and ice overhangs, partial sky visible, angled light entering from one direction
+- Deep: Inside a subglacial chamber, compressed ice ceiling visible above, shaft-light from a distant rupture
+- Abyss: Sealed glacial core, crushed beneath ice mass, light only from pressure fractures and internal ice glow
+
+**Void/Space (Low) Depths:**
+- Surface: Exposed cosmic terrain with open starfield and readable horizon
+- Mid-Depth: Beneath debris canopies and asteroid lips, partial sky visible through gaps, light entering from one direction
+- Deep: Inside a dense debris chamber, a distant opening casting a single shaft through the interior
+- Abyss: Sealed debris pocket, compressed matter pressing from all sides, internal particle-glow only — no open starfield
+
+**Cave Systems Depths:**
+- Surface: Cave mouth and exterior stone under open sky
+- Mid-Depth: Beneath overhangs and recesses near the cave mouth, partial sky still visible
+- Deep: Inside a vaulted stone chamber, ceiling visible above, light descending from a distant shaft
+- Abyss: Sealed stone core, no visible passage, mineral and fracture-light only
+
+**Forest/Jungle Depths:**
+- Surface: Exposed canopy breaks, root masses, and open sky above the growth
+- Mid-Depth: Beneath canopy overhang and root arches, partial sky visible through gaps, light entering from one direction
+- Deep: Inside a buried root-and-stone chamber, ceiling of roots and soil visible above, a distant shaft of light descending in
+- Abyss: Sealed root-and-stone core, pressure seams and wet mineral glow only, no visible sky
 
 ---
 
@@ -385,10 +407,12 @@ Critical: Pick based on theme, not creature
 | <6h | **1 moon** | Crescent or half moon |
 
 **Moon Characteristics:**
-- Always in upper third of frame
-- Size/brightness vary by depth (dimmer in abyss)
+- Surface: moons can sit openly in the sky
+- Mid-Depth: moons may be partially framed by shelter or overhangs
+- Deep: moonlight may enter from a shaft or distant opening, but direct moon visibility is optional
+- Abyss: moons appear only as a thin crescent or distant point through a fracture, or may be absent entirely
 - Color tinted by environment atmosphere
-- Drift across sky in video
+- In video, moon treatment follows the same depth rule — no free-hanging moon in ABYSS
 
 ---
 

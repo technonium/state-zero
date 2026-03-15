@@ -211,10 +211,10 @@ Map the art keywords to contrast levels:
 
 Based on depth level and environment:
 
-- **SURFACE:** "perpetual twilight", "eternal dawn", "celestial day", "open sky illumination"
-- **MID-DEPTH:** "filtered twilight", "enclosed dusk", "cavern half-light"
-- **DEEP:** "subterranean darkness", "buried twilight", "deep shadow with limited glow"
-- **ABYSS:** "primordial darkness", "near-extinction light", "void compression"
+- **SURFACE:** "open sky illumination", "broad exposed light", "perpetual sky-light"
+- **MID-DEPTH:** "angled shelter-light", "partial sky spill", "side-entering filtered light"
+- **DEEP:** "shaft-lit chamber darkness", "vaulted chamber shadow", "distant opening light"
+- **ABYSS:** "interior pressure light", "fracture-lit compression", "sealed internal darkness"
 
 ---
 
@@ -222,22 +222,56 @@ Based on depth level and environment:
 
 **CRITICAL:** Do NOT write the depth label (SURFACE / MID-DEPTH / DEEP / ABYSS) literally in `core_concept`. These are system category labels — the image generator has no idea what they mean. Translate to spatial visual language using the table below and the specific environment chosen.
 
+**Depth is light direction, not just position:** SURFACE = light from everywhere. MID-DEPTH = light from one direction. DEEP = light as a shaft from above. ABYSS = no light from above, only from fractures within the material.
+
 You have `{depth_level}` and `{depth_keywords}` available. Use them to derive a concrete spatial phrase.
 
 | Depth Level | Depth Keywords | Visual phrase pattern for core_concept |
 |---|---|---|
-| SURFACE | Celestial, Elevated, Bright, Open | "above towering [environment] formations under open [sky/void]" |
-| MID-DEPTH | Sheltered, Cavern, Enclosed, Filtered | "within enclosed [environment] [chambers/caverns] with filtered [light/glow]" |
-| DEEP | Subterranean, Obscured, Limited, Buried | "deep in subterranean [environment] with limited [glow/illumination]" |
-| ABYSS | Void, Compressed, Primordial, Darkness | "at the primordial [environment] core, near-darkness pressing in from all sides" |
+| SURFACE | Celestial, Elevated, Bright, Open | "across exposed [environment] formations under open sky" |
+| MID-DEPTH | Beneath, Overhang, Partial-sky, One-direction-light | "beneath [environment] formations, partial sky still visible, light entering from one direction" |
+| DEEP | Chamber, Ceiling-visible, Shaft-light, Distant-opening | "inside subterranean [environment] chambers, vaulted ceiling visible above, light descending as a directed shaft from a distant opening" |
+| ABYSS | Sealed, Compression-fractures, Interior-pressure, No-above | "sealed within the buried [environment] core, material pressing from all sides, illuminated only by thin blades through compression fractures" |
 
 **Examples (combine depth pattern + specific environment):**
-- Volcanic + MID-DEPTH → "within enclosed volcanic chambers with filtered magma glow"
-- Ice + SURFACE → "above towering glacier peaks under open alien sky"
-- Ocean + DEEP → "deep in subterranean ocean trenches with limited bioluminescent illumination"
-- Volcanic + ABYSS → "at the primordial volcanic core, near-darkness pressing in from all sides"
+- Glacial Valley + MID-DEPTH → "beneath glacial valley walls, partial sky still visible, light entering from one direction under ice and moraine overhangs"
+- Volcanic + DEEP → "inside subterranean volcanic chambers, vaulted ceiling visible above, magma light descending from a distant vent opening"
+- Cave Systems + ABYSS → "sealed within the buried cave core, stone pressing from all sides, illuminated only by thin blades through compression fractures"
+- Void/Space (Low) + ABYSS → "sealed within a buried cosmic pocket, fractured debris pressing from all sides, illuminated only by thin blades through compression seams"
+- Forest/Jungle + SURFACE → "across exposed jungle formations under open sky, light arriving from every direction"
 
 The phrasing is yours — adapt the pattern to fit the specific environment. Never use the raw depth label.
+
+**Environment-specific depth manifestations (preserve the environment's identity across all tiers):**
+- **Glacial Valley**
+  - SURFACE → exposed valley floor under open sky, polished rock and ice readable end to end
+  - MID-DEPTH → beneath moraine shelves and ice overhangs, partial sky still visible
+  - DEEP → inside a subglacial chamber, compressed ice ceiling visible above, shaft-light from a distant rupture
+  - ABYSS → sealed glacial core, ice mass pressing from all sides, thin fracture-light only
+- **Volcanic**
+  - SURFACE → exposed lava ridges and obsidian fields under open sky
+  - MID-DEPTH → beneath volcanic shelves and crater lips, side-entering furnace glow
+  - DEEP → inside subterranean magma chambers, vaulted ceiling visible above, light descending from a vent
+  - ABYSS → buried magma core, rock pressure from all sides, ember-light only through compression fractures
+- **Void/Space (Low)**
+  - SURFACE → exposed cosmic terrain with open starfield and readable horizon
+  - MID-DEPTH → beneath debris canopies or asteroid lips, partial sky still visible through gaps
+  - DEEP → inside a dense debris chamber, a distant opening casting a single directional shaft
+  - ABYSS → sealed interior pocket of compressed debris, internal particle-glow only, no open starfield
+- **Cave Systems**
+  - SURFACE → cave mouth and surrounding stone under open sky
+  - MID-DEPTH → beneath overhangs and rock recesses near the cave mouth, partial sky still visible
+  - DEEP → inside interior chambers, ceiling readable, light descending from a distant shaft
+  - ABYSS → sealed stone core, mineral phosphorescence and thin fracture-light only
+- **Forest/Jungle**
+  - SURFACE → exposed canopy breaks and root masses under open sky
+  - MID-DEPTH → beneath canopy overhang and root arches, partial sky still visible in gaps
+  - DEEP → inside a buried root chamber, ceiling of roots and stone visible above, shaft-light from a distant opening
+  - ABYSS → sealed root-and-stone core, pressure-lit seams and wet mineral glow only
+
+**Hard depth rules:**
+- **SURFACE** must remain spatially open even in harsh states. Show distress through glare, fracture, instability, and exposure — never by enclosing the scene like a lower depth tier.
+- **ABYSS** must not read as spacious, celestial, majestic, or horizon-led. It is sealed, internal, pressure-lit, and materially enclosing.
 
 ---
 
@@ -282,9 +316,9 @@ Based on visibility_range:
 - 70-100%: "bright open landscape with minimal shadow"
 - 50-70%: "balanced light and shadow with clear focal points"
 - 40-50%: "atmospheric darkness with 40-50% illuminated elements"
-- 40% minimum (ABYSS): "deep darkness with mandatory 40% minimum visible content"
+- 40% minimum (ABYSS): "sealed darkness with mandatory 40% minimum visible content from internal sources only — fracture-light, mineral glow, pressure seams, compressed luminescence"
 
-**CRITICAL:** Never go below 40% visible content. Darkness is accent, not dominant.
+**CRITICAL:** Never go below 40% visible content. Darkness is accent, not dominant. In ABYSS, that visibility must come from internal sources only — no open sky and no broad atmospheric glow from above.
 
 ---
 
@@ -339,7 +373,7 @@ Fill ALL placeholders below using the input data and rules above:
     "foreground": "[ENVIRONMENT-SPECIFIC foreground: lava fragments / ice shards / storm mist / desert sand / etc.]",
     "midground": "[BLEND OPTION DESCRIPTION: sculptural formations with optional secondary texture based on Option A/B/C]",
     "background": "layered terrain with atmospheric perspective",
-    "sky": "[DEPTH-APPROPRIATE sky from Lighting Time Mapping] with {moon_count} moons in upper third"
+    "sky": "[APPLY depth-aware celestial treatment: SURFACE=open sky with moons clearly visible; MID-DEPTH=partial sky framed by shelter; DEEP=sky optional, distant opening or shaft-light may replace direct moon visibility; ABYSS=no open sky, only a thin crescent or point glimpsed through a fracture, or omitted entirely]"
   },
 
   "lighting": {
@@ -351,7 +385,7 @@ Fill ALL placeholders below using the input data and rules above:
 
   "color_palette": {
     "primary_tones": ["[COLOR_1 from environment]", "[COLOR_2 from environment]", "[COLOR_3 from environment]", "[COLOR_4 from depth/atmosphere]"],
-    "sky_gradient": "[Based on {depth_level}: SURFACE=open sky / MID-DEPTH=filtered / DEEP=obscured / ABYSS=void]",
+    "sky_gradient": "[Based on {depth_level}: SURFACE=open sky / MID-DEPTH=partial-sky spill / DEEP=distant opening or obscured chamber / ABYSS=sealed interior, no open sky]",
     "treatment": "vintage film stock rendering, slightly desaturated",
     "temperature": "[APPLY Color Temperature Mapping from body keywords and environment]"
   },
@@ -360,7 +394,7 @@ Fill ALL placeholders below using the input data and rules above:
     "setting": "{environment} at {depth_level}",
     "terrain": "[Combine environment materials + depth manifestation: e.g. 'subterranean volcanic chambers with limited magma glow' or 'elevated ice peaks under open sky']",
     "atmosphere": "[In 1-2 short phrases describe what the physical {environment} looks like carrying this state — what the viewer sees in the materials, formations, and air. Visual description of the place only, NOT behavioral or emotional text. depth layers creating spatial separation]",
-    "celestial": "{moon_count} moons, [visibility modifier: bright at SURFACE / dimmed at MID-DEPTH / faint at DEEP / barely visible at ABYSS]"
+    "celestial": "[APPLY depth-aware moon handling: SURFACE={moon_count} moons openly visible; MID-DEPTH={moon_count} moons partially framed by overhangs or cover; DEEP=moonlight may enter from a distant opening but moons need not be directly visible; ABYSS=at most a thin crescent or point glimpsed through a fracture, or omitted entirely]"
   },
 
   "creature_integration": {
@@ -395,7 +429,7 @@ Fill ALL placeholders below using the input data and rules above:
   "consistency_anchors": {
     "ALWAYS_INCLUDE": [
       "[ENVIRONMENT-SPECIFIC foreground element based on {environment}]",
-      "{moon_count} moons in sky",
+      "[DEPTH-APPROPRIATE celestial treatment matching {depth_level}]",
       "[DOMINANT_COLOR from environment] palette",
       "film grain texture",
       "lens bloom effects",
@@ -423,7 +457,7 @@ Before outputting the JSON, verify:
 - [ ] Behavioral one-liner `{one_liner}` reflected in core_concept felt state (no planet names, no house numbers, no astrology)
 - [ ] `avoid` array includes "{creature}-shaped objects" and "{creature} anatomy"
 - [ ] `"text": "NO TEXT, NO TITLES, NO OVERLAYS"` present in technical_specifications
-- [ ] Sky description includes "{moon_count} moons in upper third"
+- [ ] Celestial treatment matches depth: open sky only at SURFACE, partial framing at MID-DEPTH, optional distant opening at DEEP, fracture glimpse or omission at ABYSS
 - [ ] Depth level {depth_level} influences lighting.time and composition.sky appropriately
 - [ ] If environment is "Crystalline (Active)" AND YOUR SELECTED OPTION is "B", Crystalline Override applied
 - [ ] `core_concept` uses blend-appropriate language matching YOUR SELECTED OPTION (not default Option A phrasing when B or C was selected)
@@ -433,6 +467,8 @@ Before outputting the JSON, verify:
 - [ ] `environment_details.atmosphere` is 1-2 short visual phrases describing the physical space — NOT behavioral or emotional text
 - [ ] `rendering.technique` specifies volumetric 3D cinematic quality — output must NOT look like 2D illustration, flat art, or digital painting
 - [ ] `creature_integration.visibility` and `core_concept` use [QUALITY] from the creature archetype table — physical/atmospheric descriptor only, NOT behavioral or character-based
+- [ ] ABYSS does not read as spacious, celestial, majestic, or horizon-led
+- [ ] SURFACE remains spatially open even in harsh states; distress reads through glare, fracture, instability, and exposure rather than enclosure
 
 ---
 
