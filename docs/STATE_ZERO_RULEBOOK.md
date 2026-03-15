@@ -333,6 +333,14 @@ Critical: Pick based on theme, not creature
 4. Read the **One-liner** — use this as the behavioral direction in your AI concept prompt
 5. Select 2-3 Art Keywords when constructing the JSON rendering and lighting fields
 
+**Behavior split for generation:**
+- **Depth** controls where the world sits relative to sky and light
+- **Recovery** controls how intact that world is
+- **HIGH recovery** should read intact, coherent, supported
+- **MID recovery** should read weathered, muted, held together
+- **LOW recovery** should read fractured, depleted, stripped, cooling, or post-event
+- Recovery should change material condition, residue, air behavior, and motion weight — not just make the scene darker
+
 ### Behavioral Example (same environment, different states)
 
 **Volcanic + LOW/ABYSS (Crushing, Devastated, Primordial):** Absolute collapse — no active eruptions, only smoldering ruin. Compressing darkness, cooled lava wasteland, a landscape that consumed itself.

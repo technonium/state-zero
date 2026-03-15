@@ -9,6 +9,8 @@ Generate an 8-second single-take video animation prompt. Not looping.
 - **Environment:** {environment}
 - **Depth Level:** {depth_level}
 - **Energy Zone:** {energy_zone}
+- **Recovery Zone:** {recovery_zone}
+- **Body Keywords:** {body_keywords}
 - **Behavioral Art Keywords:** {art_keywords}
 - **Behavioral One-liner:** {one_liner}
 - **Moon Count:** {moon_count}
@@ -24,7 +26,7 @@ Animate the scene. The image is already set — the video just brings it to life
 
 ## Camera
 
-You decide how the camera moves. There is no default. Read the environment, the depth level, the energy zone, the art keywords, and the behavioral one-liner — then write the camera movement that feels right for this specific scene.
+You decide how the camera moves. There is no default. Read the environment, the depth level, the energy zone, the recovery zone, the body keywords, the art keywords, and the behavioral one-liner — then write the camera movement that feels right for this specific scene.
 
 You may zoom in, zoom out, hold still, or drift in a very slow arc around the formations. The choice is yours, interpreted from the full behavioral state of the day.
 
@@ -77,15 +79,32 @@ For normally open-air environments in **ABYSS**, reinterpret motion as trapped i
 
 ---
 
+## Recovery Severity Interpretation
+
+Recovery does NOT change the scene's geometry. It changes how intact or damaged that world feels.
+
+- **HIGH recovery** — steady, coherent, supported, fully held
+- **MID recovery** — worn, muted, coasting, low-urgency
+- **LOW recovery** — burdened, brittle, stalled, post-collapse, residual failure
+
+Use recovery in motion terms:
+- **HIGH** can feel clear, supported, and structurally settled
+- **MID** can feel weathered, flat, or held together without urgency
+- **LOW** should feel physically strained through weighted holds, reluctant push-ins, exhausted pullbacks, burdened drift, ash settling, seam flicker, brittle particulate, cooling vapor, stalled drift, or pressure dust
+
+**CRITICAL:** LOW recovery must not read graceful, pristine, or untouched. Even when the depth is SURFACE or MID-DEPTH, the motion and atmosphere should feel stressed, stripped, or aftermath-driven rather than beautifully serene.
+
+---
+
 ## Instructions
 
 Write as if directing a cinematographer for a slow, contemplative 8-second take.
 
 **Three sentences only:**
 
-1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner into how the camera moves. Do not quote keywords verbatim.
-2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds.
-3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. If depth_level is ABYSS, celestial presence must be a crescent or point glimpsed through a fracture, or absent.
+1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner and the recovery severity into how the camera moves. Do not quote keywords verbatim.
+2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds. Recovery severity should be visible in whether the motion feels intact, weathered, or residual/post-collapse.
+3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible in the atmosphere physically, not just emotionally. If depth_level is ABYSS, celestial presence must be a crescent or point glimpsed through a fracture, or absent.
 
 **Hard rules:**
 - Camera movement is a creative choice — there is no default
@@ -97,6 +116,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 - Film grain and lens bloom persist throughout
 - 8 seconds, single-take — never write "seamless loop" or "looping"
 - If depth_level is ABYSS: scene must feel sealed and compressed. No open-sky framing, no broad atmospheric glow falling from above, no majestic scale reveal. Light comes from fractures and internal pressure only.
+- If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched. Use physically stressed or residual-failure motion and atmosphere rather than scenic beauty.
 
 ---
 

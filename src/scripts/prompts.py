@@ -1062,6 +1062,8 @@ class PromptOrchestrator:
             'environment': environment_name,
             'depth_level': daily_data.get('depth_level', 'Unknown'),
             'energy_zone': daily_data.get('energy_zone', 'Unknown'),
+            'recovery_zone': daily_data.get('recovery_zone', 'Unknown'),
+            'body_keywords': ', '.join(behavior.get('body_keywords', [])),
             'art_keywords': ', '.join(behavior.get('art_keywords', [])),
             'one_liner': behavior.get('one_liner', ''),
             'moon_count': str(daily_data.get('moon_count', 0)),
