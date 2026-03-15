@@ -218,6 +218,25 @@ Based on depth level and environment:
 
 ---
 
+## RECOVERY SEVERITY MAPPING
+
+Recovery does NOT change the scene's geometry. It changes the condition of the world occupying that geometry.
+
+- **HIGH recovery:** intact, coherent, supported, stable, breathable
+- **MID recovery:** weathered, muted, worn, held together, coasting
+- **LOW recovery:** fractured, depleted, stripped, cooling, pressure-stressed, partially failed, post-event
+
+**Use this split consistently:**
+- **Environment** determines the material world
+- **Depth** determines relation to sky and light
+- **Recovery** determines structural integrity and damage
+- **Art keywords** determine contrast, texture, and tension
+- **One-liner** compresses the final felt state
+
+**CRITICAL:** Do not let recovery only darken the image. LOW recovery must appear in the materials, surfaces, air, residue, and structural condition of the place.
+
+---
+
 ## DEPTH VISUAL PHRASE FOR CORE_CONCEPT
 
 **CRITICAL:** Do NOT write the depth label (SURFACE / MID-DEPTH / DEEP / ABYSS) literally in `core_concept`. These are system category labels — the image generator has no idea what they mean. Translate to spatial visual language using the table below and the specific environment chosen.
@@ -272,6 +291,9 @@ The phrasing is yours — adapt the pattern to fit the specific environment. Nev
 **Hard depth rules:**
 - **SURFACE** must remain spatially open even in harsh states. Show distress through glare, fracture, instability, and exposure — never by enclosing the scene like a lower depth tier.
 - **ABYSS** must not read as spacious, celestial, majestic, or horizon-led. It is sealed, internal, pressure-lit, and materially enclosing.
+
+**Hard recovery rule:**
+- If `recovery_zone` is **LOW**, the world must not read pristine, untouched, graceful, or serene. Distress must appear physically through fracture, depletion, residue, cooling, pressure, asymmetry, or aftermath — not just dimmer lighting.
 
 ---
 
@@ -328,7 +350,7 @@ Fill ALL placeholders below using the input data and rules above:
 
 ```json
 {
-  "core_concept": "Surreal alien {environment} [SPATIAL LOCATION: use DEPTH VISUAL PHRASE mapping — translate {depth_level} + {depth_keywords} into spatial visual language for this specific {environment}; NEVER write the depth label literally] where [APPLY YOUR SELECTED BLEND OPTION LANGUAGE from core_concept phrasing guide — describe landscape formations only; DO NOT write the creature name {creature}; NO abstract creature quality phrases], felt state: {one_liner}, more landscape than creature",
+  "core_concept": "Surreal alien {environment} [SPATIAL LOCATION: use DEPTH VISUAL PHRASE mapping — translate {depth_level} + {depth_keywords} into spatial visual language for this specific {environment}; NEVER write the depth label literally] where [APPLY YOUR SELECTED BLEND OPTION LANGUAGE from core_concept phrasing guide — describe landscape formations only; DO NOT write the creature name {creature}; NO abstract creature quality phrases], felt state: {one_liner}, [APPLY Recovery Severity Mapping physically — the place must show whether it is intact, worn, or depleted through material condition, residue, fracture, or aftermath; DO NOT write the word recovery], more landscape than creature",
 
   "style_aesthetic": {
     "era": "1970s-1980s science fiction",
@@ -341,7 +363,7 @@ Fill ALL placeholders below using the input data and rules above:
     "technique": "high detail volumetric 3D digital art with vintage film effects — cinematic photographic render quality, NOT illustration",
     "contrast": "[APPLY CONTRAST MAPPING from art keywords]",
     "definition": "clear forms with atmospheric depth",
-    "material_quality": "[LOOKUP from Material Quality table above using environment type, THEN MODULATE intensity qualifiers per MATERIAL QUALITY BEHAVIORAL MODULATION section using art keywords {art_keywords}]",
+    "material_quality": "[LOOKUP from Material Quality table above using environment type, THEN MODULATE intensity qualifiers per MATERIAL QUALITY BEHAVIORAL MODULATION section using art keywords {art_keywords}, THEN APPLY Recovery Severity Mapping to the condition of the material itself: HIGH=intact/coherent, MID=worn/held-together, LOW=fractured/depleted/cooling/post-event]",
     "avoid": [
       "soft painterly brush strokes",
       "2D cartoon style",
@@ -378,8 +400,8 @@ Fill ALL placeholders below using the input data and rules above:
 
   "lighting": {
     "time": "[APPLY Lighting Time Mapping based on {depth_level} and {environment}]",
-    "quality": "[Derive from art keywords] with [recovery_zone-based intensity: HIGH=bright / MID=moderate / LOW=dim] bloom",
-    "atmosphere": "[In 1-2 short phrases describe how light and air physically behave — e.g. 'light settles without drama, air still and undisturbed' or 'light harsh and cutting, atmosphere charged at every surface'. Physical language only. Do NOT copy art keywords literally.]",
+    "quality": "[Derive from art keywords] with [recovery-aware bloom/intensity: HIGH=clear stable luminous bloom / MID=held-back weathered moderate bloom / LOW=depleted cutting residual or dying bloom]",
+    "atmosphere": "[In 1-2 short phrases describe how light and air physically behave — e.g. 'light settles without drama, air still and undisturbed' or 'light harsh and cutting, atmosphere charged at every surface'. Physical language only. Do NOT copy art keywords literally. Recovery severity must affect the behavior of the air and light physically: LOW should feel burdened, depleted, aftermath-driven, or pressure-stressed rather than merely darker.]",
     "glow": "[ENVIRONMENT-SPECIFIC glow sources: magma orange / ice blue / lightning white / plasma purple / etc.]"
   },
 
@@ -392,8 +414,8 @@ Fill ALL placeholders below using the input data and rules above:
 
   "environment_details": {
     "setting": "{environment} at {depth_level}",
-    "terrain": "[Combine environment materials + depth manifestation: e.g. 'subterranean volcanic chambers with limited magma glow' or 'elevated ice peaks under open sky']",
-    "atmosphere": "[In 1-2 short phrases describe what the physical {environment} looks like carrying this state — what the viewer sees in the materials, formations, and air. Visual description of the place only, NOT behavioral or emotional text. depth layers creating spatial separation]",
+    "terrain": "[Combine environment materials + depth manifestation, THEN apply Recovery Severity Mapping to the world's condition: intact and coherent at HIGH, worn and held together at MID, fractured/depleted/cooling/post-event at LOW. Example target logic: open glacial floor but stress-fractured, or sealed magma core cooling into split stone.]",
+    "atmosphere": "[In 1-2 short phrases describe what the physical {environment} looks like carrying this state — what the viewer sees in the materials, formations, air, residue, and structural condition. Visual description only, NOT behavioral or emotional text. Recovery severity must be visible in the physical world, not just implied by mood. depth layers creating spatial separation]",
     "celestial": "[APPLY depth-aware moon handling: SURFACE={moon_count} moons openly visible; MID-DEPTH={moon_count} moons partially framed by overhangs or cover; DEEP=moonlight may enter from a distant opening but moons need not be directly visible; ABYSS=at most a thin crescent or point glimpsed through a fracture, or omitted entirely]"
   },
 
@@ -469,6 +491,8 @@ Before outputting the JSON, verify:
 - [ ] `creature_integration.visibility` and `core_concept` use [QUALITY] from the creature archetype table — physical/atmospheric descriptor only, NOT behavioral or character-based
 - [ ] ABYSS does not read as spacious, celestial, majestic, or horizon-led
 - [ ] SURFACE remains spatially open even in harsh states; distress reads through glare, fracture, instability, and exposure rather than enclosure
+- [ ] Recovery changes world condition, not scene geometry: HIGH feels intact, MID feels weathered, LOW feels fractured/depleted/post-event
+- [ ] LOW recovery does not read pristine, elegant, untouched, or serene even when depth is SURFACE or MID-DEPTH
 
 ---
 
