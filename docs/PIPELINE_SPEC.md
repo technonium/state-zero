@@ -255,7 +255,7 @@ These allow the pipeline to continue waiting for valid files until the deadline.
 ## Scheduled Execution
 
 ```bash
-30 6 * * * cd /path/to/state-zero && python3 src/scripts/instagram_token_healthcheck.py >> /var/log/state-zero-healthcheck.log 2>&1
+30 6 * * * cd /path/to/state-zero && python3 ops/instagram_token_healthcheck.py >> /var/log/state-zero-healthcheck.log 2>&1
 0,30 7-12 * * * cd /path/to/state-zero && python3 src/scripts/pipeline.py >> /var/log/state-zero.log 2>&1
 0 13 * * * cd /path/to/state-zero && python3 src/scripts/pipeline.py >> /var/log/state-zero.log 2>&1
 0 14 * * * cd /path/to/state-zero && PIPELINE_TERMINAL_RESCUE_RUN=true PIPELINE_MODE=automatic python3 src/scripts/pipeline.py >> /var/log/state-zero-rescue.log 2>&1

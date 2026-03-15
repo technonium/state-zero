@@ -16,6 +16,9 @@ import time
 import requests
 from typing import Optional
 
+GEMINI_MODEL = "gemini-2.5-pro"
+GEMINI_TIMEOUT_SECONDS = 90
+
 
 class OpenRouterError(Exception):
     """Custom exception for OpenRouter API errors."""
@@ -25,6 +28,87 @@ class OpenRouterError(Exception):
 class LLMProviderError(Exception):
     """Custom exception for LLM provider failures."""
     pass
+
+
+def call_google_gemini_generate_content(
+    *,
+    prompt: str,
+    api_key: str,
+    model: str = GEMINI_MODEL,
+    temperature: float = 1.0,
+    max_output_tokens: int = 12000,
+    thinking_budget: int = 8000,
+    timeout: int = GEMINI_TIMEOUT_SECONDS,
+) -> str:
+    """
+    Call Gemini generateContent with explicit, bounded generation config.
+
+    Args:
+        prompt: The user prompt
+        api_key: Google API key
+        model: Gemini model name without REST prefix
+        temperature: Generation temperature
+        max_output_tokens: Max output tokens
+        thinking_budget: Gemini thinking budget
+        timeout: Request timeout in seconds
+
+    Returns:
+        Generated text response
+
+    Raises:
+        LLMProviderError: If the request fails or the response is malformed
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+    headers = {
+        "x-goog-api-key": api_key,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt}
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_output_tokens,
+            "thinkingConfig": {
+                "thinkingBudget": thinking_budget,
+            },
+        },
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        response.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        raise LLMProviderError(
+            f"Gemini HTTP {e.response.status_code}: {e.response.text[:500]}"
+        ) if e.response else LLMProviderError(str(e))
+    except requests.exceptions.Timeout:
+        raise LLMProviderError("Gemini request timed out")
+    except requests.exceptions.RequestException as e:
+        raise LLMProviderError(f"Gemini request failed: {e}")
+
+    try:
+        data = response.json()
+    except ValueError as e:
+        raise LLMProviderError(f"Gemini response was not valid JSON: {e}") from e
+
+    candidates = data.get("candidates") or []
+    if not candidates:
+        raise LLMProviderError(f"No candidates in Gemini response. Response keys: {list(data.keys())}")
+
+    parts = candidates[0].get("content", {}).get("parts", [])
+    texts = [part.get("text", "") for part in parts if part.get("text")]
+    if not texts:
+        raise LLMProviderError("No text parts in Gemini response")
+
+    return "\n".join(texts).strip()
 
 
 class OpenRouterClient:
@@ -249,48 +333,17 @@ class OpenRouterClient:
         Returns:
             Generated text response
         """
-        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
-        
-        headers = {
-            "x-goog-api-key": api_key,
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ]
-        }
-        
         print("🔄 Using Google Gemini 2.5 Pro as fallback")
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=90)
-            response.raise_for_status()
-        except requests.exceptions.HTTPError as e:
-            raise LLMProviderError(f"Gemini HTTP {e.response.status_code}: {e.response.text[:500]}") if e.response else LLMProviderError(str(e))
-        except requests.exceptions.Timeout:
-            raise LLMProviderError("Gemini request timed out")
-        except requests.exceptions.RequestException as e:
-            raise LLMProviderError(f"Gemini request failed: {e}")
-        
-        data = response.json()
-        
-        candidates = data.get('candidates', [])
-        if not candidates:
-            raise LLMProviderError("No candidates in Gemini response")
-        
-        parts = candidates[0].get('content', {}).get('parts', [])
-        texts = [part.get('text', '') for part in parts if part.get('text')]
-        
-        if not texts:
-            raise LLMProviderError("No text parts in Gemini response")
-        
-        result = "\n".join(texts).strip()
+
+        result = call_google_gemini_generate_content(
+            prompt=prompt,
+            api_key=api_key,
+            model=GEMINI_MODEL,
+            temperature=self.temperature,
+            max_output_tokens=self.max_tokens,
+            thinking_budget=self.thinking_budget,
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
         print(f"   ✅ Fallback response: {len(result)} chars")
         return result
 

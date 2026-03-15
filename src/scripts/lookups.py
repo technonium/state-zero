@@ -444,7 +444,7 @@ def get_whoop_data(target_date: date = None):
             raise RetryableLookupFailure(e.message) from e
         if e.status_code == 401:
             print(f"❌ [WHOOP] Auth error (401): {e.message}")
-            print("   → Run src/scripts/auth_whoop.py to get a fresh token.")
+            print("   → Run ops/auth_whoop.py to get a fresh token.")
             raise RetryableLookupFailure(e.message) from e
         if e.status_code == 429 or e.status_code >= 500:
             print(f"⚠ [WHOOP] Transient API error ({e.status_code}): {e.message}")

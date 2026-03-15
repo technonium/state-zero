@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import argparse
-import requests
 from pathlib import Path
 from dotenv import load_dotenv
 from database_manager import CardDatabase
@@ -20,7 +19,14 @@ from utils import get_project_root, get_output_root
 load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
 
 # Import OpenRouter client for LLM calls
-from openrouter_client import create_llm_client, OpenRouterError, LLMProviderError
+from openrouter_client import (
+    GEMINI_MODEL,
+    GEMINI_TIMEOUT_SECONDS,
+    LLMProviderError,
+    OpenRouterError,
+    call_google_gemini_generate_content,
+    create_llm_client,
+)
 
 
 ENVIRONMENT_OPTIONS = {
@@ -307,52 +313,18 @@ class PromptOrchestrator:
         
         # Fallback to direct Google API (legacy behavior)
         try:
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
-            headers = {
-                "x-goog-api-key": self.google_api_key,
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ]
-            }
-
-            response = requests.post(url, headers=headers, json=payload, timeout=90)
-            response.raise_for_status()
-
-            data = response.json()
-            candidates = data.get('candidates') or []
-            if not candidates:
-                # Surface Gemini block/safety signals in logs for quick debugging.
-                raise RuntimeError(f"No candidates returned by Gemini. Response keys: {list(data.keys())}")
-
-            parts = candidates[0].get('content', {}).get('parts', [])
-            texts = [part.get('text', '') for part in parts if part.get('text')]
-            if not texts:
-                raise RuntimeError("Gemini candidate had no text parts.")
-
-            return "\n".join(texts).strip()
-
-        except requests.exceptions.HTTPError as e:
-            print(f"❌ Gemini API HTTP Error: {e.response.status_code}")
-            print(f"   Response: {e.response.text[:500]}")
-            raise
-        except requests.exceptions.Timeout:
-            print("❌ Gemini API Timeout (>90s)")
-            raise
-        except (KeyError, RuntimeError) as e:
-            print(f"❌ Gemini API Response Parsing Error: {e}")
-            print(f"   Response: {response.text[:500]}")
-            raise
-        except Exception as e:
-            print(f"❌ Unexpected Gemini API Error: {e}")
+            print("🔄 Using direct Google Gemini 2.5 Pro")
+            return call_google_gemini_generate_content(
+                prompt=prompt,
+                api_key=self.google_api_key,
+                model=GEMINI_MODEL,
+                temperature=1.0,
+                max_output_tokens=12000,
+                thinking_budget=8000,
+                timeout=GEMINI_TIMEOUT_SECONDS,
+            )
+        except LLMProviderError as e:
+            print(f"❌ Gemini API Error: {e}")
             raise
 
     def save_output(self, filename: str, content: str):

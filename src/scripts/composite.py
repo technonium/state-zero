@@ -6,10 +6,10 @@ Takes an AI-generated media file + pipeline data and produces
 a final 1080×1920 card matching the Figma template pixel-for-pixel.
 
 Usage:
-    python composite.py --test --type image
     python composite.py --image art.png --type image --data daily.json --meta meta.json --output card.png
     python composite.py --video art.mp4 --type video --data daily.json --meta meta.json --output card.mp4
     python composite.py --image art.png --data daily.json --metadata meta.json --output card.png
+    python ops/composite_smoke_test.py --type image
 """
 
 from __future__ import annotations
@@ -87,13 +87,6 @@ FONT_MEDIUM = ASSETS_DIR / "SpaceGrotesk-Medium.ttf"
 CARD_FRAME_PNG = ASSETS_DIR / "card_frame.png"
 SPARK_ICON_PNG = ASSETS_DIR / "spark_icon.png"
 
-# ── Test media sizes ──────────────────────────
-TEST_IMAGE_W = CARD_W
-TEST_IMAGE_H = 1440
-TEST_VIDEO_W = CARD_W
-TEST_VIDEO_H = CARD_H
-
-
 # ═══════════════════════════════════════════════════════
 #  FONT LOADING
 # ═══════════════════════════════════════════════════════
@@ -123,32 +116,6 @@ def resize_cover(img: Image.Image, w: int, h: int) -> Image.Image:
     left = (new_w - w) // 2
     top = (new_h - h) // 2
     return img.crop((left, top, left + w, top + h))
-
-
-def make_test_art(w: int, h: int) -> Image.Image:
-    """Generate a placeholder gradient for testing."""
-    img = Image.new("RGBA", (w, h))
-    draw = ImageDraw.Draw(img)
-    for y in range(h):
-        t = y / h
-        r = int(20 + 40 * t)
-        g = int(80 + 60 * (1 - t))
-        b = int(60 + 100 * t)
-        draw.line([(0, y), (w, y)], fill=(r, g, b, 255))
-    return img
-
-
-def make_test_video(output_path: Path, w: int, h: int):
-    """Generate a silent 2-second blue/purple scrolling MP4."""
-    try:
-        subprocess.run([
-            "ffmpeg", "-y", "-f", "lavfi",
-            "-i", f"color=c=blue:s={w}x{h}:d=2",
-            "-c:v", "libx264", str(output_path)
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    except Exception as e:
-        print(f"Error creating test video (is ffmpeg installed?): {e}")
-        sys.exit(1)
 
 
 def check_ffmpeg():
@@ -454,42 +421,8 @@ def process_video_card(video_path: Path, data: dict, output_path: Path):
         overlay_path.unlink(missing_ok=True)
 
 
-# ═══════════════════════════════════════════════════════
-#  TEST DATA GENERATOR
-# ═══════════════════════════════════════════════════════
-
-def get_test_data() -> dict:
-    return {
-        "date": "25 FEB 2026",
-        "title": "ASH MERIDIAN",
-        "description": "The last recorded surface before the drift consumed the lower plains",
-        "strain": 15.4,
-        "recovery": 83,
-        "sleep_score": 84,
-    }
-
-def run_test_image():
-    art_path = Path("_test_image.png")
-    out_path = Path("test_out_image.png")
-    make_test_art(TEST_IMAGE_W, TEST_IMAGE_H).save(art_path)
-    process_image_card(art_path, get_test_data(), out_path)
-    art_path.unlink()
-
-def run_test_video():
-    vid_path = Path("_test_video.mp4")
-    out_path = Path("test_out_video.mp4")
-    make_test_video(vid_path, TEST_VIDEO_W, TEST_VIDEO_H)
-    process_video_card(vid_path, get_test_data(), out_path)
-    vid_path.unlink()
-
-
-# ═══════════════════════════════════════════════════════
-#  CLI
-# ═══════════════════════════════════════════════════════
-
 def main():
     parser = argparse.ArgumentParser(description="State Zero Compositing (Dual Format)")
-    parser.add_argument("--test", action="store_true", help="Run with sample data and generated media")
     parser.add_argument("--type", choices=["image", "video"], help="Outputs Format A (Image) or Format B (Video)")
     
     # Inputs for production
@@ -516,17 +449,8 @@ def main():
         else:
             parser.error("Specify --type, or provide exactly one of --image/--video.")
 
-    # 1. TEST MODE
-    if args.test:
-        if render_type == "image":
-            run_test_image()
-        else:
-            run_test_video()
-        return
-
-    # 2. PROD MODE
     if not args.data or not meta_path:
-        parser.error("--data and --meta/--metadata JSON files are required in production mode.")
+        parser.error("--data and --meta/--metadata JSON files are required.")
 
     # Parse JSONs
     with open(args.data) as f:
