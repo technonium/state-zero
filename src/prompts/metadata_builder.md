@@ -39,6 +39,14 @@ These are style and pattern references only — you are not required to use any 
 
 Bad: LOW GRIND (gym phrase), NO RUSH (casual phrase), LIVE EDGE (product name), THICK FOG (literal keyword), VOID WEIGHT (burned words)
 
+Depth steer:
+- SURFACE: open, ridge, reach, field, plain, exposed
+- MID-DEPTH: recess, overhang, channel, alcove, lip, shelter
+- DEEP: chamber, vault, shaft, trench, underlayer
+- ABYSS: seam, fracture, pressure, fissure, sealed core, buried vault
+- Avoid cosmic or open-space language for ABYSS.
+- Avoid cave or chamber language for MID-DEPTH.
+
 ---
 
 ## SCENE_DESCRIPTION

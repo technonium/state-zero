@@ -64,6 +64,19 @@ Use the single most characteristic motion for this environment. One motion acros
 
 ---
 
+## Depth Interpretation
+
+Translate depth through sky access and light direction:
+
+- **SURFACE** — open air, exposed scale, sky fully readable
+- **MID-DEPTH** — shelter edge, recess, overhang, partial sky still visible
+- **DEEP** — interior chamber, ceiling readable, shaft-light descending from above
+- **ABYSS** — sealed compression, no open-sky framing, no majestic reveal, light only from fractures or internal pressure
+
+For normally open-air environments in **ABYSS**, reinterpret motion as trapped internal motion: fracture mist, pressure dust, mineral haze, ice particulate, seam glow. Never use surface weather or broad sky drift there.
+
+---
+
 ## Instructions
 
 Write as if directing a cinematographer for a slow, contemplative 8-second take.
@@ -72,7 +85,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 
 1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner into how the camera moves. Do not quote keywords verbatim.
 2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds.
-3. Atmosphere close — {moon_count} moons, quality of light, film grain present throughout, lens bloom on the brightest area.
+3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. If depth_level is ABYSS, celestial presence must be a crescent or point glimpsed through a fracture, or absent.
 
 **Hard rules:**
 - Camera movement is a creative choice — there is no default
@@ -83,6 +96,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 - All motion subtle and atmospheric
 - Film grain and lens bloom persist throughout
 - 8 seconds, single-take — never write "seamless loop" or "looping"
+- If depth_level is ABYSS: scene must feel sealed and compressed. No open-sky framing, no broad atmospheric glow falling from above, no majestic scale reveal. Light comes from fractures and internal pressure only.
 
 ---
 

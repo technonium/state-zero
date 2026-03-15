@@ -174,9 +174,9 @@ def get_depth_keywords(sleep_zone: str) -> list:
     """Sleep Zone → Depth Keywords (SPATIAL only)"""
     mapping = {
         "SURFACE": ["Celestial", "Elevated", "Bright", "Open"],
-        "MID-DEPTH": ["Sheltered", "Cavern", "Enclosed", "Filtered"],
-        "DEEP": ["Subterranean", "Obscured", "Limited", "Buried"],
-        "ABYSS": ["Void", "Compressed", "Primordial", "Darkness"]
+        "MID-DEPTH": ["Beneath", "Overhang", "Partial-sky", "One-direction-light"],
+        "DEEP": ["Chamber", "Ceiling-visible", "Shaft-light", "Distant-opening"],
+        "ABYSS": ["Sealed", "Compression-fractures", "Interior-pressure", "No-above"]
     }
     return mapping.get(sleep_zone, [])
 
