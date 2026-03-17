@@ -130,6 +130,7 @@ Once you've selected your option above, apply these language rules:
 
 ### Option A — Sculptural 100%
 - Creature IS the geology, pure sculptural forms
+- Optional: where composition allows, the overall arrangement of major geological masses may loosely carry a broad formal echo of the geological [QUALITY] derived from the creature — in how formations are weighted, angled, or grouped at landscape scale. Not in surface detail. Subtle and emergent, not forced. May or may not appear.
 - **Required phrases:** "formations barely evoke", "geological features", "natural erosion patterns", "accidental arrangement", "viewer's pareidolia"
 - **creature_integration.visibility example:** "Geological formations barely evoke [QUALITY] through natural erosion patterns — massive stone structures whose accidental arrangement might suggest [QUALITY] to the viewer's imagination, nothing more"
 - **core_concept phrasing (condensed):** "massive [environment] formations through natural erosion patterns, accidental geological arrangement carrying [QUALITY] to the viewer's imagination"
@@ -137,6 +138,7 @@ Once you've selected your option above, apply these language rules:
 
 ### Option B — Sculptural 60-70% + Pattern-Based 30-40%
 - Sculptural primary, with delicate crystal/frost/light patterns threading through
+- Optional: where composition allows, the overall arrangement of major geological masses may loosely carry a broad formal echo of the geological [QUALITY] derived from the creature — in how formations are weighted, angled, or grouped at landscape scale. Not in surface detail. Subtle and emergent, not forced. May or may not appear.
 - **Required phrases:** "geological formations" + "patterns that might suggest", "viewer's pareidolia"
 - **CRYSTALLINE OVERRIDE:** If environment is "Crystalline (Active)", the sculptural mass itself IS optically active crystal. Describe with: "subsurface light scattering", "internal refraction", "volumetric mineral glow". The mass IS crystal, not stone decorated with crystal.
 - **creature_integration.visibility example:** "Sculptural geological masses dominate, with delicate [secondary texture] threading through that might suggest [QUALITY] — the viewer's pareidolia connects [pattern details] to [QUALITY], but landscape remains primary"
@@ -146,12 +148,14 @@ Once you've selected your option above, apply these language rules:
 
 ### Option C — Sculptural 60-70% + Physics 30-40%
 - Sculptural primary, with spatial distortion/gravitational lensing adding uncanny tension
+- Optional: where composition allows, the overall arrangement of major geological masses may loosely carry a broad formal echo of the geological [QUALITY] derived from the creature — in how formations are weighted, angled, or grouped at landscape scale. Not in surface detail. Subtle and emergent, not forced. May or may not appear.
 - **Required phrases:** "geological formations" + "gravitational lensing", "atmospheric phenomenon", "spatial warping"
 - **creature_integration.visibility example:** "Massive geological formations barely evoke [QUALITY] through natural arrangement — gravitational lensing around formation edges creates subtle spatial distortion that adds uncanny tension, purely atmospheric phenomenon enhancing the viewer's perception"
 - **core_concept phrasing (condensed):** "massive [environment] formations carrying [QUALITY], subtle spatial distortion warping the atmosphere around geological forms"
 - Physics effects are environmental, not dominant
 
 **Important:** `creature_integration.visibility` gets the full expanded language. `core_concept` gets the condensed version. Both must use language matching YOUR SELECTED OPTION. Both use [QUALITY] — the creature's physical essence in geological terms, drawn from the table below.
+Optional across all options: where composition allows, the overall arrangement of major geological masses may loosely carry a broad formal echo of the geological [QUALITY] derived from the creature — in how formations are weighted, angled, or grouped at landscape scale. Not in surface detail. Subtle and emergent, not forced. May or may not appear.
 
 ---
 
@@ -423,7 +427,7 @@ Fill ALL placeholders below using the input data and rules above:
   "creature_integration": {
     "blend": "Option [A/B/C based on art keywords analysis]: [Copy exact blend description: 'Sculptural 100%' or 'Sculptural 60-70% + Pattern-Based 30-40%' or 'Sculptural 60-70% + Physics 30-40%']",
     "clarity": "extremely abstract — sculptural geological dominant, secondary accent if B/C",
-    "visibility": "[APPLY BLEND OPTION LANGUAGE RULES based on YOUR SELECTED OPTION — this is the most critical field]",
+    "visibility": "[APPLY BLEND OPTION LANGUAGE RULES based on YOUR SELECTED OPTION — this is the most critical field. Optional: if composition allows, the overall geological massing may loosely carry a broad formal echo of the geological [QUALITY] derived from the creature in how major formations are weighted or grouped — landscape scale only, subtle, never forced.]",
     "priority": "100% landscape focus, creature as geological formation",
     "scale": "massive and epic",
     "texture": "{environment} materials completely dominant, sculptural always primary",

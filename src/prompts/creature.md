@@ -52,15 +52,14 @@ The Maha/Antar planets set the backdrop and season. They should color the creatu
 
 ## Selection Range
 
-Draw from these categories — mythology and hybrid archetypes are the primary range, not the exception:
-- Real animals (only if genuinely the most symbolically precise option for today's planetary combination)
-- Hindu/Vedic mythological creatures
-- World mythology (Greek, Norse, Japanese, Egyptian, Mesoamerican, Celtic, etc.)
+Draw from these categories with equal seriousness:
+- Real animals
+- Mythological creatures from any tradition, including Hindu/Vedic, Greek, Norse, Japanese, Egyptian, Mesoamerican, Celtic, and others
 - Alien or invented creatures
 - Hybrid archetypes
 
 
-Real animals are the default trap — they are easy to justify but rarely the sharpest symbolic fit. Exhaust mythology and hybrid options first. The first creature that comes to mind is rarely the most precise one. Sit with the Prana and Sookshma combination before committing.
+Choose the creature that is most symbolically precise for today's planetary combination. Do not default to mythology, hybrids, or real animals automatically. Hindu/Vedic creatures are valid, but they are only one source among many. The first creature that comes to mind is rarely the most precise one. Sit with the Prana and Sookshma combination before committing, and choose what feels most exact rather than most culturally obvious.
 
 ---
 
@@ -90,4 +89,4 @@ Select a creature that has not appeared in this list. If the list shows "None", 
 Output only this, nothing else. Do not explain rejected creatures or show your reasoning.
 
 **Example:**
-"Narasimha — the threshold-crossing form crossing between realms embodies Venus Prana's disruption of comfort, the lion-human hybrid reflects Mercury Sookshma's dual nature operating outside its own rules, the liminal strike mirrors the 8th house activation."
+"Raven — the watchful boundary-crosser embodies Mercury Prana's strategic intelligence while Saturn Sookshma's pressure gives it patience, omen-sense, and a presence that feels both terrestrial and otherworldly at once."

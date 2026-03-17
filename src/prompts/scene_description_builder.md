@@ -1,6 +1,6 @@
-# Card Metadata Builder
+# Card Scene Description Builder
 
-Generate two fields from today's data. Return raw JSON only.
+Generate a scene description for today's landscape card.
 
 ---
 
@@ -12,40 +12,6 @@ Generate two fields from today's data. Return raw JSON only.
 - **Body Keywords:** {body_keywords}
 - **One-liner:** {one_liner}
 - **Date Display:** {date_display}
-
----
-
-## Recent Titles (Do Not Repeat)
-
-{recent_titles}
-
-The generated title must not exactly match any title in this list. If the list shows "None", no restriction applies.
-
----
-
-## TITLE
-
-A codename for this landscape. Sounds like a place that exists, not a phrase or a feeling.
-
-- 1-2 words, UPPERCASE, 10-13 characters including space, never below 8
-- Draw from environment, depth level, and art keywords — not from body state phrases
-- Pattern that works: [material or quality] + [geographic or structural noun]
-- Must NOT be a literal keyword translation — find what lies beneath it
-- Burned words — never use: VOID, WEIGHT, DRIFT, DEPTH, HOLLOW, STATIC, EDGE, HOLD, RUSH, GRIND
-
-Good: ASH MERIDIAN, AMBER DUNE, IRON MIST, STORM BONE, CINDER PLAIN, COLD LATTICE, EMBER SHELF, PALE TRANSIT, CARBON VEIL, FERRIC SHOAL, CHALK BASIN, SLATE REACH, OCHRE BLUFF, QUARTZ SCARP, RIME PLATEAU, CLAY MARGIN, LOAM PASSAGE, SILT TERRACE, SHALE CORONA
-
-These are style and pattern references only — you are not required to use any of these words. If the inputs suggest something entirely new, follow that.
-
-Bad: LOW GRIND (gym phrase), NO RUSH (casual phrase), LIVE EDGE (product name), THICK FOG (literal keyword), VOID WEIGHT (burned words)
-
-Depth steer:
-- SURFACE: open, ridge, reach, field, plain, exposed
-- MID-DEPTH: recess, overhang, channel, alcove, lip, shelter
-- DEEP: chamber, vault, shaft, trench, underlayer
-- ABYSS: seam, fracture, pressure, fissure, sealed core, buried vault
-- Avoid cosmic or open-space language for ABYSS.
-- Avoid cave or chamber language for MID-DEPTH.
 
 ---
 
@@ -78,6 +44,4 @@ Bad:
 
 ## Output
 
-Raw JSON only. No markdown, no explanation, no extra keys.
-
-{"title": "TITLE", "scene_description": "One or two sentences, 65-85 characters.", "date_display": "{date_display}"}
+Return only the scene description text. No JSON. No markdown. No explanation.

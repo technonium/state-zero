@@ -39,6 +39,7 @@ prana_cache.json
 # Claude AI local files
 .claude/
 .kilocode/
+.playwright/
 
 # IDE
 .idea/
