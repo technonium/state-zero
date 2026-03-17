@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import argparse
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 from database_manager import CardDatabase
@@ -13,7 +14,13 @@ from environment_utils import (
     split_environment_output,
     normalize_environment_name,
 )
-from title_utils import clean_title, normalize_title
+from title_utils import (
+    assess_title_candidate,
+    build_structural_title_keys,
+    clean_title,
+    normalize_title,
+    structural_title_key,
+)
 from utils import get_project_root, get_output_root
 
 load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
@@ -291,8 +298,18 @@ class PromptOrchestrator:
             # Check for JSON templates first (before other keywords that might appear in prompts)
             if "MASTER JSON TEMPLATE" in prompt or "OUTPUT INSTRUCTIONS" in prompt:
                 return '{\n  "creature_integration": {"blend": "Option B: Sculptural 60-70% + Pattern-Based 30-40%"},\n  "core_concept": "Mock concept",\n  "scene_config": {"atmosphere": "thick"}\n}'
-            elif "metadata" in prompt.lower() and "title" in prompt.lower():
-                return '{\n  "title": "The Daily Resurgence",\n  "scene_description": "A crystalline environment reflecting inner depths",\n  "date_display": "TEST DATE 2026"\n}'
+            elif "# Card Title Builder" in prompt:
+                return "\n".join(
+                    [
+                        "BASALT VISTA",
+                        "GLASS HARBOR",
+                        "SILENT BASIN",
+                        "EMBER CAIRN",
+                        "HOLLOW MONOLITH",
+                    ]
+                )
+            elif "# Card Scene Description Builder" in prompt:
+                return "The field opened past the last edge. Everything reached and nothing pushed back."
             elif "interpretation" in prompt.lower() and "maha" in prompt.lower():
                 return "The current planetary periods suggest an introspective and solitary focus. This highlights the depth of rest achieved today."
             elif "creature" in prompt.lower() and "archetype" in prompt.lower():
@@ -819,13 +836,136 @@ class PromptOrchestrator:
 
         return image_json
 
-    def extract_metadata(self, daily_data: dict, date_display: str, environment: str = "", image_json: dict = None) -> dict:
-        """Extract card metadata (title, scene description) from behavioral state only"""
-        template = self.load_template('metadata_builder')
+    def _parse_title_candidates(self, raw_output: str) -> list[str]:
+        candidates: list[str] = []
+        seen: set[str] = set()
+        lines = raw_output.splitlines() if raw_output.strip() else [raw_output]
+
+        for line in lines:
+            candidate = line.strip()
+            if not candidate:
+                continue
+            candidate = re.sub(r"^(title|candidate)\s*\d*\s*:\s*", "", candidate, flags=re.IGNORECASE)
+            for separator in (" — ", " - "):
+                if separator in candidate:
+                    candidate = candidate.split(separator, 1)[0].strip()
+            cleaned = clean_title(candidate)
+            normalized = normalize_title(cleaned)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            candidates.append(cleaned)
+
+        if not candidates:
+            cleaned = clean_title(raw_output)
+            if cleaned:
+                candidates.append(cleaned)
+
+        return candidates[:5]
+
+    def _build_title_retry_prompt(
+        self,
+        filled_prompt: str,
+        *,
+        previous_output: str,
+        rejected_candidates: list[str],
+        recent_titles: list[str],
+        recent_structural_keys: list[str],
+    ) -> str:
+        recent_titles_text = ", ".join(recent_titles) if recent_titles else "None"
+        recent_structural_keys_text = ", ".join(recent_structural_keys) if recent_structural_keys else "None"
+        rejected_text = ", ".join(rejected_candidates) if rejected_candidates else "None"
+        return (
+            f"{filled_prompt}\n\n"
+            "---\n\n"
+            "## Correction\n\n"
+            "None of your previous title candidates could be accepted.\n"
+            f"Rejected candidates: {rejected_text}\n"
+            f"Exact banned titles: {recent_titles_text}\n"
+            f"Structural keys to avoid: {recent_structural_keys_text}\n"
+            "Return 5 NEW title candidates, strongest first, one per line.\n"
+            "Do not number them. Do not explain them. Do not repeat any rejected candidate.\n\n"
+            "Previous response:\n"
+            f"{previous_output.strip()}\n"
+        )
+
+    def _clean_scene_description_output(self, raw_output: str) -> str:
+        cleaned = raw_output.strip()
+        if not cleaned:
+            return ""
+
+        if cleaned.startswith("{"):
+            try:
+                parsed = json.loads(self._extract_json_from_response(cleaned))
+                if isinstance(parsed, dict):
+                    cleaned = str(
+                        parsed.get("scene_description")
+                        or parsed.get("description")
+                        or cleaned
+                    ).strip()
+            except json.JSONDecodeError:
+                pass
+
+        fence_match = re.search(r"```(?:\w+)?\s*(.*?)```", cleaned, re.DOTALL)
+        if fence_match:
+            cleaned = fence_match.group(1).strip()
+
+        cleaned = re.sub(r"^scene_description\s*:\s*", "", cleaned, flags=re.IGNORECASE)
+        cleaned = " ".join(line.strip() for line in cleaned.splitlines() if line.strip())
+        return cleaned.strip("\"'` ")
+
+    def _validate_scene_description(self, value: str) -> list[str]:
+        reasons: list[str] = []
+        if not value:
+            return ["blank_scene_description"]
+
+        if len(value) < 55:
+            reasons.append("scene_description_too_short")
+        if len(value) > 100:
+            reasons.append("scene_description_too_long")
+
+        forbidden_patterns = [
+            (r"\bbody\b", "mentions_body"),
+            (r"\brecovery\b", "mentions_metric_language"),
+            (r"\bstrain\b", "mentions_metric_language"),
+            (r"\bsleep score\b", "mentions_metric_language"),
+            (r"\bscore\b", "mentions_metric_language"),
+            (r"\bzone\b", "mentions_metric_language"),
+            (r"%", "mentions_percentage"),
+            (r"\bpercent(?:age)?\b", "mentions_percentage"),
+        ]
+        for pattern, reason in forbidden_patterns:
+            if re.search(pattern, value, flags=re.IGNORECASE) and reason not in reasons:
+                reasons.append(reason)
+        return reasons
+
+    def _build_scene_retry_prompt(
+        self,
+        filled_prompt: str,
+        *,
+        previous_output: str,
+        rejection_reasons: list[str],
+    ) -> str:
+        return (
+            f"{filled_prompt}\n\n"
+            "---\n\n"
+            "## Correction\n\n"
+            "Your previous scene description is invalid.\n"
+            f"Validation issues: {', '.join(rejection_reasons)}\n"
+            "Return one corrected scene description only. No JSON. No explanation.\n\n"
+            "Previous response:\n"
+            f"{previous_output.strip()}\n"
+        )
+
+    def _fallback_scene_description(self, image_json: dict | None) -> str:
+        image_json = image_json or {}
+        core_concept = str(image_json.get('core_concept', '')).strip()
+        short_scene = (core_concept[:157] + '...') if len(core_concept) > 160 else core_concept
+        return short_scene or "Scene description unavailable."
+
+    def generate_title(self, daily_data: dict, date_display: str, environment: str = "") -> dict:
+        template = self.load_template('title_builder')
         behavior = daily_data.get('behavior_matrix', {})
-        body_keywords = ', '.join(behavior.get('body_keywords', []))
-        art_keywords = ', '.join(behavior.get('art_keywords', []))
-        one_liner = behavior.get('one_liner', '')
         env_name = environment.split('—')[0].strip() if '—' in environment else environment.strip()
         run_date = daily_data.get('date') or os.getenv('PIPELINE_DATE')
         recent_title_context = self._resolve_recent_titles(run_date)
@@ -833,130 +973,227 @@ class PromptOrchestrator:
         placeholders = {
             'environment': env_name,
             'depth_level': str(daily_data.get('depth_level', 'Unknown')),
-            'art_keywords': art_keywords,
-            'body_keywords': body_keywords,
-            'one_liner': one_liner,
+            'art_keywords': ', '.join(behavior.get('art_keywords', [])),
+            'body_keywords': ', '.join(behavior.get('body_keywords', [])),
+            'one_liner': behavior.get('one_liner', ''),
             'date_display': date_display,
             'recent_titles': recent_title_context['recent_titles_prompt'],
+            'recent_structural_keys': recent_title_context['recent_structural_keys_prompt'],
         }
 
         filled_prompt = self.fill_template(template, placeholders)
-        self.save_output('last_prompt_metadata.txt', filled_prompt)
-        retry_prompt_path = self.output_dir / 'last_prompt_metadata_retry.txt'
-        first_metadata, first_raw_output, first_parse_status = self._request_metadata_payload(
-            filled_prompt,
-            date_display,
-            image_json=image_json,
+        self.save_output('last_prompt_title.txt', filled_prompt)
+        first_raw_output = self.call_llm(filled_prompt)
+        first_candidates = self._parse_title_candidates(first_raw_output)
+        first_assessments = [
+            assess_title_candidate(
+                candidate,
+                banned_exact_titles=recent_title_context['banned_recent_titles'],
+                banned_structural_keys=recent_title_context['banned_structural_keys'],
+            )
+            for candidate in first_candidates
+        ]
+
+        first_valid = next((assessment for assessment in first_assessments if assessment.is_fully_valid), None)
+        retry_triggered = False
+        retry_raw_output = ""
+        retry_candidates: list[str] = []
+        retry_assessments = []
+        selected_assessment = first_valid
+        selected_title_source = (
+            'history_lookup_failed_no_guard'
+            if first_valid and recent_title_context['db_lookup_status'] != 'ok'
+            else 'first_batch_valid'
         )
-        first_title = first_metadata.get("title", "")
-        first_title_normalized = normalize_title(first_title)
+
+        title_retry_path = self.output_dir / 'last_prompt_title_retry.txt'
+        if not first_valid:
+            retry_triggered = True
+            retry_prompt = self._build_title_retry_prompt(
+                filled_prompt,
+                previous_output=first_raw_output,
+                rejected_candidates=[assessment.cleaned for assessment in first_assessments if assessment.cleaned],
+                recent_titles=recent_title_context['recent_titles'],
+                recent_structural_keys=recent_title_context['recent_structural_keys'],
+            )
+            self.save_output('last_prompt_title_retry.txt', retry_prompt)
+            retry_raw_output = self.call_llm(retry_prompt)
+            retry_candidates = self._parse_title_candidates(retry_raw_output)
+            retry_assessments = [
+                assess_title_candidate(
+                    candidate,
+                    banned_exact_titles=recent_title_context['banned_recent_titles'],
+                    banned_structural_keys=recent_title_context['banned_structural_keys'],
+                )
+                for candidate in retry_candidates
+            ]
+            retry_valid = next((assessment for assessment in retry_assessments if assessment.is_fully_valid), None)
+            if retry_valid:
+                selected_assessment = retry_valid
+                selected_title_source = 'retry_batch_valid'
+            else:
+                combined_soft = next(
+                    (
+                        (assessment, source)
+                        for source, assessments in (
+                            ('first_batch', first_assessments),
+                            ('retry_batch', retry_assessments),
+                        )
+                        for assessment in assessments
+                        if assessment.is_soft_acceptable
+                    ),
+                    None,
+                )
+                if combined_soft:
+                    selected_assessment, selected_batch = combined_soft
+                    selected_title_source = f'soft_accept_family_collision_{selected_batch}'
+                else:
+                    selected_assessment = None
+                    selected_title_source = 'hard_failure_fallback'
+        else:
+            if title_retry_path.exists():
+                title_retry_path.unlink()
+
+        final_title = selected_assessment.cleaned if selected_assessment else "Daily State Card"
+        return {
+            'title': final_title,
+            'prompt': filled_prompt,
+            'debug': {
+                'recent_titles_used': recent_title_context['recent_titles'],
+                'recent_structural_keys_used': recent_title_context['recent_structural_keys'],
+                'first_raw_output': first_raw_output,
+                'first_candidates': first_candidates,
+                'first_candidate_assessments': [assessment.as_dict() for assessment in first_assessments],
+                'retry_triggered': retry_triggered,
+                'retry_raw_output': retry_raw_output,
+                'retry_candidates': retry_candidates,
+                'retry_candidate_assessments': [assessment.as_dict() for assessment in retry_assessments],
+                'selected_title': final_title,
+                'selected_structural_key': structural_title_key(final_title),
+                'selected_title_source': selected_title_source,
+            },
+            'recent_title_context': recent_title_context,
+        }
+
+    def generate_scene_description(
+        self,
+        daily_data: dict,
+        date_display: str,
+        environment: str = "",
+        image_json: dict | None = None,
+    ) -> dict:
+        template = self.load_template('scene_description_builder')
+        behavior = daily_data.get('behavior_matrix', {})
+        env_name = environment.split('—')[0].strip() if '—' in environment else environment.strip()
+
+        placeholders = {
+            'environment': env_name,
+            'depth_level': str(daily_data.get('depth_level', 'Unknown')),
+            'art_keywords': ', '.join(behavior.get('art_keywords', [])),
+            'body_keywords': ', '.join(behavior.get('body_keywords', [])),
+            'one_liner': behavior.get('one_liner', ''),
+            'date_display': date_display,
+        }
+
+        filled_prompt = self.fill_template(template, placeholders)
+        self.save_output('last_prompt_scene_description.txt', filled_prompt)
+        first_raw_output = self.call_llm(filled_prompt)
+        first_cleaned = self._clean_scene_description_output(first_raw_output)
+        first_rejection_reasons = self._validate_scene_description(first_cleaned)
 
         retry_triggered = False
         retry_raw_output = ""
-        retry_parse_status = "not_attempted"
-        retry_parsed_title = ""
-        final_metadata = first_metadata
-        final_selection_source = "json_fallback" if first_parse_status == "json_fallback" else "llm_valid"
+        retry_cleaned = ""
+        retry_rejection_reasons: list[str] = []
+        selected_scene = first_cleaned
+        selected_scene_source = 'first_pass_valid'
 
-        should_retry = (
-            first_parse_status != "json_fallback"
-            and recent_title_context['db_lookup_status'] == 'ok'
-            and first_title_normalized in recent_title_context['banned_recent_titles']
-        )
-
-        if should_retry:
+        scene_retry_path = self.output_dir / 'last_prompt_scene_description_retry.txt'
+        if first_rejection_reasons:
             retry_triggered = True
-            retry_prompt = self._build_metadata_retry_prompt(
+            retry_prompt = self._build_scene_retry_prompt(
                 filled_prompt,
                 previous_output=first_raw_output,
-                previous_title=first_title,
-                recent_titles=recent_title_context['recent_titles'],
+                rejection_reasons=first_rejection_reasons,
             )
-            self.save_output('last_prompt_metadata_retry.txt', retry_prompt)
-            retry_metadata, retry_raw_output, retry_parse_status = self._request_metadata_payload(
-                retry_prompt,
-                date_display,
-                image_json=image_json,
-            )
-            retry_parsed_title = retry_metadata.get("title", "")
-            retry_title_normalized = normalize_title(retry_parsed_title)
-
-            if retry_parse_status == "json_fallback":
-                final_metadata = retry_metadata
-                final_selection_source = "json_fallback"
-            elif retry_title_normalized not in recent_title_context['banned_recent_titles']:
-                final_metadata = retry_metadata
-                final_selection_source = "corrective_retry_valid"
+            self.save_output('last_prompt_scene_description_retry.txt', retry_prompt)
+            retry_raw_output = self.call_llm(retry_prompt)
+            retry_cleaned = self._clean_scene_description_output(retry_raw_output)
+            retry_rejection_reasons = self._validate_scene_description(retry_cleaned)
+            if not retry_rejection_reasons:
+                selected_scene = retry_cleaned
+                selected_scene_source = 'retry_valid'
             else:
-                final_metadata = retry_metadata
-                final_selection_source = "repeat_after_retry_warning"
+                selected_scene = self._fallback_scene_description(image_json)
+                selected_scene_source = 'fallback_core_concept'
         else:
-            if retry_prompt_path.exists():
-                retry_prompt_path.unlink()
-            if first_parse_status == "json_fallback":
-                final_selection_source = "json_fallback"
-            elif recent_title_context['db_lookup_status'] != 'ok':
-                final_selection_source = "history_lookup_failed_no_guard"
-            else:
-                final_selection_source = "llm_valid"
+            if scene_retry_path.exists():
+                scene_retry_path.unlink()
 
+        return {
+            'scene_description': selected_scene,
+            'prompt': filled_prompt,
+            'debug': {
+                'first_raw_output': first_raw_output,
+                'first_cleaned_output': first_cleaned,
+                'first_rejection_reasons': first_rejection_reasons,
+                'retry_triggered': retry_triggered,
+                'retry_raw_output': retry_raw_output,
+                'retry_cleaned_output': retry_cleaned,
+                'retry_rejection_reasons': retry_rejection_reasons,
+                'selected_scene_description': selected_scene,
+                'selected_scene_source': selected_scene_source,
+            },
+        }
+
+    def extract_metadata(self, daily_data: dict, date_display: str, environment: str = "", image_json: dict = None) -> dict:
+        """Extract card metadata by generating title and scene description separately."""
+        run_date = daily_data.get('date') or os.getenv('PIPELINE_DATE')
+        title_result = self.generate_title(daily_data, date_display, environment)
+        scene_result = self.generate_scene_description(daily_data, date_display, environment, image_json=image_json)
+
+        combined_prompt = (
+            "# Metadata Prompt Trace\n\n"
+            "## Title Prompt\n\n"
+            f"{title_result['prompt']}\n\n"
+            "---\n\n"
+            "## Scene Description Prompt\n\n"
+            f"{scene_result['prompt']}\n"
+        )
+        self.save_output('last_prompt_metadata.txt', combined_prompt)
+
+        final_metadata = {
+            "title": title_result['title'],
+            "scene_description": scene_result['scene_description'],
+            "date_display": date_display,
+        }
         self.save_json_output(
             'metadata_selection_debug.json',
             {
                 'run_date': run_date,
-                'db_lookup_status': recent_title_context['db_lookup_status'],
-                'db_lookup_error': recent_title_context['db_lookup_error'],
-                'raw_recent_history': recent_title_context['raw_recent_history'],
-                'recent_titles_used': recent_title_context['recent_titles'],
-                'normalized_banned_titles': recent_title_context['normalized_banned_titles'],
-                'first_raw_output': first_raw_output,
-                'first_parse_status': first_parse_status,
-                'first_parsed_title': first_title,
-                'retry_triggered': retry_triggered,
-                'retry_raw_output': retry_raw_output,
-                'retry_parse_status': retry_parse_status,
-                'retry_parsed_title': retry_parsed_title,
+                'db_lookup_status': title_result['recent_title_context']['db_lookup_status'],
+                'db_lookup_error': title_result['recent_title_context']['db_lookup_error'],
+                'raw_recent_history': title_result['recent_title_context']['raw_recent_history'],
+                'recent_titles_used': title_result['recent_title_context']['recent_titles'],
+                'recent_structural_keys_used': title_result['recent_title_context']['recent_structural_keys'],
+                'normalized_banned_titles': title_result['recent_title_context']['normalized_banned_titles'],
+                'normalized_banned_structural_keys': title_result['recent_title_context']['normalized_banned_structural_keys'],
+                'title_debug': title_result['debug'],
+                'scene_debug': scene_result['debug'],
+                'title_selection_source': title_result['debug']['selected_title_source'],
+                'scene_selection_source': scene_result['debug']['selected_scene_source'],
                 'final_title': final_metadata.get('title', ''),
                 'final_scene_description': final_metadata.get('scene_description', ''),
-                'final_selection_source': final_selection_source,
+                'final_selection_source': (
+                    f"title:{title_result['debug']['selected_title_source']}"
+                    f"|scene:{scene_result['debug']['selected_scene_source']}"
+                ),
             },
         )
         with open(self.output_dir / 'card_metadata.json', 'w', encoding='utf-8') as f:
             json.dump(final_metadata, f, indent=2)
 
         return final_metadata
-
-    def _request_metadata_payload(self, prompt: str, date_display: str, *, image_json: dict | None = None):
-        metadata = None
-        last_raw_output = ""
-
-        for attempt in range(2):
-            metadata_output = self.call_llm(prompt)
-            last_raw_output = metadata_output
-            try:
-                json_str = self._extract_json_from_response(metadata_output)
-                parsed = json.loads(json_str)
-                metadata = {
-                    "title": clean_title(parsed.get("title", "")) or "Untitled State",
-                    "scene_description": parsed.get("scene_description", "").strip() or "Scene description unavailable.",
-                    "date_display": parsed.get("date_display", "").strip() or date_display,
-                }
-                return metadata, last_raw_output, "json_valid"
-            except json.JSONDecodeError as e:
-                if attempt == 0:
-                    print(f"⚠ Metadata JSON decode failed on attempt 1: {e}. Retrying once...")
-                else:
-                    print(f"⚠ Metadata JSON decode failed on attempt 2: {e}. Using fallback metadata.")
-
-        image_json = image_json or {}
-        core_concept = str(image_json.get('core_concept', '')).strip()
-        short_scene = (core_concept[:157] + '...') if len(core_concept) > 160 else core_concept
-        metadata = {
-            "title": "Daily State Card",
-            "scene_description": short_scene or "Scene description unavailable.",
-            "date_display": date_display,
-        }
-        return metadata, last_raw_output, "json_fallback"
 
     def _resolve_recent_titles(self, run_date: str | None) -> dict:
         raw_recent_history = []
@@ -977,6 +1214,9 @@ class PromptOrchestrator:
         recent_titles = []
         normalized_banned_titles = []
         banned_recent_titles = set()
+        recent_structural_keys = []
+        normalized_banned_structural_keys = []
+        banned_structural_keys = set()
 
         if db_lookup_status == 'ok':
             for title in raw_recent_history:
@@ -987,42 +1227,30 @@ class PromptOrchestrator:
                 banned_recent_titles.add(normalized_title)
                 normalized_banned_titles.append(normalized_title)
                 recent_titles.append(cleaned_title)
+            recent_structural_keys = [key.upper() for key in build_structural_title_keys(recent_titles)]
+            normalized_banned_structural_keys = [key.casefold() for key in recent_structural_keys]
+            banned_structural_keys = set(normalized_banned_structural_keys)
 
         recent_titles_prompt = "\n".join(f"- {title}" for title in recent_titles)
         if not recent_titles_prompt:
             recent_titles_prompt = "None — no restriction."
+        recent_structural_keys_prompt = "\n".join(f"- {key}" for key in recent_structural_keys)
+        if not recent_structural_keys_prompt:
+            recent_structural_keys_prompt = "None — no restriction."
 
         return {
             'db_lookup_status': db_lookup_status,
             'db_lookup_error': db_lookup_error,
             'raw_recent_history': raw_recent_history,
             'recent_titles': recent_titles,
+            'recent_structural_keys': recent_structural_keys,
             'recent_titles_prompt': recent_titles_prompt,
+            'recent_structural_keys_prompt': recent_structural_keys_prompt,
             'normalized_banned_titles': normalized_banned_titles,
+            'normalized_banned_structural_keys': normalized_banned_structural_keys,
             'banned_recent_titles': banned_recent_titles,
+            'banned_structural_keys': banned_structural_keys,
         }
-
-    def _build_metadata_retry_prompt(
-        self,
-        filled_prompt: str,
-        *,
-        previous_output: str,
-        previous_title: str,
-        recent_titles: list[str],
-    ) -> str:
-        recent_titles_text = ", ".join(recent_titles) if recent_titles else "None"
-        return (
-            f"{filled_prompt}\n\n"
-            "---\n\n"
-            "## Correction\n\n"
-            f'Your previous title "{previous_title}" is invalid because it appears in the recent-title exclusion list.\n'
-            f"Recent banned titles: {recent_titles_text}\n"
-            "Return a new metadata JSON object with a different title.\n"
-            "The scene description may change if needed, but the title must not repeat any banned title.\n"
-            "Do not explain the correction.\n\n"
-            "Previous response:\n"
-            f"{previous_output}\n"
-        )
 
     def build_video_prompt(self, daily_data: dict, environment: str, blend_option: str) -> str:
         """Build video animation prompt — scene continuation, no creature reference"""

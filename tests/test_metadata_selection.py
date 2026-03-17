@@ -39,13 +39,26 @@ class MetadataSelectionTests(unittest.TestCase):
     def _daily_data(self, run_date: str = "2026-03-14"):
         return {
             "date": run_date,
-            "depth_level": "Quiet",
+            "depth_level": "SURFACE",
             "behavior_matrix": {
                 "body_keywords": ["steady", "contained"],
                 "art_keywords": ["ashen", "open"],
                 "one_liner": "The field held the charge without breaking.",
             },
         }
+
+    def _metadata_responder(self, title_outputs: list[str], scene_outputs: list[str]):
+        title_iter = iter(title_outputs)
+        scene_iter = iter(scene_outputs)
+
+        def fake_call(prompt: str) -> str:
+            if "# Card Title Builder" in prompt:
+                return next(title_iter)
+            if "# Card Scene Description Builder" in prompt:
+                return next(scene_iter)
+            raise AssertionError(f"Unexpected prompt:\n{prompt}")
+
+        return fake_call
 
     def test_clean_title_normalizes_wrapped_noise(self):
         self.assertEqual(clean_title('**"ASH MERIDIAN"**.'), "ASH MERIDIAN")
@@ -70,7 +83,7 @@ class MetadataSelectionTests(unittest.TestCase):
 
         self.assertEqual(titles, ["VOID WEIGHT", "HOLLOW DRIFT", "VOID WEIGHT"])
 
-    def test_extract_metadata_renders_none_when_history_empty(self):
+    def test_extract_metadata_renders_empty_history_in_title_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -78,12 +91,9 @@ class MetadataSelectionTests(unittest.TestCase):
                 clear=False,
             ):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
-                orchestrator.call_llm = lambda prompt: json.dumps(
-                    {
-                        "title": "ASH MERIDIAN",
-                        "scene_description": "The field opened past the last edge.",
-                        "date_display": "MARCH 14 2026",
-                    }
+                orchestrator.call_llm = self._metadata_responder(
+                    ["ASH MERIDIAN\nCLEAR HORIZON\nGLASS SHELF\nSTONE REACH\nDEEP VAULT"],
+                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
                 )
 
                 metadata = orchestrator.extract_metadata(
@@ -91,18 +101,19 @@ class MetadataSelectionTests(unittest.TestCase):
                     "MARCH 14 2026",
                     environment="Frozen/Ice — quiet reason",
                 )
-                prompt_text = (orchestrator.output_dir / "last_prompt_metadata.txt").read_text(encoding="utf-8")
+                title_prompt = (orchestrator.output_dir / "last_prompt_title.txt").read_text(encoding="utf-8")
                 debug_payload = json.loads(
                     (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
                 )
 
         self.assertEqual(metadata["title"], "ASH MERIDIAN")
-        self.assertIn("## Recent Titles (Do Not Repeat)", prompt_text)
-        self.assertIn("None — no restriction.", prompt_text)
-        self.assertEqual(debug_payload["final_selection_source"], "llm_valid")
+        self.assertIn("## Recent Exact Titles (Do Not Repeat)", title_prompt)
+        self.assertIn("None — no restriction.", title_prompt)
+        self.assertEqual(debug_payload["title_selection_source"], "first_batch_valid")
         self.assertEqual(debug_payload["recent_titles_used"], [])
+        self.assertEqual(debug_payload["recent_structural_keys_used"], [])
 
-    def test_extract_metadata_retries_on_duplicate_title_and_accepts_unique_retry(self):
+    def test_extract_metadata_retries_when_first_batch_has_only_exact_or_structural_repeats(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -113,55 +124,36 @@ class MetadataSelectionTests(unittest.TestCase):
                 self._seed_title_history(
                     db,
                     [
-                        ("2026-03-13", "VOID WEIGHT", "ig_real_001"),
-                        ("2026-03-12", "VOID WEIGHT", "ig_real_002"),
+                        ("2026-03-13", "ASH MERIDIAN", "ig_real_001"),
+                        ("2026-03-12", "CLEAR REACH", "ig_real_002"),
                         ("2026-03-11", "HOLLOW DRIFT", "ig_real_003"),
                     ],
                 )
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
-                responses = iter(
+                orchestrator.call_llm = self._metadata_responder(
                     [
-                        json.dumps(
-                            {
-                                "title": "VOID WEIGHT",
-                                "scene_description": "The compression settled in plain sight.",
-                                "date_display": "MARCH 14 2026",
-                            }
-                        ),
-                        json.dumps(
-                            {
-                                "title": "ASH MERIDIAN",
-                                "scene_description": "The field opened past the last edge.",
-                                "date_display": "MARCH 14 2026",
-                            }
-                        ),
-                    ]
+                        "ASH MERIDIAN\nMERIDIAN\nSTONE REACH\nCLEAR REACH\nEMBER REACH",
+                        "BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING",
+                    ],
+                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
                 )
-                prompts_seen = []
 
-                def fake_call(prompt: str) -> str:
-                    prompts_seen.append(prompt)
-                    return next(responses)
-
-                orchestrator.call_llm = fake_call
                 metadata = orchestrator.extract_metadata(
                     self._daily_data(),
                     "MARCH 14 2026",
                     environment="Frozen/Ice — quiet reason",
                 )
-                retry_prompt = (orchestrator.output_dir / "last_prompt_metadata_retry.txt").read_text(encoding="utf-8")
+                retry_prompt = (orchestrator.output_dir / "last_prompt_title_retry.txt").read_text(encoding="utf-8")
                 debug_payload = json.loads(
                     (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
                 )
 
-        self.assertEqual(metadata["title"], "ASH MERIDIAN")
-        self.assertEqual(len(prompts_seen), 2)
-        self.assertIn("Recent banned titles: VOID WEIGHT, HOLLOW DRIFT", retry_prompt)
-        self.assertEqual(debug_payload["final_selection_source"], "corrective_retry_valid")
-        self.assertEqual(debug_payload["final_title"], "ASH MERIDIAN")
-        self.assertEqual(debug_payload["recent_titles_used"], ["VOID WEIGHT", "HOLLOW DRIFT"])
+        self.assertEqual(metadata["title"], "BASALT VISTA")
+        self.assertIn("Structural keys to avoid: MERIDIAN, REACH, DRIFT", retry_prompt)
+        self.assertEqual(debug_payload["title_selection_source"], "retry_batch_valid")
+        self.assertEqual(debug_payload["recent_structural_keys_used"], ["MERIDIAN", "REACH", "DRIFT"])
 
-    def test_extract_metadata_keeps_second_metadata_on_duplicate_retry_warning(self):
+    def test_extract_metadata_soft_accepts_structural_collision_only_after_retry_exhausted(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -169,27 +161,15 @@ class MetadataSelectionTests(unittest.TestCase):
                 clear=False,
             ):
                 db = CardDatabase()
-                self._seed_title_history(db, [("2026-03-13", "VOID WEIGHT", "ig_real_001")])
+                self._seed_title_history(db, [("2026-03-13", "CLEAR REACH", "ig_real_001")])
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
-                responses = iter(
+                orchestrator.call_llm = self._metadata_responder(
                     [
-                        json.dumps(
-                            {
-                                "title": "VOID WEIGHT",
-                                "scene_description": "The compression settled in plain sight.",
-                                "date_display": "MARCH 14 2026",
-                            }
-                        ),
-                        json.dumps(
-                            {
-                                "title": "VOID WEIGHT",
-                                "scene_description": "Nothing moved and the seal held.",
-                                "date_display": "MARCH 14 2026",
-                            }
-                        ),
-                    ]
+                        "OBSIDIAN REACH\nEMBER REACH\nSTONE REACH\nCLEAR REACH\nREACH",
+                        "CLEAR REACH\nREACH\nASH REACH\nWIDE REACH\nLOW REACH",
+                    ],
+                    ["Nothing moved and the seal held. The quiet stayed exactly where it landed."],
                 )
-                orchestrator.call_llm = lambda prompt: next(responses)
 
                 metadata = orchestrator.extract_metadata(
                     self._daily_data(),
@@ -200,11 +180,13 @@ class MetadataSelectionTests(unittest.TestCase):
                     (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
                 )
 
-        self.assertEqual(metadata["title"], "VOID WEIGHT")
-        self.assertEqual(metadata["scene_description"], "Nothing moved and the seal held.")
-        self.assertEqual(debug_payload["final_selection_source"], "repeat_after_retry_warning")
+        self.assertEqual(metadata["title"], "OBSIDIAN REACH")
+        self.assertEqual(
+            debug_payload["title_selection_source"],
+            "soft_accept_family_collision_first_batch",
+        )
 
-    def test_extract_metadata_uses_json_fallback_when_metadata_never_parses(self):
+    def test_extract_metadata_retries_scene_description_and_falls_back_to_core_concept(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -212,8 +194,10 @@ class MetadataSelectionTests(unittest.TestCase):
                 clear=False,
             ):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
-                responses = iter(["not-json", "still not json"])
-                orchestrator.call_llm = lambda prompt: next(responses)
+                orchestrator.call_llm = self._metadata_responder(
+                    ["BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING"],
+                    ["Recovery stayed low.", "body held 95% strain at the floor."],
+                )
 
                 metadata = orchestrator.extract_metadata(
                     self._daily_data(),
@@ -225,8 +209,9 @@ class MetadataSelectionTests(unittest.TestCase):
                     (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
                 )
 
-        self.assertEqual(metadata["title"], "Daily State Card")
-        self.assertEqual(debug_payload["final_selection_source"], "json_fallback")
+        self.assertEqual(metadata["scene_description"], "A frozen field holding its shape under pressure.")
+        self.assertEqual(debug_payload["scene_selection_source"], "fallback_core_concept")
+        self.assertTrue(debug_payload["scene_debug"]["retry_triggered"])
 
     def test_extract_metadata_handles_db_lookup_failure_without_crashing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -236,12 +221,9 @@ class MetadataSelectionTests(unittest.TestCase):
                 clear=False,
             ):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
-                orchestrator.call_llm = lambda prompt: json.dumps(
-                    {
-                        "title": "ASH MERIDIAN",
-                        "scene_description": "The field opened past the last edge.",
-                        "date_display": "MARCH 14 2026",
-                    }
+                orchestrator.call_llm = self._metadata_responder(
+                    ["ASH MERIDIAN\nCLEAR HORIZON\nGLASS SHELF\nSTONE REACH\nDEEP VAULT"],
+                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
                 )
                 with patch.object(CardDatabase, "get_recent_titles", side_effect=RuntimeError("db unavailable")):
                     metadata = orchestrator.extract_metadata(
@@ -249,14 +231,190 @@ class MetadataSelectionTests(unittest.TestCase):
                         "MARCH 14 2026",
                         environment="Frozen/Ice — quiet reason",
                     )
-                prompt_text = (orchestrator.output_dir / "last_prompt_metadata.txt").read_text(encoding="utf-8")
+                combined_prompt = (orchestrator.output_dir / "last_prompt_metadata.txt").read_text(encoding="utf-8")
                 debug_payload = json.loads(
                     (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
                 )
 
         self.assertEqual(metadata["title"], "ASH MERIDIAN")
-        self.assertIn("None — no restriction.", prompt_text)
-        self.assertEqual(debug_payload["final_selection_source"], "history_lookup_failed_no_guard")
+        self.assertIn("## Title Prompt", combined_prompt)
+        self.assertIn("## Scene Description Prompt", combined_prompt)
+        self.assertEqual(debug_payload["title_selection_source"], "history_lookup_failed_no_guard")
+
+    def test_extract_metadata_mock_mode_smoke_returns_non_empty_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-14",
+                    "OPENROUTER_API_KEY": "",
+                },
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                metadata = orchestrator.extract_metadata(
+                    self._daily_data(),
+                    "MARCH 14 2026",
+                    environment="Frozen/Ice — quiet reason",
+                    image_json={"core_concept": "A frozen field holding its shape under pressure."},
+                )
+
+        self.assertTrue(metadata["title"])
+        self.assertTrue(metadata["scene_description"])
+        self.assertEqual(metadata["date_display"], "MARCH 14 2026")
+
+    def test_extract_metadata_uses_only_last_ten_eligible_posted_titles_for_history(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-20"},
+                clear=False,
+            ):
+                db = CardDatabase()
+                self._seed_title_history(
+                    db,
+                    [
+                        ("2026-03-21", "FUTURE SPIRE", "ig_real_future"),
+                        ("2026-03-19", "ALPHA RIDGE", "ig_real_001"),
+                        ("2026-03-18", "MOCK HORIZON", "mock_ig_12345"),
+                        ("2026-03-17", "EMPTY FIELD", ""),
+                        ("2026-03-16", "BRONZE BASIN", "ig_real_002"),
+                        ("2026-03-15", "CINDER VAULT", "ig_real_003"),
+                        ("2026-03-14", "DELTA REACH", "ig_real_004"),
+                        ("2026-03-13", "EMBER LINE", "ig_real_005"),
+                        ("2026-03-12", "FROST FLATS", "ig_real_006"),
+                        ("2026-03-11", "GLASS SHELF", "ig_real_007"),
+                        ("2026-03-10", "HALO FRONT", "ig_real_008"),
+                        ("2026-03-09", "IVORY SPAN", "ig_real_009"),
+                        ("2026-03-08", "JADE CHAMBER", "ig_real_010"),
+                        ("2026-03-07", "KELP MONOLITH", "ig_real_011"),
+                        ("2026-03-06", "LUNAR PLAIN", "ig_real_012"),
+                    ],
+                )
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = self._metadata_responder(
+                    ["BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING"],
+                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                )
+
+                orchestrator.extract_metadata(
+                    self._daily_data(run_date="2026-03-20"),
+                    "MARCH 20 2026",
+                    environment="Frozen/Ice — quiet reason",
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(
+            debug_payload["recent_titles_used"],
+            [
+                "ALPHA RIDGE",
+                "BRONZE BASIN",
+                "CINDER VAULT",
+                "DELTA REACH",
+                "EMBER LINE",
+                "FROST FLATS",
+                "GLASS SHELF",
+                "HALO FRONT",
+                "IVORY SPAN",
+                "JADE CHAMBER",
+            ],
+        )
+        self.assertEqual(
+            debug_payload["recent_structural_keys_used"],
+            ["RIDGE", "BASIN", "VAULT", "REACH", "LINE", "FLATS", "SHELF", "FRONT", "SPAN", "CHAMBER"],
+        )
+
+    def test_extract_metadata_prefers_retry_valid_title_over_first_batch_soft_accept(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-14"},
+                clear=False,
+            ):
+                db = CardDatabase()
+                self._seed_title_history(
+                    db,
+                    [
+                        ("2026-03-13", "CLEAR REACH", "ig_real_001"),
+                        ("2026-03-12", "SILENT BASIN", "ig_real_002"),
+                        ("2026-03-11", "DARK LINE", "ig_real_003"),
+                    ],
+                )
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = self._metadata_responder(
+                    [
+                        "OBSIDIAN REACH\nEMBER BASIN\nFROST LINE\nWIDE REACH\nSALT BASIN",
+                        "BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING",
+                    ],
+                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                )
+
+                metadata = orchestrator.extract_metadata(
+                    self._daily_data(),
+                    "MARCH 14 2026",
+                    environment="Frozen/Ice — quiet reason",
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(metadata["title"], "BASALT VISTA")
+        self.assertEqual(debug_payload["title_selection_source"], "retry_batch_valid")
+        first_assessments = debug_payload["title_debug"]["first_candidate_assessments"]
+        self.assertTrue(all(item["is_soft_acceptable"] for item in first_assessments))
+        self.assertTrue(
+            all(item["soft_rejection_reasons"] == ["structural_recent_repeat"] for item in first_assessments)
+        )
+
+    def test_extract_metadata_falls_back_when_both_title_batches_are_hard_invalid(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-14"},
+                clear=False,
+            ):
+                db = CardDatabase()
+                self._seed_title_history(
+                    db,
+                    [
+                        ("2026-03-13", "ASH MERIDIAN", "ig_real_001"),
+                        ("2026-03-12", "CLEAR REACH", "ig_real_002"),
+                    ],
+                )
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = self._metadata_responder(
+                    [
+                        "ASH MERIDIAN\nTOR\nTHREE WORD TITLE\nNO\nARC",
+                        "CLEAR REACH\nICE\nANOTHER BAD TITLE\nX\nVOID",
+                    ],
+                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                )
+
+                metadata = orchestrator.extract_metadata(
+                    self._daily_data(),
+                    "MARCH 14 2026",
+                    environment="Frozen/Ice — quiet reason",
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(debug_payload["title_selection_source"], "hard_failure_fallback")
+        self.assertTrue(metadata["title"])
+        self.assertTrue(metadata["scene_description"])
+        self.assertEqual(metadata["date_display"], "MARCH 14 2026")
+        self.assertEqual(debug_payload["final_title"], metadata["title"])
+        self.assertTrue(debug_payload["title_debug"]["first_candidate_assessments"])
+        self.assertTrue(debug_payload["title_debug"]["retry_candidate_assessments"])
+        self.assertTrue(
+            all(item["hard_rejection_reasons"] for item in debug_payload["title_debug"]["first_candidate_assessments"])
+        )
+        self.assertTrue(
+            all(item["hard_rejection_reasons"] for item in debug_payload["title_debug"]["retry_candidate_assessments"])
+        )
 
 
 if __name__ == "__main__":

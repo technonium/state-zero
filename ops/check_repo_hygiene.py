@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import re
 import subprocess
 import sys
@@ -79,6 +80,27 @@ def get_tracked_files() -> list[str]:
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
+def get_working_tree_paths() -> list[str]:
+    result = subprocess.run(
+        ["git", "status", "--short", "--untracked-files=all"],
+        cwd=PROJECT_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    paths: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        entry = line[3:].strip()
+        if " -> " in entry:
+            _old_path, new_path = entry.split(" -> ", 1)
+            entry = new_path.strip()
+        if entry:
+            paths.append(entry)
+    return paths
+
+
 def classify_path(path_str: str) -> str | None:
     if path_str in DISALLOWED_EXACT:
         return f"tracked local/private file: {path_str}"
@@ -124,12 +146,29 @@ def scan_for_secret_patterns(paths: list[str]) -> list[str]:
     return findings
 
 
-def main():
+def check_tracked_files() -> list[str]:
     tracked_files = get_tracked_files()
-
     path_findings = [finding for path in tracked_files if (finding := classify_path(path))]
     secret_findings = scan_for_secret_patterns(tracked_files)
-    findings = path_findings + secret_findings
+    return path_findings + secret_findings
+
+
+def check_working_tree() -> list[str]:
+    return [finding for path in get_working_tree_paths() if (finding := classify_path(path))]
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check repository hygiene.")
+    parser.add_argument(
+        "--check-working-tree",
+        action="store_true",
+        help="Also inspect dirty/untracked working-tree paths for local junk patterns.",
+    )
+    args = parser.parse_args()
+
+    findings = check_tracked_files()
+    if args.check_working_tree:
+        findings.extend(check_working_tree())
 
     if findings:
         print("Repository hygiene check failed:")
