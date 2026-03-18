@@ -397,7 +397,7 @@ The pipeline uses 6 AI prompts. Full templates are in `src/prompts/`. Here are t
 
 **Purpose:** Construct complete image generation JSON following the master template
 
-**Inputs:** All data from `daily_data.json`, `interpretation.txt`, `creature.txt`, `environment.txt`, full master JSON template
+**Inputs:** All data from `daily_data.json`, `interpretation.txt`, resolved creature/environment selections (`creature_selected.txt` / `environment_selected.txt` when available, otherwise raw outputs), full master JSON template
 
 **Output:** Complete filled JSON ready for image generation
 
@@ -409,7 +409,7 @@ The pipeline uses 6 AI prompts. Full templates are in `src/prompts/`. Here are t
 
 **Purpose:** Construct video animation prompt from image concept
 
-**Inputs:** All data from `daily_data.json`, environment, creature, interpretation, blend option, matrix art keywords and one-liner
+**Inputs:** All data from `daily_data.json`, resolved environment selection, blend option, matrix body keywords, art keywords, one-liner, recovery zone, and energy zone
 
 **Output:** Complete video prompt ready for video generation
 
@@ -562,12 +562,12 @@ This is the core modulation system. It determines HOW the environment behaves �
 | HIGH | SURFACE | Sharp, restored, charged | Luminous, expansive, serene | Peak state — wide open landscape, nothing blocking the horizon, everything exactly where it should be |
 | HIGH | MID-DEPTH | Solid, warm, capable | Flowing, balanced, harmonious | Well recovered with slight residual weight — moves smoothly, depth visible but unthreatening |
 | HIGH | DEEP | Quiet, functional, unhurried | Still, subdued, restrained | Body healed but sleep was thin — capable but dimmer, nothing urgent pressing through |
-| HIGH | ABYSS | Stable, disconnected, autopilot | Suspended, stark, dissociated | Body fully restored, mind never arrived — functioning but not present, landscape eerily intact but hollowed out |
-| MID | SURFACE | Decent, present, neutral | Rhythmic, moderate, indifferent | Average recovery, good sleep — steady, no drama, environment holds without tension |
-| MID | MID-DEPTH | Passive, coasting, flat | Drifting, muted, detached | Going through the motions. No urgency, no resistance. Just existing in the middle of things |
+| HIGH | ABYSS | Stable, disconnected, autopilot | Suspended, stark, vacant | Body fully restored, presence didn't follow — everything intact, nothing inhabited |
+| MID | SURFACE | Functional, understated, incomplete | Measured, subdued, indifferent | Slept well, body didn't fully follow — functional and present, but the gap between rest and readiness is quietly there |
+| MID | MID-DEPTH | Passive, coasting, carrying weight | Drifting, muted, burdened | Going through the motions with a slight drag — coasting, but the body adds a small tax to every step |
 | MID | DEEP | Slow, foggy, resistant | Heavy, dim, pressured | Everything costs slightly more than it should — atmosphere pressing inward, low visibility, small effort for small return |
-| MID | ABYSS | Grinding, hollow, depleted | Turbulent, fractured, draining | Running on empty — churning without resolution, no spark, environment consuming itself |
-| LOW | SURFACE | Tense, wired, fraying | Volatile, brittle, unstable | Body under strain despite sleep — pressure with nowhere to go, sharp edges, about to fracture |
+| MID | ABYSS | Hollow, grinding, close to breaking | Fractured, turbulent, consuming | Both the body and the night failed — hollow at the center, grinding without traction, the surface holds but nothing beneath it does |
+| LOW | SURFACE | Tense, wired, fraying | Taut, brittle, unstable | Yesterday's strain held through the night — sleep arrived but the tension didn't release, still wired and stretched past comfortable |
 | LOW | MID-DEPTH | Drained, numb, fading | Sinking, stripped, oppressive | Both metrics pulling down. Bare. No colour, no energy. Just form getting through |
 | LOW | DEEP | Wrecked, shutdown, leaden | Collapsed, smoldering, suffocating | Day after the damage — post-event silence, everything cooling into wreckage and ash |
 | LOW | ABYSS | Destroyed, void, primal | Crushing, devastated, primordial | Complete system failure. Nothing left. The landscape is what remains after everything already collapsed |
@@ -717,9 +717,10 @@ python3 src/scripts/prompts.py --data output/daily_data.json
 
 This script:
 1. Reads each prompt template from `src/prompts/`
-2. Fills placeholders from `daily_data.json`
-3. Calls LLM API separately for each
-4. Saves outputs to `output/`
+2. Loads the exact `--data` path when provided, otherwise falls back to the run-date output path
+3. Fills placeholders from `daily_data.json` and resolved selected outputs where required
+4. Calls LLM API separately for each
+5. Saves outputs to `output/`
 
 #### Prompt 1 — Interpretation Theme
 
@@ -960,7 +961,7 @@ If both files are NOT received before `PIPELINE_MANUAL_DEADLINE_LOCAL`:
 
 Template: `src/prompts/video.md`
 
-Fill with: environment, depth level, matrix art keywords, one-liner, creature, moon count, blend option, energy zone.
+Fill with: environment, depth level, recovery zone, matrix body keywords, matrix art keywords, one-liner, moon count, blend option, energy zone.
 
 Call LLM or use templating logic. Save to `output/video_prompt.txt`.
 

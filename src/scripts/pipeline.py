@@ -815,6 +815,7 @@ class WHOOPPipeline:
     def _load_required_text_outputs(self) -> tuple[str, str, str]:
         try:
             blend_option = (self.output_dir / 'blend_option.txt').read_text(encoding='utf-8').strip()
+            # Selected outputs are canonical downstream handoff files; raw outputs remain for debugging.
             creature_path = self.output_dir / 'creature_selected.txt'
             if not creature_path.exists():
                 creature_path = self.output_dir / 'creature.txt'
@@ -1592,7 +1593,7 @@ class WHOOPPipeline:
         self.safe_step(
             'LLM Prompts (Interpretation -> Video)',
             'src/scripts/prompts.py',
-            ['--step', 'all'],
+            ['--step', 'all', '--data', str(self.output_dir / 'daily_data.json')],
             fallback_eligible=True,
         )
 
