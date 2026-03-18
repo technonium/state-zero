@@ -63,6 +63,22 @@ ENVIRONMENT_OPTIONS = {
     ],
 }
 
+PLACEHOLDER_RE = re.compile(r"\{([a-zA-Z0-9_]+)\}")
+SOFT_EMPTY_PLACEHOLDERS = {
+    "art_keywords",
+    "body_keywords",
+    "depth_keywords",
+}
+SOFT_NONE_PLACEHOLDERS = {
+    "recent_creatures",
+    "recent_titles",
+    "recent_structural_keys",
+}
+TEMPLATE_CRITICAL_PLACEHOLDERS = {
+    "environment": {"environment_options"},
+    "video": {"environment", "blend_option"},
+}
+
 class PromptOrchestrator:
     def __init__(self, llm_api_key: str, openrouter_api_key: str = None):
         """
@@ -104,6 +120,7 @@ class PromptOrchestrator:
         else:
             self.output_dir = output_root
         self.templates_dir = self.base_dir / 'src' / 'prompts'
+        self.template_fill_warnings = {}
         
         # Ensure directories exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -113,17 +130,112 @@ class PromptOrchestrator:
         """Load prompt template from src/prompts/"""
         template_path = self.templates_dir / f"{template_name}.md"
         if not template_path.exists():
-            print(f"Template {template_name}.md not found at {template_path}. Defaulting to empty prompt space.")
-            return "Placeholder prompt."
+            raise FileNotFoundError(f"Required template not found: {template_path}")
             
         with open(template_path, 'r', encoding='utf-8') as f:
             return f.read()
 
-    def fill_template(self, template: str, data: dict) -> str:
-        """Fill template placeholders with data"""
+    def _extract_template_placeholders(self, template: str) -> set[str]:
+        return set(PLACEHOLDER_RE.findall(template))
+
+    def fill_template_strict(self, template: str, data: dict) -> str:
+        """Fill template placeholders with strict validation."""
+        required_placeholders = self._extract_template_placeholders(template)
+        missing_placeholders = sorted(
+            placeholder for placeholder in required_placeholders if placeholder not in data
+        )
+        if missing_placeholders:
+            raise ValueError(
+                f"Missing required template placeholders: {', '.join(missing_placeholders)}"
+            )
+
         for key, value in data.items():
             placeholder = f"{{{key}}}"
             template = template.replace(placeholder, str(value))
+
+        unresolved_placeholders = sorted(self._extract_template_placeholders(template))
+        if unresolved_placeholders:
+            raise ValueError(
+                f"Unresolved template placeholders after fill: {', '.join(unresolved_placeholders)}"
+            )
+        return template
+
+    def _default_placeholder_value(self, placeholder: str, *, unresolved: bool = False) -> str:
+        if placeholder in SOFT_EMPTY_PLACEHOLDERS:
+            return ""
+        if placeholder in SOFT_NONE_PLACEHOLDERS:
+            return "None — no restriction."
+        if unresolved:
+            return ""
+        return "Unknown"
+
+    def _record_template_fill_warnings(self, template_name: str, warnings: list[dict]):
+        self.template_fill_warnings[template_name] = warnings
+        self.save_json_output('template_fill_warnings.json', self.template_fill_warnings)
+        if warnings:
+            warning_summary = ", ".join(
+                f"{item['type']}:{item['placeholder']}" for item in warnings
+            )
+            print(f"⚠️  Template fill warnings for {template_name}: {warning_summary}")
+
+    def fill_template(self, template: str, data: dict, *, template_name: str = "unknown") -> str:
+        """Fill template placeholders with best-effort validation for live runs."""
+        working_data = dict(data)
+        required_placeholders = self._extract_template_placeholders(template)
+        critical_placeholders = TEMPLATE_CRITICAL_PLACEHOLDERS.get(template_name, set())
+        warnings: list[dict] = []
+
+        missing_placeholders = sorted(
+            placeholder for placeholder in required_placeholders if placeholder not in working_data
+        )
+        missing_critical = [placeholder for placeholder in missing_placeholders if placeholder in critical_placeholders]
+        if missing_critical:
+            raise ValueError(
+                f"Missing critical template placeholders: {', '.join(missing_critical)}"
+            )
+
+        for placeholder in missing_placeholders:
+            if placeholder in critical_placeholders:
+                continue
+            default_value = self._default_placeholder_value(placeholder)
+            working_data[placeholder] = default_value
+            warnings.append(
+                {
+                    "type": "missing_placeholder_defaulted",
+                    "placeholder": placeholder,
+                    "default": default_value,
+                }
+            )
+
+        for key, value in working_data.items():
+            placeholder = f"{{{key}}}"
+            template = template.replace(placeholder, str(value))
+
+        unresolved_placeholders = sorted(self._extract_template_placeholders(template))
+        unresolved_critical = [placeholder for placeholder in unresolved_placeholders if placeholder in critical_placeholders]
+        if unresolved_critical:
+            raise ValueError(
+                f"Unresolved critical template placeholders after fill: {', '.join(unresolved_critical)}"
+            )
+
+        for placeholder in unresolved_placeholders:
+            default_value = self._default_placeholder_value(placeholder, unresolved=True)
+            template = template.replace(f"{{{placeholder}}}", default_value)
+            warnings.append(
+                {
+                    "type": "unresolved_placeholder_defaulted",
+                    "placeholder": placeholder,
+                    "default": default_value,
+                }
+            )
+
+        recursive_unresolved = sorted(self._extract_template_placeholders(template))
+        if recursive_unresolved:
+            raise ValueError(
+                f"Unresolved template placeholders after best-effort fill: {', '.join(recursive_unresolved)}"
+            )
+
+        self._record_template_fill_warnings(template_name, warnings)
         return template
 
     def _extract_json_from_response(self, text: str) -> str:
@@ -416,7 +528,7 @@ class PromptOrchestrator:
             'prana_planet': self._format_planet_detail(dasha.get('prana'), planets_detail),
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='interpretation')
         self.save_output('last_prompt_interpretation.txt', filled_prompt)
         interpretation = self.call_llm(filled_prompt)
         self.save_output('interpretation.txt', interpretation)
@@ -442,7 +554,7 @@ class PromptOrchestrator:
             'recent_creatures': recent_creature_context['recent_creatures_prompt'],
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='creature')
         self.save_output('last_prompt_creature.txt', filled_prompt)
         retry_prompt_path = self.output_dir / 'last_prompt_creature_retry.txt'
         resolved_creature_path = self.output_dir / 'creature_selected.txt'
@@ -698,7 +810,7 @@ class PromptOrchestrator:
             'environment_options': environment_options
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='environment')
         self.save_output('last_prompt_environment.txt', filled_prompt)
         raw_environment_output = self.call_llm(filled_prompt)
         self.save_output('environment.txt', raw_environment_output)
@@ -788,7 +900,7 @@ class PromptOrchestrator:
             'sleep_hours': str(daily_data.get('sleep_hours', 'Unknown')),
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='json_builder')
         self.save_output('last_prompt_image_json.txt', filled_prompt)
         json_output = self.call_llm(filled_prompt)
 
@@ -981,7 +1093,7 @@ class PromptOrchestrator:
             'recent_structural_keys': recent_title_context['recent_structural_keys_prompt'],
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='title_builder')
         self.save_output('last_prompt_title.txt', filled_prompt)
         first_raw_output = self.call_llm(filled_prompt)
         first_candidates = self._parse_title_candidates(first_raw_output)
@@ -1095,7 +1207,7 @@ class PromptOrchestrator:
             'date_display': date_display,
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='scene_description_builder')
         self.save_output('last_prompt_scene_description.txt', filled_prompt)
         first_raw_output = self.call_llm(filled_prompt)
         first_cleaned = self._clean_scene_description_output(first_raw_output)
@@ -1270,7 +1382,7 @@ class PromptOrchestrator:
             'blend_option': blend_option
         }
 
-        filled_prompt = self.fill_template(template, placeholders)
+        filled_prompt = self.fill_template(template, placeholders, template_name='video')
         self.save_output('last_prompt_video.txt', filled_prompt)
         video_prompt = self.call_llm(filled_prompt)
         self.save_output('video_prompt.txt', video_prompt)
@@ -1293,16 +1405,23 @@ def main():
         openrouter_api_key=or_key  # Explicitly pass to ensure subprocess can find it
     )
 
-    run_date = os.getenv('PIPELINE_DATE')
-    output_root = get_output_root()
-    if run_date:
-        data_path = output_root / run_date / 'daily_data.json'
+    if args.data:
+        data_path = Path(args.data)
+        if not data_path.is_absolute():
+            data_path = get_project_root() / data_path
+        if not data_path.exists():
+            raise FileNotFoundError(f"Specified daily_data.json not found: {data_path}")
     else:
-        data_path = output_root / 'daily_data.json'
-    
-    if not data_path.exists():
-        # Fallback to root output dir
-        data_path = output_root / 'daily_data.json'
+        run_date = os.getenv('PIPELINE_DATE')
+        output_root = get_output_root()
+        if run_date:
+            data_path = output_root / run_date / 'daily_data.json'
+        else:
+            data_path = output_root / 'daily_data.json'
+
+        if not data_path.exists():
+            # Fallback to root output dir only when --data is omitted.
+            data_path = output_root / 'daily_data.json'
 
     print(f"▶ Loading data from {data_path}...")
     with open(data_path, 'r', encoding='utf-8') as f:

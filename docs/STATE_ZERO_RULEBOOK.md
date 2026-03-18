@@ -318,12 +318,12 @@ Critical: Pick based on theme, not creature
 | HIGH | SURFACE | Sharp, restored, charged | Luminous, expansive, serene | Peak state — wide open landscape, nothing blocking the horizon, everything exactly where it should be |
 | HIGH | MID-DEPTH | Solid, warm, capable | Flowing, balanced, harmonious | Well recovered with slight residual weight — moves smoothly, depth visible but unthreatening |
 | HIGH | DEEP | Quiet, functional, unhurried | Still, subdued, restrained | Body healed but sleep was thin — capable but dimmer, nothing urgent pressing through |
-| HIGH | ABYSS | Stable, disconnected, autopilot | Suspended, stark, dissociated | Body fully restored, mind never arrived — functioning but not present, landscape eerily intact but hollowed out |
-| MID | SURFACE | Decent, present, neutral | Rhythmic, moderate, indifferent | Average recovery, good sleep — steady, no drama, environment holds without tension |
-| MID | MID-DEPTH | Passive, coasting, flat | Drifting, muted, detached | Going through the motions. No urgency, no resistance. Just existing in the middle of things |
+| HIGH | ABYSS | Stable, disconnected, autopilot | Suspended, stark, vacant | Body fully restored, presence didn't follow — everything intact, nothing inhabited |
+| MID | SURFACE | Functional, understated, incomplete | Measured, subdued, indifferent | Slept well, body didn't fully follow — functional and present, but the gap between rest and readiness is quietly there |
+| MID | MID-DEPTH | Passive, coasting, carrying weight | Drifting, muted, burdened | Going through the motions with a slight drag — coasting, but the body adds a small tax to every step |
 | MID | DEEP | Slow, foggy, resistant | Heavy, dim, pressured | Everything costs slightly more than it should — atmosphere pressing inward, low visibility, small effort for small return |
-| MID | ABYSS | Grinding, hollow, depleted | Turbulent, fractured, draining | Running on empty — churning without resolution, no spark, environment consuming itself |
-| LOW | SURFACE | Tense, wired, fraying | Volatile, brittle, unstable | Body under strain despite sleep — pressure with nowhere to go, sharp edges, about to fracture |
+| MID | ABYSS | Hollow, grinding, close to breaking | Fractured, turbulent, consuming | Both the body and the night failed — hollow at the center, grinding without traction, the surface holds but nothing beneath it does |
+| LOW | SURFACE | Tense, wired, fraying | Taut, brittle, unstable | Yesterday's strain held through the night — sleep arrived but the tension didn't release, still wired and stretched past comfortable |
 | LOW | MID-DEPTH | Drained, numb, fading | Sinking, stripped, oppressive | Both metrics pulling down. Bare. No colour, no energy. Just form getting through |
 | LOW | DEEP | Wrecked, shutdown, leaden | Collapsed, smoldering, suffocating | Day after the damage — post-event silence, everything cooling into wreckage and ash |
 | LOW | ABYSS | Destroyed, void, primal | Crushing, devastated, primordial | Complete system failure. Nothing left. The landscape is what remains after everything already collapsed |

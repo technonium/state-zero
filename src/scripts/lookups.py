@@ -208,18 +208,18 @@ BEHAVIOR_MATRIX = {
     },
     ("HIGH", "ABYSS"): {
         "body_keywords": ["Stable", "disconnected", "autopilot"],
-        "art_keywords": ["Suspended", "stark", "dissociated"],
-        "one_liner": "Body fully restored, mind never arrived — functioning but not present, landscape eerily intact but hollowed out"
+        "art_keywords": ["Suspended", "stark", "vacant"],
+        "one_liner": "Body fully restored, presence didn't follow — everything intact, nothing inhabited"
     },
     ("MID", "SURFACE"): {
-        "body_keywords": ["Decent", "present", "neutral"],
-        "art_keywords": ["Rhythmic", "moderate", "indifferent"],
-        "one_liner": "Average recovery, good sleep — steady, no drama, environment holds without tension"
+        "body_keywords": ["Functional", "understated", "incomplete"],
+        "art_keywords": ["Measured", "subdued", "indifferent"],
+        "one_liner": "Slept well, body didn't fully follow — functional and present, but the gap between rest and readiness is quietly there"
     },
     ("MID", "MID-DEPTH"): {
-        "body_keywords": ["Passive", "coasting", "flat"],
-        "art_keywords": ["Drifting", "muted", "detached"],
-        "one_liner": "Going through the motions. No urgency, no resistance. Just existing in the middle of things"
+        "body_keywords": ["Passive", "coasting", "carrying weight"],
+        "art_keywords": ["Drifting", "muted", "burdened"],
+        "one_liner": "Going through the motions with a slight drag — coasting, but the body adds a small tax to every step"
     },
     ("MID", "DEEP"): {
         "body_keywords": ["Slow", "foggy", "resistant"],
@@ -227,14 +227,14 @@ BEHAVIOR_MATRIX = {
         "one_liner": "Everything costs slightly more than it should — atmosphere pressing inward, low visibility, small effort for small return"
     },
     ("MID", "ABYSS"): {
-        "body_keywords": ["Grinding", "hollow", "depleted"],
-        "art_keywords": ["Turbulent", "fractured", "draining"],
-        "one_liner": "Running on empty — churning without resolution, no spark, environment consuming itself"
+        "body_keywords": ["Hollow", "grinding", "close to breaking"],
+        "art_keywords": ["Fractured", "turbulent", "consuming"],
+        "one_liner": "Both the body and the night failed — hollow at the center, grinding without traction, the surface holds but nothing beneath it does"
     },
     ("LOW", "SURFACE"): {
         "body_keywords": ["Tense", "wired", "fraying"],
-        "art_keywords": ["Volatile", "brittle", "unstable"],
-        "one_liner": "Body under strain despite sleep — pressure with nowhere to go, sharp edges, about to fracture"
+        "art_keywords": ["Taut", "brittle", "unstable"],
+        "one_liner": "Yesterday's strain held through the night — sleep arrived but the tension didn't release, still wired and stretched past comfortable"
     },
     ("LOW", "MID-DEPTH"): {
         "body_keywords": ["Drained", "numb", "fading"],
