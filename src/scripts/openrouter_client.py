@@ -5,7 +5,7 @@ This module provides a client for calling OpenRouter's API with Minimax.
 It includes fallback support to Google Gemini 2.5 Pro.
 
 Configuration:
-- Model: minimax/minimax-m2.7
+- Model: minimax/minimax-m2.5
 - Temperature: 1.0
 - Thinking: enabled with 8000 token budget
 - Max tokens: 12000
@@ -120,7 +120,7 @@ class OpenRouterClient:
     """
     
     BASE_URL = "https://openrouter.ai/api/v1"
-    DEFAULT_MODEL = "minimax/minimax-m2.7"
+    DEFAULT_MODEL = "minimax/minimax-m2.5"
     
     # Default generation parameters
     DEFAULT_TEMPERATURE = 1.0
@@ -142,7 +142,7 @@ class OpenRouterClient:
         
         Args:
             api_key: OpenRouter API key
-            model: Model to use (default: minimax/minimax-m2.7)
+            model: Model to use (default: minimax/minimax-m2.5)
             temperature: Temperature for generation (default: 1.0)
             max_tokens: Maximum tokens in response (default: 12000)
             thinking_budget: Thinking token budget (default: 8000)
@@ -362,7 +362,7 @@ def create_llm_client(
     Args:
         openrouter_api_key: OpenRouter API key (or env var OPENROUTER_API_KEY)
         google_api_key: Google API key for fallback (or env var GOOGLE_API_KEY_PRIMARY)
-        model: Model to use (default: minimax/minimax-m2.7)
+        model: Model to use (default: minimax/minimax-m2.5)
         temperature: Temperature setting (default: 1.0)
         max_tokens: Max tokens (default: 12000)
         thinking_budget: Thinking budget (default: 8000)
@@ -381,7 +381,7 @@ def create_llm_client(
         )
     
     print(f"🤖 Creating LLM Client")
-    print(f"   Primary: OpenRouter ({model or 'minimax/minimax-m2.7'})")
+    print(f"   Primary: OpenRouter ({model or 'minimax/minimax-m2.5'})")
     print(f"   Fallback: {'Google Gemini 2.5 Pro' if google_key else 'None'}")
     
     return OpenRouterClient(

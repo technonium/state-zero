@@ -98,7 +98,7 @@ class PromptOrchestrator:
             self.llm_client = create_llm_client(
                 openrouter_api_key=or_key,
                 google_api_key=llm_api_key,
-                model="minimax/minimax-m2.7",
+                model="minimax/minimax-m2.5",
                 temperature=1.0,
                 max_tokens=12000,
                 thinking_budget=8000
