@@ -533,13 +533,14 @@ Strain sets energy level only, not quality. A 16 from a hard workout and a 16 fr
 #### Sleep Score % → Sleep Zone (Dual Role)
 
 Sleep Score does double duty: it sets the environment depth level AND feeds the behavior matrix.
+The mapping bands for sleep, recovery, strain, and moon count are working creative heuristics tuned against recent historical distributions/clusters to improve output balance, and may be periodically recalibrated. In this pass, only sleep-score thresholds changed; recovery/strain/moon thresholds remain numerically unchanged.
 
 | Sleep Score | Zone | Depth Level | Depth Keywords (SPATIAL ONLY) | Visibility |
 |-------------|------|-------------|-------------------------------|------------|
-| 82%+ | SURFACE | **SURFACE** | Celestial, Elevated, Bright, Open | 70–100% visible |
-| 76–82% | MID-DEPTH | **MID-DEPTH** | Sheltered, Cavern, Enclosed, Filtered | 50–70% visible |
-| 65–76% | DEEP | **DEEP** | Subterranean, Obscured, Limited, Buried | 40–50% visible |
-| 0–65% | ABYSS | **ABYSS** | Void, Compressed, Primordial, Darkness | 40% minimum |
+| 84%+ | SURFACE | **SURFACE** | Celestial, Elevated, Bright, Open | 70–100% visible |
+| 78–83% | MID-DEPTH | **MID-DEPTH** | Sheltered, Cavern, Enclosed, Filtered | 50–70% visible |
+| 72–77% | DEEP | **DEEP** | Subterranean, Obscured, Limited, Buried | 40–50% visible |
+| <72% | ABYSS | **ABYSS** | Void, Compressed, Primordial, Darkness | 40% minimum |
 
 **CRITICAL: Depth keywords describe WHERE you are (spatial position), NOT how it feels (atmosphere). Atmospheric mood comes ONLY from behavioral matrix art keywords.**
 
@@ -580,7 +581,7 @@ This is the core modulation system. It determines HOW the environment behaves �
   "date_display": "02 MAR 2026",
   "strain": 14.56,
   "recovery_pct": 51,
-  "sleep_score_pct": 83,
+  "sleep_score_pct": 84,
   "sleep_hours": 7.08,
   "energy_zone": "HIGH",
   "recovery_zone": "LOW",

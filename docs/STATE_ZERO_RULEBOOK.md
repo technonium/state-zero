@@ -304,12 +304,14 @@ Critical: Pick based on theme, not creature
 
 **Modeling note:** This 12-state matrix is intentionally overcomplete for creative coverage. In real WHOOP data, some Recovery × Sleep Score combinations may be physiologically rare or effectively unreachable because recovery is partly derived from sleep, but they are kept here as design guardrails rather than a claim that every quadrant occurs frequently.
 
+**Calibration note:** The mapping bands for sleep, recovery, strain, and moon count are working creative heuristics tuned against recent historical distributions/clusters to improve output balance, and may be periodically recalibrated. In this pass, only sleep-score thresholds changed; recovery/strain/moon thresholds remain numerically unchanged.
+
 ### Zone Reference
 
 | Metric | Zones |
 |--------|-------|
 | Recovery | HIGH (76%+) · MID (55-76%) · LOW (0-55%) |
-| Sleep Score | SURFACE (82%+) · MID-DEPTH (76-82%) · DEEP (65-76%) · ABYSS (0-65%) |
+| Sleep Score | SURFACE (84%+) · MID-DEPTH (78-83%) · DEEP (72-77%) · ABYSS (<72%) |
 
 ### 12-State Behavioral Matrix
 
@@ -361,10 +363,10 @@ Critical: Pick based on theme, not creature
 
 | Sleep Score % | Level | Keywords | Visibility |
 |--------------|-------|----------|------------|
-| 82%+ | **SURFACE** | Celestial, Elevated, Bright, Open | 70-100% visible |
-| 76-82% | **MID-DEPTH** | Beneath, Overhang, Partial-sky, One-direction-light | 50-70% visible |
-| 65-76% | **DEEP** | Chamber, Ceiling-visible, Shaft-light, Distant-opening | 40-50% visible |
-| 0-65% | **ABYSS** | Sealed, Compression-fractures, Interior-pressure, No-above | 40% minimum |
+| 84%+ | **SURFACE** | Celestial, Elevated, Bright, Open | 70-100% visible |
+| 78-83% | **MID-DEPTH** | Beneath, Overhang, Partial-sky, One-direction-light | 50-70% visible |
+| 72-77% | **DEEP** | Chamber, Ceiling-visible, Shaft-light, Distant-opening | 40-50% visible |
+| <72% | **ABYSS** | Sealed, Compression-fractures, Interior-pressure, No-above | 40% minimum |
 
 **Depth is light direction, not just position:** SURFACE = light from everywhere. MID-DEPTH = light from one direction. DEEP = light as a shaft from above. ABYSS = no light from above, only from fractures within the material.
 
@@ -456,8 +458,8 @@ Critical: Pick based on theme, not creature
 DATA INPUT:
 - Strain: 18 → HIGH energy zone
 - Recovery: 82% → HIGH
-- Sleep Score: 72% → MID-DEPTH
-- Sleep Hours: 7.2h → 3 moons
+- Sleep Score: 78% → MID-DEPTH
+- Sleep Hours: 7.5h → 3 moons
 - Date: 2026-02-21
 
 BEHAVIOR MATRIX LOOKUP:
