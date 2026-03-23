@@ -246,8 +246,6 @@ class PromptOrchestrator:
         3. Mixed content (text + code blocks)
         4. Balanced brace extraction as last resort
         """
-        import re
-
         stripped = text.strip()
 
         # Pattern 1: Try to find ```json...``` block
@@ -274,6 +272,7 @@ class PromptOrchestrator:
         brace_start = stripped.find('{')
         if brace_start != -1:
             brace_count = 0
+            last_candidate = None
             for i in range(brace_start, len(stripped)):
                 if stripped[i] == '{':
                     brace_count += 1
@@ -282,15 +281,104 @@ class PromptOrchestrator:
                     if brace_count == 0:
                         # Found complete JSON object
                         json_candidate = stripped[brace_start:i+1]
+                        last_candidate = json_candidate
                         # Quick validation: try to parse it
                         try:
                             json.loads(json_candidate)
                             return json_candidate
                         except json.JSONDecodeError:
                             pass
+            if last_candidate:
+                return last_candidate
 
         # Return cleaned text if no extraction patterns worked
         return stripped
+
+    def _repair_json_candidate(self, text: str) -> str:
+        """
+        Apply bounded repairs for recurrent LLM JSON formatting mistakes without
+        trying to guess arbitrary structure.
+        """
+        repaired = text.strip()
+        if not repaired:
+            return repaired
+
+        # Some model responses arrive as a quoted JSON string instead of a JSON object.
+        if repaired[:1] in {'"', "'"} and repaired[-1:] == repaired[:1]:
+            try:
+                decoded = json.loads(repaired)
+            except (json.JSONDecodeError, TypeError):
+                decoded = None
+            if isinstance(decoded, str) and decoded.strip().startswith("{"):
+                repaired = decoded.strip()
+
+        # JSON never uses parentheses; drop any that appear outside strings.
+        chars: list[str] = []
+        in_string = False
+        escape = False
+        for ch in repaired:
+            if in_string:
+                chars.append(ch)
+                if escape:
+                    escape = False
+                elif ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+                continue
+
+            if ch == '"':
+                in_string = True
+                chars.append(ch)
+                continue
+
+            if ch in "()":
+                continue
+
+            chars.append(ch)
+
+        repaired = "".join(chars)
+
+        # Repair a few recurrent malformed transitions the model has produced:
+        # - object end followed by `: "next_key":`
+        # - missing comma between a completed value and the next object key
+        # - accidental `"foo" with "bar"` split inside one string value
+        # - trailing commas before object/array close
+        patterns = (
+            (r'([}\]])\s*:\s*"([A-Za-z0-9_]+)"\s*:', r'\1, "\2":'),
+            (r'([}\]])\s*"([A-Za-z0-9_]+)"\s*:', r'\1, "\2":'),
+            (r'(")\s*"([A-Za-z0-9_]+)"\s*:', r'\1, "\2":'),
+            (
+                r'(:\s*)"([^"\\]*(?:\\.[^"\\]*)*)"\s+with\s+"([^"\\]*(?:\\.[^"\\]*)*)"',
+                r'\1"\2 with \3"',
+            ),
+            (r',\s*([}\]])', r'\1'),
+        )
+
+        previous = None
+        while repaired != previous:
+            previous = repaired
+            for pattern, replacement in patterns:
+                repaired = re.sub(pattern, replacement, repaired)
+
+        return repaired
+
+    def _parse_llm_json_response(self, text: str) -> dict:
+        """Parse JSON strictly first, then retry with narrow repairs for known LLM glitches."""
+        json_candidate = self._extract_json_from_response(text)
+        errors: list[json.JSONDecodeError] = []
+
+        for candidate in (json_candidate, self._repair_json_candidate(json_candidate)):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError as exc:
+                errors.append(exc)
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+            raise json.JSONDecodeError("Top-level JSON value must be an object", candidate, 0)
+
+        raise errors[-1]
 
     def _extract_blend_option_from_text(self, text: str) -> str:
         """
@@ -905,8 +993,7 @@ class PromptOrchestrator:
         json_output = self.call_llm(filled_prompt)
 
         try:
-            json_str = self._extract_json_from_response(json_output)
-            image_json = json.loads(json_str)
+            image_json = self._parse_llm_json_response(json_output)
         except json.JSONDecodeError as e:
             print(f"⚠️  Failed to decode JSON from LLM: {e}")
 
