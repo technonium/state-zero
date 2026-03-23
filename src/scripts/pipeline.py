@@ -1,6 +1,5 @@
 import json
 import os
-import random
 import shutil
 import subprocess
 import sys
@@ -37,39 +36,30 @@ load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
 init()
 
 
-HASHTAGS_CORE = [
+HASHTAGS = [
     '#GenerativeArt',
     '#AIArt',
-    '#DigitalArt',
     '#DataArt',
-    '#AIGenerated',
-    '#DailyArt',
-]
-
-HASHTAGS_POOL = [
-    '#CreativeCoding',
-    '#AlgorithmicArt',
-    '#MotionDesign',
-    '#QuantifiedSelf',
-    '#BuildingInPublic',
-    '#IndieCreator',
     '#DataVisualization',
+    '#CreativeCoding',
     '#GenerativeAI',
-    '#ArtEveryDay',
-    '#ProcessingArt',
-    '#MotionArt',
-    '#AIArtwork',
-    '#ComputationalArt',
-    '#SelfTracking',
+    '#AIGenerated',
+    '#AlgorithmicArt',
+    '#WHOOP',
     '#WHOOPData',
-    '#ExperimentalArt',
+    '#QuantifiedSelf',
+    '#SelfTracking',
+    '#Biohacking',
+    '#Biohacker',
+    '#DigitalHealth',
+    '#HealthTech',
+    '#WearableTech',
+    '#DigitalArt',
 ]
 
 
 def _build_hashtags(date_str: str) -> str:
-    rng = random.Random(date_str)
-    rotating = rng.sample(HASHTAGS_POOL, 9)
-    return ' '.join(HASHTAGS_CORE + rotating)
+    return ' '.join(HASHTAGS)
 
 
 def _setup_global_exception_handler(pipeline_instance):
