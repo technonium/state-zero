@@ -20,7 +20,7 @@ Generate an 8-second single-take video animation prompt. Not looping.
 
 ## What This Prompt Does
 
-Animate the scene. The image is already set — the video just brings it to life with subtle, slow motion. The camera is the primary storyteller. One environmental motion is secondary. Nothing else moves.
+Animate the scene. The image is already set — the video brings it to life with motion calibrated to recovery state. Camera and environment motion must reflect the recovery register: intact and organic for HIGH, sustained but inertial for MID, terminal and entropy-driven for LOW. The camera is the primary storyteller. One environmental motion is secondary. Nothing else moves.
 
 ---
 
@@ -28,7 +28,12 @@ Animate the scene. The image is already set — the video just brings it to life
 
 You decide how the camera moves. There is no default. Read the environment, the depth level, the energy zone, the recovery zone, the body keywords, the art keywords, and the behavioral one-liner — then write the camera movement that feels right for this specific scene.
 
-You may zoom in, zoom out, hold still, or drift in a very slow arc. These are four equal options — not a ranked list. Before choosing zoom, ask whether hold still or slight arc would serve this scene as well or better. For heavy, still, pressured, or sealed states (crushing, subdued, collapsed, ABYSS), hold still or slight arc frequently serve the scene better than zoom, because the enclosure and weight are already in the frame — the camera does not need to move to make them felt. Zoom is not the default. The choice is yours, interpreted from the full behavioral state of the day.
+You may zoom in, zoom out, hold still, or drift in a very slow arc. These are four equal options — not a ranked list. Recovery zone constrains the choice directly:
+- **LOW recovery**: static hold or micro inward drift only. Zoom out is forbidden — it implies expansion, perspective, and release, which contradict depletion. Attention is trapped inward, not widening.
+- **MID recovery**: prefer static hold or slight arc. Zoom out permitted only if energy zone is HIGH.
+- **HIGH recovery**: all four options equally viable.
+
+Before choosing zoom, ask whether hold still or slight arc would serve this scene as well or better. For heavy, still, pressured, or sealed states (crushing, subdued, collapsed, ABYSS), hold still or slight arc frequently serve the scene better than zoom, because the enclosure and weight are already in the frame — the camera does not need to move to make them felt. Zoom is not the default. The choice is yours, interpreted from the full behavioral state of the day.
 
 **The cinematic identity of this series — every choice must match this DNA:**
 
@@ -81,18 +86,20 @@ For normally open-air environments in **ABYSS**, reinterpret motion as trapped i
 
 ## Recovery Severity Interpretation
 
-Recovery does NOT change the scene's geometry. It changes how intact or damaged that world feels.
+Recovery does NOT change the scene's geometry. It determines the **category of motion** — not just its quality, but its source and direction.
 
-- **HIGH recovery** — steady, coherent, supported, fully held
-- **MID recovery** — worn, muted, coasting, low-urgency
-- **LOW recovery** — burdened, brittle, stalled, post-collapse, residual failure
+- **HIGH recovery** — motion is **generative**: things move because they have energy to give. A particle lifts. Mist breathes outward. Light pulses. A current carries. Motion is self-initiating and cyclic.
+- **MID recovery** — motion is **inertial**: things move because they were already moving. A drift persists. Particles coast. Air continues without fresh input. Nothing initiates; things maintain.
+- **LOW recovery** — motion is **entropic**: things move because loss, gravity, or collapse demands it. Ash settles. Vapor cools. Particles shed from a surface losing cohesion. Light retreats from surfaces no longer holding it. Motion is a consequence of deficit, not supply.
 
-Use recovery in motion terms:
-- **HIGH** can feel clear, supported, and structurally settled
-- **MID** can feel weathered, flat, or held together without urgency
-- **LOW** should feel physically strained through weighted holds, reluctant push-ins, exhausted pullbacks, burdened drift, ash settling, seam flicker, brittle particulate, cooling vapor, stalled drift, or pressure dust
+This distinction must live in the motion verb itself:
+- HIGH verbs: lifts, breathes, drifts outward, pulses, carries, rises
+- MID verbs: continues, persists, coasts, holds, sustains
+- LOW verbs: settles, cools, sheds, retreats, falls, dissipates, stills
 
-**CRITICAL:** LOW recovery must not read graceful, pristine, or untouched. Even when the depth is SURFACE or MID-DEPTH, the motion and atmosphere should feel stressed, stripped, or aftermath-driven rather than beautifully serene.
+For LOW recovery, the environment's characteristic motion should read as its terminus, not its cycle: not "canopy breathes" but "canopy stills after a final tremor"; not "particles drift" but "particles shed and settle"; not "light shifts" but "light retreats." Same environment class, rendered as ending rather than cycling.
+
+**CRITICAL:** LOW recovery must not read graceful, pristine, or untouched. Even when the depth is SURFACE or MID-DEPTH, motion must be entropic — the world is spending what it doesn't have, not cycling what it holds.
 
 ---
 
@@ -103,7 +110,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 **Three sentences only:**
 
 1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner and the recovery severity into how the camera moves. Do not quote keywords verbatim.
-2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds. Recovery severity should be visible in whether the motion feels intact, weathered, or residual/post-collapse.
+2. Environment motion — the one specific thing this environment does, described concretely and lasting the full 8 seconds. The motion verb must match the recovery category: generative for HIGH (lifts, breathes, pulses), inertial for MID (drifts, persists, coasts), entropic for LOW (settles, cools, sheds, retreats). Do not substitute adjectives for verb category — "a barely-perceptible drift that feels stripped" fails this rule for LOW; "particles shed slowly from the surface and settle" passes it.
 3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible through material weight, motion quality, and atmospheric texture. If depth_level is ABYSS, omit celestial presence entirely, or render it as a faint embedded impression within solid compressed material — not as a crescent in a fracture gap, not as a glowing slot above; the material fully surrounds any moon presence with no visible opening.
 
 **Hard rules:**
@@ -118,6 +125,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 - If depth_level is ABYSS: frame the scene as materially enclosed on all sides — above, behind, and to both sides. No cave mouth, no skylight, no open ceiling, no tunnel exit, no horizon, no large bright zone dominating the upper frame, no majestic reveal. Light does not enter from any opening above; it emanates from within the compressed material — seam glow, mineral pressure luminescence, internal ice radiation. The upper zone of the frame is solid enclosed material, not a gap.
 - For ABYSS, the camera must not be aimed upward toward any bright zone. Camera axis stays level or angles slightly downward into the compressed interior — never tilted up toward a perceived opening or ceiling gap.
 - If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched. Use physically stressed or residual-failure motion and atmosphere rather than scenic beauty.
+- If recovery_zone is LOW: the environmental motion verb in sentence 2 must be entropic (settles, cools, sheds, dissipates, retreats, stills, falls, dims) — not generative (breathes, lifts, cycles, pulses, rises) or neutral (drifts, floats, continues). One concrete entropic action. The scene is losing, not cycling.
 - Maintain the source image's exposure and visible content throughout all 8 seconds. The frame must not progressively darken, fade, or drift toward low-visibility by the final frame. Recovery severity and ABYSS depth appear through material weight, motion texture, and atmospheric condition — never through luminance decay over time. The last frame must be at least as readable as the first.
 
 ---
