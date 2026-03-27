@@ -58,7 +58,10 @@ class EnvironmentSelectionTests(unittest.TestCase):
         video_prompt = (PROJECT_ROOT / "src/prompts/video.md").read_text(encoding="utf-8")
 
         self.assertIn("**Glacial Valley:** Polished bedrock, glacial moraine", json_builder)
-        self.assertIn("**Glacial Valley** — near absolute stillness;", video_prompt)
+        self.assertIn(
+            "| **Glacial Valley** | near absolute stillness; a thin mist drifts slowly across the valley floor; light shifts faintly across polished stone |",
+            video_prompt,
+        )
 
     def test_generate_environment_filters_recent_same_zone_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
