@@ -33,10 +33,14 @@ class RecoveryPromptRegressionTests(unittest.TestCase):
         self.assertIn("- **Body Keywords:** {body_keywords}", content)
         self.assertIn("## Recovery Severity Interpretation", content)
         self.assertIn(
-            "**LOW recovery** — burdened, brittle, stalled, post-collapse, residual failure",
+            "**LOW recovery** — the environment is showing visible strain.",
             content,
         )
-        self.assertIn("weighted holds, reluctant push-ins, exhausted pullbacks", content)
+        self.assertIn("Use the LOW recovery event from the environment table above", content)
+        self.assertIn(
+            "sentence 2 must describe the LOW recovery event for the given environment",
+            content,
+        )
         self.assertIn(
             "If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched.",
             content,
