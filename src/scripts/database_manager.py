@@ -1,5 +1,6 @@
 import sqlite3
 import argparse
+import sys
 from pathlib import Path
 import json
 
@@ -188,8 +189,8 @@ class CardDatabase:
             ))
             conn.commit()
             print("✅ Successfully upserted card into database")
-        except sqlite3.IntegrityError as e:
-            print(f"❌ Failed to upsert card: {e}")
+        except sqlite3.DatabaseError as e:
+            raise RuntimeError(f"Failed to upsert card: {e}") from e
         finally:
             conn.close()
 
@@ -326,8 +327,8 @@ class CardDatabase:
             ))
             conn.commit()
             print("✅ Successfully upserted fallback post into database")
-        except sqlite3.IntegrityError as e:
-            print(f"❌ Failed to upsert fallback post: {e}")
+        except sqlite3.DatabaseError as e:
+            raise RuntimeError(f"Failed to upsert fallback post: {e}") from e
         finally:
             conn.close()
 
@@ -347,11 +348,16 @@ def main():
             payload_path = get_output_root() / 'last_archived_payload.json'
             
         if payload_path.exists():
-            with open(payload_path, 'r') as f:
-                card_data = json.load(f)
-            db.insert_card(card_data)
+            try:
+                with open(payload_path, 'r', encoding='utf-8') as f:
+                    card_data = json.load(f)
+                db.insert_card(card_data)
+            except Exception as e:
+                print(f"❌ Failed to archive card payload from {payload_path}: {e}")
+                sys.exit(1)
         else:
             print(f"❌ Could not find {payload_path}")
+            sys.exit(1)
 
     if args.insert_fallback:
         if args.file:
@@ -360,11 +366,16 @@ def main():
             payload_path = get_output_root() / 'emergency_fallback_used.json'
 
         if payload_path.exists():
-            with open(payload_path, 'r') as f:
-                fallback_data = json.load(f)
-            db.insert_fallback_post(fallback_data)
+            try:
+                with open(payload_path, 'r', encoding='utf-8') as f:
+                    fallback_data = json.load(f)
+                db.insert_fallback_post(fallback_data)
+            except Exception as e:
+                print(f"❌ Failed to archive fallback payload from {payload_path}: {e}")
+                sys.exit(1)
         else:
             print(f"❌ Could not find {payload_path}")
+            sys.exit(1)
 
 if __name__ == '__main__':
     main()

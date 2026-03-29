@@ -29,6 +29,9 @@ class InstagramPublishResult:
 class InstagramPoster:
     # Non-retryable error codes (per Instagram API documentation)
     NON_RETRYABLE_CODES = frozenset({10, 100, 190}) | set(range(200, 300))
+    REQUEST_TIMEOUT = (10, 60)
+    POLL_INTERVAL_SECONDS = 10
+    POLL_MAX_BACKOFF_SECONDS = 60
     
     def __init__(self, access_token: str = None, user_id: str = None):
         # Use token manager to get valid token (handles refresh automatically)
@@ -116,6 +119,32 @@ class InstagramPoster:
         
         return False, f"HTTP {status_code}: Non-transient"
 
+    def _get_retry_after_seconds(self, response: requests.Response) -> Optional[int]:
+        """Return Retry-After delay when present and parseable."""
+        retry_after = response.headers.get("Retry-After")
+        if not retry_after:
+            return None
+        try:
+            return max(1, int(retry_after))
+        except (TypeError, ValueError):
+            return None
+
+    def _get_poll_retry_delay(self, transient_errors: int, response: Optional[requests.Response] = None) -> int:
+        """
+        Back off polling on transient failures without failing fast.
+
+        Polling should be bounded by total elapsed time, not by a tiny number of
+        transient blips. Honor Retry-After when Meta provides it; otherwise use
+        capped exponential backoff from the normal poll interval.
+        """
+        retry_after = self._get_retry_after_seconds(response) if response is not None else None
+        if retry_after is not None:
+            return min(retry_after, self.POLL_MAX_BACKOFF_SECONDS)
+        return min(
+            self.POLL_INTERVAL_SECONDS * (2 ** max(0, transient_errors - 1)),
+            self.POLL_MAX_BACKOFF_SECONDS,
+        )
+
     def create_media_container(self, video_url: str, cover_url: str, caption: str) -> str:
         """Step 14a: Create media container with retry logic"""
         if self.mock_mode:
@@ -141,7 +170,7 @@ class InstagramPoster:
         
         for attempt in range(max_attempts):
             try:
-                response = requests.post(url, data=payload)
+                response = requests.post(url, data=payload, timeout=self.REQUEST_TIMEOUT)
                 response_data = response.json()
                 
                 if 'id' in response_data:
@@ -180,14 +209,52 @@ class InstagramPoster:
             return True
 
         url = f"{self.base_url}/{creation_id}?fields=status_code&access_token={self.access_token}"
+        max_duration_seconds = max_polls * self.POLL_INTERVAL_SECONDS
+        deadline = time.monotonic() + max_duration_seconds
         polls = 0
-        
-        while polls < max_polls:
+        transient_errors = 0
+
+        while polls < max_polls and time.monotonic() < deadline:
             print(f"▶ Polling status (Attempt {polls+1}/{max_polls})...")
-            response = requests.get(url)
+            try:
+                response = requests.get(url, timeout=self.REQUEST_TIMEOUT)
+            except requests.exceptions.RequestException as e:
+                transient_errors += 1
+                polls += 1
+                delay = self._get_poll_retry_delay(transient_errors)
+                print(
+                    "⚠ Transient network error while polling status "
+                    f"(streak {transient_errors}): {e}"
+                )
+                if polls >= max_polls:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(delay, remaining))
+                continue
+
+            polls += 1
+            should_retry, error_summary = self._check_transient_from_response(response)
+            if should_retry:
+                transient_errors += 1
+                delay = self._get_poll_retry_delay(transient_errors, response)
+                print(
+                    "⚠ Transient API status while polling "
+                    f"(streak {transient_errors}): {error_summary}"
+                )
+                if polls >= max_polls:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(delay, remaining))
+                continue
+
             data = response.json()
             status = data.get('status_code', 'UNKNOWN')
-            
+            transient_errors = 0
+
             if status == 'FINISHED':
                 print(f"✅ Processing FINISHED for {creation_id}")
                 return True
@@ -201,11 +268,16 @@ class InstagramPoster:
                 else:
                     print(f"❌ Processing ERROR for {creation_id}")
                 return False
-                
-            time.sleep(10)
-            polls += 1
+
+            if status != 'IN_PROGRESS':
+                print(f"⚠ Unexpected processing status for {creation_id}: {status}")
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(self.POLL_INTERVAL_SECONDS, remaining))
             
-        print("❌ Polling timeout reached.")
+        print(f"❌ Polling timeout reached after {max_duration_seconds}s.")
         return False
 
     def publish_media(self, creation_id: str) -> str:
@@ -226,7 +298,7 @@ class InstagramPoster:
         
         for attempt in range(max_attempts):
             try:
-                response = requests.post(url, data=payload)
+                response = requests.post(url, data=payload, timeout=self.REQUEST_TIMEOUT)
                 response_data = response.json()
                 
                 if 'id' in response_data:
@@ -280,7 +352,7 @@ class InstagramPoster:
         
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, params=params)
+                response = requests.get(url, params=params, timeout=self.REQUEST_TIMEOUT)
                 data = response.json()
                 
                 if 'permalink' in data:
