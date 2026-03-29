@@ -15,10 +15,10 @@ class DepthKeywordTests(unittest.TestCase):
             ["Beneath", "Overhang", "Partial-sky", "One-direction-light"],
         )
 
-    def test_deep_keywords_follow_chamber_model(self):
+    def test_deep_keywords_follow_geological_model(self):
         self.assertEqual(
             get_depth_keywords("DEEP"),
-            ["Chamber", "Ceiling-visible", "Shaft-light", "Distant-opening"],
+            ["Buried-recess", "Overhead-mass", "Compressed-enclosure", "Filtered-light"],
         )
 
     def test_abyss_keywords_follow_internal_light_model(self):
@@ -40,7 +40,7 @@ class PromptRegressionTests(unittest.TestCase):
             content,
         )
         self.assertIn(
-            'inside subterranean [environment] chambers, vaulted ceiling visible above, light descending as a directed shaft from a distant opening',
+            'inside a buried [environment] recess, overhead geological mass pressing close above, light entering laterally from a crack in the surrounding rock — no opening above',
             content,
         )
         self.assertIn(
@@ -71,6 +71,26 @@ class PromptRegressionTests(unittest.TestCase):
         self.assertIn("omit entirely, or render as a faint shape impression fully embedded within solid compressed material", content)
         self.assertIn("light in abyss does not arrive from any above-direction source; it emanates from within the compressed material itself", content)
         self.assertIn("abyss shows no cave mouth, skylight, tunnel exit, horizon, scenic opening, or dominant bright zone in the upper frame", content)
+
+    def test_deep_has_no_overhead_aperture_language(self):
+        jb = (REPO_ROOT / "src/prompts/json_builder.md").read_text()
+        vid = (REPO_ROOT / "src/prompts/video.md").read_text()
+        combined = jb + vid
+        forbidden = [
+            "natural gap in the rock",
+            "shaft-light",
+            "descending from a distant geological opening",
+            "geological gap",
+            "from one natural gap",
+            "filtered light from geological gap",
+            "filtered directional light from one natural gap",
+        ]
+        for phrase in forbidden:
+            self.assertNotIn(
+                phrase,
+                combined,
+                msg=f"Forbidden DEEP overhead-aperture phrase found: {phrase!r}",
+            )
 
 
 if __name__ == "__main__":

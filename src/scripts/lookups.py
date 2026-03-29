@@ -175,7 +175,7 @@ def get_depth_keywords(sleep_zone: str) -> list:
     mapping = {
         "SURFACE": ["Celestial", "Elevated", "Bright", "Open"],
         "MID-DEPTH": ["Beneath", "Overhang", "Partial-sky", "One-direction-light"],
-        "DEEP": ["Chamber", "Ceiling-visible", "Shaft-light", "Distant-opening"],
+        "DEEP": ["Buried-recess", "Overhead-mass", "Compressed-enclosure", "Filtered-light"],
         "ABYSS": ["Sealed", "Compression-fractures", "Interior-pressure", "No-above"]
     }
     return mapping.get(sleep_zone, [])
@@ -233,23 +233,23 @@ BEHAVIOR_MATRIX = {
     },
     ("LOW", "SURFACE"): {
         "body_keywords": ["Tense", "wired", "fraying"],
-        "art_keywords": ["Taut", "brittle", "unstable"],
-        "one_liner": "Yesterday's strain held through the night — sleep arrived but the tension didn't release, still wired and stretched past comfortable"
+        "art_keywords": ["Taut", "brittle", "rupturing"],
+        "one_liner": "Strain exposed in open air — the environment is cracking at the surface, fracture visible everywhere, sleep didn't contain the damage"
     },
     ("LOW", "MID-DEPTH"): {
         "body_keywords": ["Drained", "numb", "fading"],
-        "art_keywords": ["Sinking", "stripped", "oppressive"],
-        "one_liner": "Both metrics pulling down. Bare. No colour, no energy. Just form getting through"
+        "art_keywords": ["Sinking", "stripped", "fractured"],
+        "one_liner": "Both metrics in failure — structural support gone, form moving through partial collapse, the weight has been too much for too long"
     },
     ("LOW", "DEEP"): {
         "body_keywords": ["Wrecked", "shutdown", "leaden"],
-        "art_keywords": ["Collapsed", "smoldering", "suffocating"],
-        "one_liner": "Day after the damage — post-event silence, everything cooling into wreckage and ash"
+        "art_keywords": ["Collapsed", "shattered", "suffocating"],
+        "one_liner": "Total shutdown — post-event wreckage in the dark, everything fractured past repair, depth amplifying the collapse"
     },
     ("LOW", "ABYSS"): {
         "body_keywords": ["Destroyed", "void", "primal"],
-        "art_keywords": ["Crushing", "devastated", "primordial"],
-        "one_liner": "Complete system failure. Nothing left. The landscape is what remains after everything already collapsed"
+        "art_keywords": ["Crushing", "devastated", "demolished"],
+        "one_liner": "Complete system failure — the world is demolished and sealed. Nothing intact, nothing inhabitable. Wreckage under compression."
     }
 }
 

@@ -63,17 +63,21 @@ Use the single most characteristic motion for this environment, scaled to recove
 | **Plasma/Nebula** | outer gas edges drift slowly apart in stellar wind; fine particles settle | a pressure wave releases from the core — gas expands outward in a visible ripple, particles scatter and resettle |
 | **Bioluminescent** | organic surfaces pulse once or twice with slow breathing light; a few spores lift upward | a discharge event — one cluster pulses rapidly in irregular bursts, light briefly overloads and dims, spores scatter |
 | **Stone Monuments** | near total stillness; fine dust shifts at formation bases in a barely perceptible current | a stone fragment sheds from a formation surface and falls; fine dust cascades from the impact point |
-| **Volcanic** | heat shimmer warps the air above formations; fine ash settles across stone | a small vent releases a visible ash burst; a surface crack opens briefly showing inner glow before cooling |
+| **Volcanic** | heat shimmer warps the air above formations; fine ash settles across stone | a fissure ruptures along the formation base — ash pours from the breach in a sustained column; a surface seam splits and widens, spilling inner glow before crust collapses over it |
 | **Lightning/Storm** | a single electrical arc traces a surface slowly; conductive rock absorbs and dims | storm intensifies — multiple arcs trace surfaces in succession; wind drives particles across the frame in lateral streams |
 | **Crystal Caves** | internal light shifts and refracts within crystal mass; a slow prismatic color rotation moves across formation surfaces | a hairline fracture spreads across one formation surface; light refracts sharply from the break point before dimming into scattered refraction |
-| **Crystalline (Active)** | internal light refracts and shifts slightly within formation mass; geometry holds still | a crystal cluster sheds a fine cascade of crystalline dust from its base; internal light dims at the fracture point |
+| **Crystalline (Active)** | internal light refracts and shifts slightly within formation mass; geometry holds still | a crystal mass shears from the formation — fragments cascade from the break in a sustained fall; internal light extinguishes at the fracture and does not recover |
 | **Frozen/Ice** | near absolute stillness; frost crystallizes at one edge; light shifts slowly across ice planes | a crack propagates slowly across an ice plane; fine ice splinters fall from the fracture line |
-| **Glacial Valley** | near absolute stillness; a thin mist drifts slowly across the valley floor; light shifts faintly across polished stone | ice calves at the far edge — a mass separates and drops; the break sends a fine ice-dust cloud drifting across the valley floor |
-| **Ocean/Underwater** | one slow caustic ripple crosses a formation surface and fades | a surge current disturbs fine sediment from the base in a visible cloud; formations briefly obscured before the cloud disperses |
-| **Forest/Jungle** | canopy breathes once; a single patch of filtered light shifts across the ground | rain enters through the canopy in visible drops; wet leaves press down, filtered light disappears |
-| **Cave Systems** | thin air current stirs fine particles near the base; stone formations hold in absolute stillness | water drips visibly and accelerates from a stalactite; mineral dust falls from the ceiling in a thin cascade |
+| **Glacial Valley** | near absolute stillness; a thin mist drifts slowly across the valley floor; light shifts faintly across polished stone | ice calves at the far edge — a mass separates and drops with visible impact; the break sends a dense ice-dust cloud rolling across the valley floor and persisting |
+| **Ocean/Underwater** | one slow caustic ripple crosses a formation surface and fades | a surge current blasts sediment from the base in a billowing cloud that expands and holds; formations obscured for the full duration as disturbed matter refuses to settle |
+| **Forest/Jungle** | canopy breathes once; a single patch of filtered light shifts across the ground | a downpour overwhelms the canopy — foliage bows and collapses under load; filtered light extinguishes, runoff streams down every visible surface as the overhead structure fails |
+| **Cave Systems** | thin air current stirs fine particles near the base; stone formations hold in absolute stillness | water accelerates into a visible stream from an overhead stalactite formation; mineral dust sheds from the fractured overhead rock in a persistent fall, accumulating below |
 | **Desert (Calm)** | sand grains drift slowly along formation base; distant heat shimmer rises | a dust column rises from the far ground; wind-driven sand streams across formation stone in a visible lateral flow |
 | **Wind/Sky Realms** | a cloud layer shifts slightly at its own speed; air current moves particles through frame | a weather front passes through — cloud mass darkens and accelerates; particles driven across the frame in directional streams |
+| **Mist/Fog Realms** | fog bank thickens and holds; particulate matter suspends without settling | pressure collapses the fog density — heavy saturated air drops sharply to the ground; visibility extinguishes as the mass compresses into near-zero depth |
+| **Void/Space (Low)** | distant particle clouds drift in a slow current; stellar light holds faint and steady | a debris cascade releases from above — particles stream downward in accelerating columns, fine matter scatters across the frame and refuses to clear |
+| **Desert (Intense)** | heat shimmer warps the air continuously above scorched terrain; cracked earth holds still | a surface shelf fractures and collapses — cracked earth buckles and drops; abrasive dust streams laterally in choking directional flow across the full frame |
+| **Fire Realms** | ember glow pulses in a slow steady rhythm; thin smoke drifts upward in a single thread | combustion surges — a flame front expands across stone formation surfaces; dense smoke pours across the frame and engulfs formations, residual glow only beneath the layer |
 
 ---
 
@@ -83,7 +87,7 @@ Translate depth through sky access and light direction:
 
 - **SURFACE** — open air, exposed scale, sky fully readable
 - **MID-DEPTH** — shelter edge, recess, overhang, partial sky still visible
-- **DEEP** — interior chamber, ceiling readable, shaft-light descending from above
+- **DEEP** — enclosed natural recess, overhead geological mass close above, light entering laterally from a crack in the surrounding walls — no opening above, no vertical shaft
 - **ABYSS** — sealed compression, no open-sky framing, no majestic reveal, light only from fractures or internal pressure
 
 For normally open-air environments in **ABYSS**, reinterpret motion as trapped internal motion: fracture mist, pressure dust, mineral haze, ice particulate, seam glow. Never use surface weather or broad sky drift there.
@@ -96,12 +100,16 @@ Recovery determines what happens in the landscape — not just how ambient thing
 
 - **HIGH recovery** — the environment is at rest and self-sustaining. Ambient motion is calm and cyclic. Nothing is happening beyond the world maintaining itself.
 - **MID recovery** — the environment is unsettled. The same ambient forces are present but irregular — more active than calm, not yet an event. Things are coasting under slight pressure.
-- **LOW recovery** — the environment is showing visible strain. Use the LOW recovery event from the environment table above — a fracture, a surge, a burst, a collapse fragment, rainfall, a dust column. The event is not catastrophic but it is present and visible for the full 8 seconds or as its consequence settles.
+- **LOW recovery** — the environment is showing visible strain or active failure. Use the LOW recovery event from the environment table above — a fracture, a surge, a rupture, a collapse, a pressure release. The event is present and legible for the full 8 seconds or through its settling consequence. At **LOW + ABYSS**, maximum failure vocabulary is permitted: demolished structure, total material collapse, abomination-state aftermath — this is the most catastrophic state in the system. At **LOW + SURFACE**, the failure is exposed and open under full light.
 
 The underlying logic:
 - HIGH motion is **generative** — things move because the world has energy to give
 - MID motion is **inertial** — things persist because they were already in motion
-- LOW motion is **event-driven and entropic** — something occurs because the structure is under stress or losing cohesion
+- LOW motion is **event-driven and entropic** — something occurs because the structure is under stress or actively losing cohesion
+
+**Spectrum extremes:**
+- **HIGH + SURFACE** = calmest possible state: open sky, self-sustaining world, nothing failing, ambient cyclic calm
+- **LOW + ABYSS** = most catastrophic possible state: sealed compression + total material failure — wrath, demolition, wreckage, abomination
 
 **CRITICAL for LOW:** The camera does not react to the event. It witnesses it with the same geological stillness it would witness anything. The contrast between a still witnessing camera and a visible environmental event is the point.
 
@@ -130,6 +138,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 - For ABYSS, the camera must not be aimed upward toward any bright zone. Camera axis stays level or angles slightly downward into the compressed interior — never tilted up toward a perceived opening or ceiling gap.
 - If recovery_zone is LOW: scene must not feel graceful, pristine, healthy, or untouched. Use physically stressed or residual-failure motion and atmosphere rather than scenic beauty.
 - If recovery_zone is LOW: sentence 2 must describe the LOW recovery event for the given environment (from the environment table above), not a subdued version of the HIGH motion. The event should be present and legible for the full 8 seconds or through its settling consequence.
+- If recovery_zone is LOW: sentence 2 must contain a legible physical event or persistent material failure state — not thin drift, not barely perceptible motion, not graceful scenic stillness with sad wording. The viewer must be able to identify what is physically wrong with the environment from that sentence alone. Mood description is not a substitute for visible material failure.
 - Maintain the source image's exposure and visible content throughout all 8 seconds. The frame must not progressively darken, fade, or drift toward low-visibility by the final frame. Recovery severity and ABYSS depth appear through material weight, motion texture, and atmospheric condition — never through luminance decay over time. The last frame must be at least as readable as the first.
 
 ---

@@ -510,14 +510,18 @@ class PromptOrchestrator:
                 )
             elif "# Card Scene Description Builder" in prompt:
                 return "The field opened past the last edge. Everything reached and nothing pushed back."
+            elif "video" in prompt.lower():
+                return (
+                    "The camera glides with slow restraint through the enclosed formation. "
+                    "Mineral dust pours from a side-wall fissure and keeps falling through the full shot. "
+                    "Film grain persists while dim light bleeds laterally across the surrounding rock."
+                )
             elif "interpretation" in prompt.lower() and "maha" in prompt.lower():
                 return "The current planetary periods suggest an introspective and solitary focus. This highlights the depth of rest achieved today."
             elif "creature" in prompt.lower() and "archetype" in prompt.lower():
                 return "The Architect — A towering being of silent geometry, mapping cosmic patterns onto the terrain below."
             elif "environment" in prompt.lower() and "energy" in prompt.lower():
                 return "Bioluminescent — Organic tissue, natural glow, living light sources"
-            elif "video" in prompt.lower():
-                return "Smooth tracking shot drifting past luminous crystal formations towards the towering Architect."
             return "Mock LLM response."
 
         # Use OpenRouter client if available
@@ -990,31 +994,47 @@ class PromptOrchestrator:
 
         filled_prompt = self.fill_template(template, placeholders, template_name='json_builder')
         self.save_output('last_prompt_image_json.txt', filled_prompt)
-        json_output = self.call_llm(filled_prompt)
+        prompt_to_send = filled_prompt
+        json_output = ''
+        image_json: dict = {}
+        last_rejection_reasons: list[str] = []
+        depth_level = daily_data.get('depth_level', 'Unknown')
 
-        try:
-            image_json = self._parse_llm_json_response(json_output)
-        except json.JSONDecodeError as e:
-            print(f"⚠️  Failed to decode JSON from LLM: {e}")
+        for attempt in range(3):
+            json_output = self.call_llm(prompt_to_send)
+            rejection_reasons: list[str] = []
 
-            # Try to extract blend option from raw text before falling back
-            extracted_blend = self._extract_blend_option_from_text(json_output)
+            try:
+                image_json = self._parse_llm_json_response(json_output)
+            except json.JSONDecodeError as e:
+                print(f"⚠️  Failed to decode JSON from LLM: {e}")
+                image_json = {}
+                rejection_reasons.append('image_json_parse_failure')
 
-            print(f"⚠️  Attempting blend extraction from raw text: {extracted_blend}")
+            if not rejection_reasons:
+                rejection_reasons.extend(self._validate_image_json_shape(image_json))
+                rejection_reasons.extend(self._validate_image_json(image_json, depth_level))
 
-            image_json = {
-                "creature_integration": {"blend": extracted_blend},
-                "scene_config": {"atmosphere": "thick"},
-                "error": "Failed to decode",
-                "raw": json_output
-            }
+            if not rejection_reasons:
+                self.save_json_output('image_prompt.json', image_json)
+                break
 
-            # If we couldn't extract a valid blend, this is a hard error
-            if extracted_blend.startswith("Option A - Default"):
-                print(f"❌ Could not extract blend option from LLM response. This may indicate a prompt or API issue.")
+            last_rejection_reasons = rejection_reasons
+            if attempt == 2:
+                reason_text = ', '.join(last_rejection_reasons)
+                raise RuntimeError(
+                    'Image JSON validation failed after 3 attempts. '
+                    f'Reasons: {reason_text}. Last output: {json_output.strip()}'
+                )
 
-        with open(self.output_dir / 'image_prompt.json', 'w') as f:
-            json.dump(image_json, f, indent=2)
+            retry_prompt = self._build_image_json_retry_prompt(
+                filled_prompt,
+                previous_output=json_output,
+                rejection_reasons=rejection_reasons,
+            )
+            suffix = '' if attempt == 0 else f'_{attempt + 1}'
+            self.save_output(f'last_prompt_image_json_retry{suffix}.txt', retry_prompt)
+            prompt_to_send = retry_prompt
 
         # Extract blend option safely with validation
         blend_full = image_json.get('creature_integration', {}).get('blend', 'Option A - Default (Fallback)')
@@ -1451,17 +1471,253 @@ class PromptOrchestrator:
             'banned_structural_keys': banned_structural_keys,
         }
 
+    _DEEP_ARCHITECTURAL = re.compile(
+        r'\b(chamber|chambers|vaulted|vault|corridor|corridors|hull|hulls|hangar|hangars)\b'
+        r'|tunnel interior|ribbed structure|engineered arch|ceiling framework',
+        re.IGNORECASE,
+    )
+
+    _DEEP_OVERHEAD_APERTURE = re.compile(
+        r'\b(shaft|shaft-light|skylight|aperture|oculus)\b'
+        r'|hole above|opening above|open ceiling|ceiling hole|vertical beam|vertical shaft'
+        r'|descend\w* from above|fall\w* from above|light entering from above',
+        re.IGNORECASE,
+    )
+
+    _ABYSS_BRIGHT_OPENING = re.compile(
+        r'cave mouth|skylight|tunnel exit|horizon(?: line)?|bright upper opening|upper opening'
+        r'|bright zone in the upper third|dominant bright zone|opening above|open ceiling|ceiling hole'
+        r'|\b(shaft|shaft-light|aperture|oculus)\b',
+        re.IGNORECASE,
+    )
+
+    _LOW_FAILURE_EVENT = re.compile(
+        r'\b(fractur\w*|crack\w*|collaps\w*|surg\w*|ruptur\w*|burst\w*|falls?|shed\w*|calv\w*|'
+        r'cascad\w*|stream\w*|blast\w*|overwhelm\w*|buckl\w*|drops?|shear\w*|extinguish\w*|'
+        r'fails?|failing|fragment\w*|breach\w*|fissur\w*|pour\w*|accumulat\w*|demolish\w*|'
+        r'wreck\w*|shatter\w*|engulf\w*|widens?|separ\w*)\b',
+        re.IGNORECASE,
+    )
+
+    def _split_video_sentences(self, video_prompt: str) -> list[str]:
+        lines = [line.strip() for line in video_prompt.splitlines() if line.strip()]
+        normalized = ' '.join(lines)
+        if not normalized:
+            return []
+        return [part.strip() for part in re.split(r'(?<=[.!?])\s+', normalized) if part.strip()]
+
+    def _is_negated_visual_match(self, text: str, match: re.Match[str]) -> bool:
+        window = text[max(0, match.start() - 48):match.start()].lower()
+        return bool(
+            re.search(r'(?:\bno|\bnot|\bwithout|\bavoid|\bnever|\bomit|\babsent from)\s+$', window)
+            or window.endswith('does not ')
+            or window.endswith("doesn't ")
+            or window.endswith('must not ')
+        )
+
+    def _first_unnegated_match(self, pattern: re.Pattern[str], text: str) -> re.Match[str] | None:
+        for match in pattern.finditer(text):
+            if not self._is_negated_visual_match(text, match):
+                return match
+        return None
+
+    def _iter_text_fragments(self, value, path: str):
+        if isinstance(value, str):
+            yield path, value
+            return
+        if isinstance(value, dict):
+            for key, child in value.items():
+                child_path = f'{path}.{key}' if path else key
+                yield from self._iter_text_fragments(child, child_path)
+            return
+        if isinstance(value, list):
+            for idx, child in enumerate(value):
+                child_path = f'{path}[{idx}]'
+                yield from self._iter_text_fragments(child, child_path)
+
+    def _iter_image_visual_fields(self, image_json: dict):
+        for key in ('core_concept', 'lighting', 'composition', 'color_palette', 'scene_config'):
+            if key in image_json:
+                yield from self._iter_text_fragments(image_json[key], key)
+
+    def _validate_image_json(self, image_json: dict, depth_level: str) -> list[str]:
+        reasons: list[str] = []
+        if depth_level not in {'DEEP', 'ABYSS'}:
+            return reasons
+
+        for path, text in self._iter_image_visual_fields(image_json):
+            if depth_level == 'DEEP':
+                match = self._first_unnegated_match(self._DEEP_ARCHITECTURAL, text)
+                if match:
+                    reasons.append(f'deep_image_architectural_language:{path}:{match.group(0).lower()}')
+                match = self._first_unnegated_match(self._DEEP_OVERHEAD_APERTURE, text)
+                if match:
+                    reasons.append(f'deep_image_overhead_aperture:{path}:{match.group(0).lower()}')
+            if depth_level == 'ABYSS':
+                match = self._first_unnegated_match(self._ABYSS_BRIGHT_OPENING, text)
+                if match:
+                    reasons.append(f'abyss_image_bright_opening:{path}:{match.group(0).lower()}')
+        return reasons
+
+    def _validate_image_json_shape(self, image_json: dict) -> list[str]:
+        reasons: list[str] = []
+        if not isinstance(image_json, dict):
+            return ['image_json_not_object']
+
+        if not any(key in image_json for key in ('core_concept', 'lighting', 'composition', 'color_palette', 'scene_config')):
+            reasons.append('image_json_missing_visual_fields')
+
+        creature_integration = image_json.get('creature_integration')
+        if not isinstance(creature_integration, dict):
+            reasons.append('image_json_missing_creature_integration')
+            return reasons
+
+        blend = creature_integration.get('blend')
+        if not isinstance(blend, str) or not blend.strip():
+            reasons.append('image_json_missing_blend_option')
+
+        return reasons
+
+    def _build_image_json_retry_prompt(
+        self,
+        filled_prompt: str,
+        *,
+        previous_output: str,
+        rejection_reasons: list[str],
+    ) -> str:
+        corrections = []
+        for reason in rejection_reasons:
+            if reason == 'image_json_parse_failure':
+                corrections.append(
+                    'Your previous response was not valid JSON. '
+                    'Return one valid JSON object only, with no markdown fences and no prose.'
+                )
+            elif reason == 'image_json_not_object':
+                corrections.append('The top-level response must be a JSON object (not an array or scalar).')
+            elif reason == 'image_json_missing_visual_fields':
+                corrections.append(
+                    'The JSON is missing scene description fields. Include core_concept plus visual blocks such as lighting/composition/color_palette.'
+                )
+            elif reason == 'image_json_missing_creature_integration':
+                corrections.append('The JSON must include creature_integration with a valid blend choice.')
+            elif reason == 'image_json_missing_blend_option':
+                corrections.append('The JSON must include creature_integration.blend as a non-empty string.')
+            elif reason.startswith('deep_image_architectural_language:'):
+                _, path, term = reason.split(':', 2)
+                corrections.append(
+                    f'The JSON field "{path}" contains "{term}" and reads too much like built architecture. '
+                    'DEEP image prompts must stay geological and buried, not engineered or chamber-like.'
+                )
+            elif reason.startswith('deep_image_overhead_aperture:'):
+                _, path, term = reason.split(':', 2)
+                corrections.append(
+                    f'The JSON field "{path}" contains "{term}" and implies an opening above the scene. '
+                    'DEEP must not show a centered overhead opening, circular hole, skylight, or vertical shaft of light. '
+                    'Keep the overhead mass solid and enclosed. '
+                    'Move the light source to a lateral crack, wall seam, translucent mineral face, or diffuse side-entry.'
+                )
+            elif reason.startswith('abyss_image_bright_opening:'):
+                _, path, term = reason.split(':', 2)
+                corrections.append(
+                    f'The JSON field "{path}" contains "{term}" and introduces an opening, horizon, or bright upper zone. '
+                    'ABYSS must stay sealed and interior: no cave mouth, skylight, tunnel exit, horizon line, large opening, or dominant bright upper area.'
+                )
+        correction_text = '\n'.join(f'- {c}' for c in corrections)
+        return (
+            f"{filled_prompt}\n\n"
+            "---\n\n"
+            "## Correction Required\n\n"
+            "Your previous image JSON violated one or more rules:\n"
+            f"{correction_text}\n\n"
+            "Rewrite the full response as valid JSON only. Do not add commentary or markdown fences.\n\n"
+            "Previous response:\n"
+            f"{previous_output.strip()}\n"
+        )
+
+    def _validate_video_prompt(self, video_prompt: str, depth_level: str, recovery_zone: str) -> list[str]:
+        reasons: list[str] = []
+        if depth_level == 'DEEP':
+            m = self._first_unnegated_match(self._DEEP_ARCHITECTURAL, video_prompt)
+            if m:
+                reasons.append(f'deep_architectural_language:{m.group(0).lower()}')
+            m = self._first_unnegated_match(self._DEEP_OVERHEAD_APERTURE, video_prompt)
+            if m:
+                reasons.append(f'deep_overhead_aperture:{m.group(0).lower()}')
+        if depth_level == 'ABYSS':
+            m = self._first_unnegated_match(self._ABYSS_BRIGHT_OPENING, video_prompt)
+            if m:
+                reasons.append(f'abyss_bright_opening:{m.group(0).lower()}')
+        if recovery_zone == 'LOW':
+            sentences = self._split_video_sentences(video_prompt)
+            motion_sentence = sentences[1] if len(sentences) >= 2 else ''
+            if not motion_sentence or not self._LOW_FAILURE_EVENT.search(motion_sentence):
+                reasons.append('low_recovery_sentence_two_no_failure_event')
+        return reasons
+
+    def _build_video_retry_prompt(
+        self,
+        filled_prompt: str,
+        *,
+        previous_output: str,
+        rejection_reasons: list[str],
+    ) -> str:
+        corrections = []
+        for reason in rejection_reasons:
+            if reason.startswith('deep_architectural_language:'):
+                term = reason.split(':', 1)[1]
+                corrections.append(
+                    f'Your output contains "{term}" and the scene reads too much like built architecture. '
+                    'Rewrite DEEP as natural geological enclosure — buried recess, overhead rock mass, '
+                    'light entering laterally from a crack or seam in the surrounding walls. '
+                    'Steer away from explicit built-interior wording and keep the scene feeling geological.'
+                )
+            elif reason.startswith('deep_overhead_aperture:'):
+                term = reason.split(':', 1)[1]
+                corrections.append(
+                    f'Your output contains "{term}" and implies an opening above the scene. '
+                    'DEEP must not show a centered overhead opening, circular hole, skylight, or vertical shaft of light descending from above. '
+                    'Keep the overhead mass solid and enclosed. '
+                    'Move the light source to a lateral crack, wall seam, translucent mineral face, or diffuse side-entry.'
+                )
+            elif reason.startswith('abyss_bright_opening:'):
+                term = reason.split(':', 1)[1]
+                corrections.append(
+                    f'Your output contains "{term}" and introduces an opening, exit, horizon, or bright upper zone. '
+                    'ABYSS must not show a cave mouth, skylight, tunnel exit, horizon line, large opening, or dominant bright zone in the upper third. '
+                    'Keep the frame sealed, interior, and directionless with no readable way out above.'
+                )
+            elif reason == 'low_recovery_sentence_two_no_failure_event':
+                corrections.append(
+                    'Sentence 2 contains no legible physical failure event. '
+                    'LOW recovery needs one clear physical failure or persistent material problem specifically in sentence 2. '
+                    'Keep it scene-specific and visible in the world itself. '
+                    'Mood and atmosphere are not substitutes — the viewer should be able to tell what is physically wrong.'
+                )
+        correction_text = '\n'.join(f'- {c}' for c in corrections)
+        return (
+            f"{filled_prompt}\n\n"
+            "---\n\n"
+            "## Correction Required\n\n"
+            "Your previous video prompt violated one or more rules:\n"
+            f"{correction_text}\n\n"
+            "Rewrite the prompt correcting these issues. Three sentences only. Raw prompt text.\n\n"
+            "Previous response:\n"
+            f"{previous_output.strip()}\n"
+        )
+
     def build_video_prompt(self, daily_data: dict, environment: str, blend_option: str) -> str:
         """Build video animation prompt — scene continuation, no creature reference"""
         template = self.load_template('video')
         environment_name = environment.split('—')[0].strip() if '—' in environment else environment.strip()
         behavior = daily_data.get('behavior_matrix', {})
+        depth_level = daily_data.get('depth_level', '')
+        recovery_zone = daily_data.get('recovery_zone', '')
 
         placeholders = {
             'environment': environment_name,
-            'depth_level': daily_data.get('depth_level', 'Unknown'),
+            'depth_level': depth_level,
             'energy_zone': daily_data.get('energy_zone', 'Unknown'),
-            'recovery_zone': daily_data.get('recovery_zone', 'Unknown'),
+            'recovery_zone': recovery_zone,
             'body_keywords': ', '.join(behavior.get('body_keywords', [])),
             'art_keywords': ', '.join(behavior.get('art_keywords', [])),
             'one_liner': behavior.get('one_liner', ''),
@@ -1471,10 +1727,35 @@ class PromptOrchestrator:
 
         filled_prompt = self.fill_template(template, placeholders, template_name='video')
         self.save_output('last_prompt_video.txt', filled_prompt)
-        video_prompt = self.call_llm(filled_prompt)
-        self.save_output('video_prompt.txt', video_prompt)
+        prompt_to_send = filled_prompt
+        video_prompt = ''
+        last_rejection_reasons: list[str] = []
+        for attempt in range(3):
+            video_prompt = self.call_llm(prompt_to_send)
+            rejection_reasons = self._validate_video_prompt(video_prompt, depth_level, recovery_zone)
+            if not rejection_reasons:
+                self.save_output('video_prompt.txt', video_prompt)
+                return video_prompt
 
-        return video_prompt
+            last_rejection_reasons = rejection_reasons
+
+            if attempt == 2:
+                break
+
+            retry_prompt = self._build_video_retry_prompt(
+                filled_prompt,
+                previous_output=video_prompt,
+                rejection_reasons=rejection_reasons,
+            )
+            suffix = '' if attempt == 0 else f'_{attempt + 1}'
+            self.save_output(f'last_prompt_video_retry{suffix}.txt', retry_prompt)
+            prompt_to_send = retry_prompt
+
+        reason_text = ', '.join(last_rejection_reasons) if last_rejection_reasons else 'unknown_validation_failure'
+        raise RuntimeError(
+            'Video prompt validation failed after 3 attempts. '
+            f'Reasons: {reason_text}. Last output: {video_prompt.strip()}'
+        )
 
 
 def main():
