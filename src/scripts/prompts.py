@@ -6,7 +6,12 @@ import re
 from pathlib import Path
 from dotenv import load_dotenv
 from database_manager import CardDatabase
-from creature_utils import format_creature_output, normalize_creature_name, split_creature_output
+from creature_utils import (
+    format_creature_output,
+    normalize_creature_name,
+    parse_creature_payload,
+    split_creature_output,
+)
 from environment_utils import (
     extract_valid_environment_name,
     format_environment_output,
@@ -78,6 +83,205 @@ TEMPLATE_CRITICAL_PLACEHOLDERS = {
     "environment": {"environment_options"},
     "video": {"environment", "blend_option"},
 }
+GENERIC_FRAGMENT_SINGLETONS = {
+    "arm",
+    "beak",
+    "claw",
+    "crest",
+    "eye",
+    "fang",
+    "fin",
+    "horn",
+    "leg",
+    "muzzle",
+    "paw",
+    "snout",
+    "tail",
+    "tentacle",
+    "tooth",
+    "wing",
+}
+FRAGMENT_ENVIRONMENTAL_TERMS = {
+    "arch",
+    "bank",
+    "bend",
+    "bridge",
+    "canyon",
+    "crater",
+    "dune",
+    "gate",
+    "horizon",
+    "mesa",
+    "pass",
+    "path",
+    "portal",
+    "ridgeway",
+    "riverbed",
+    "shore",
+    "shoreline",
+    "threshold",
+    "valley",
+}
+FRAGMENT_SYMBOLIC_TERMS = {
+    "aura",
+    "echo",
+    "halo",
+    "ink",
+    "mark",
+    "memory",
+    "omen",
+    "rebirth",
+    "scar",
+    "shadow",
+    "signal",
+    "spirit",
+    "stain",
+    "symbol",
+    "trace",
+}
+FRAGMENT_CELESTIAL_MYTHIC_TERMS = {
+    "ascendant",
+    "celestial",
+    "cosmic",
+    "divine",
+    "karmic",
+    "mythic",
+    "sacred",
+    "sovereign",
+    "stellar",
+}
+FRAGMENT_ENVIRONMENTAL_CONTAMINATION_TERMS = {
+    "ash",
+    "ember",
+    "frost",
+    "glacial",
+    "lava",
+    "lunar",
+    "mist",
+    "molten",
+    "nebular",
+    "rain",
+    "sand",
+    "smoke",
+    "solar",
+    "storm",
+    "volcanic",
+}
+FRAGMENT_POINTABLE_FEATURE_TERMS = {
+    "barb",
+    "bill",
+    "carapace",
+    "casque",
+    "curl",
+    "curve",
+    "edge",
+    "feather",
+    "frill",
+    "gill",
+    "hook",
+    "hood",
+    "jaw",
+    "mandible",
+    "mane",
+    "plate",
+    "plume",
+    "ridge",
+    "ruff",
+    "sail",
+    "scale",
+    "scute",
+    "seam",
+    "segment",
+    "socket",
+    "spike",
+    "spine",
+    "spur",
+    "sucker",
+    "tip",
+    "tine",
+    "tusk",
+    "tuft",
+    "ventral",
+}
+FRAGMENT_GENERAL_BODY_REGION_TERMS = {
+    "architecture",
+    "back",
+    "body",
+    "face",
+    "field",
+    "flank",
+    "form",
+    "frame",
+    "head",
+    "mantle",
+    "neck",
+    "outline",
+    "overhead",
+    "profile",
+    "shape",
+    "silhouette",
+    "spread",
+    "structure",
+    "torso",
+    "trunk",
+}
+FRAGMENT_SCENE_WIDE_TERMS = {
+    "array",
+    "canopy",
+    "curtain",
+    "fan",
+    "field",
+    "mantle",
+    "sheet",
+    "spread",
+    "train",
+    "veil",
+}
+WHY_UNIQUE_FORBIDDEN_TERMS = {
+    "astrolog",
+    "ascension",
+    "chart",
+    "dasha",
+    "emotion",
+    "firebird",
+    "house",
+    "intuit",
+    "karm",
+    "myth",
+    "natal",
+    "planet",
+    "prana",
+    "rebirth",
+    "realm",
+    "scene",
+    "symbol",
+    "sookshma",
+    "terrain",
+    "threshold",
+    "landscape",
+    "environment",
+}
+WHY_UNIQUE_STRUCTURAL_TERMS = FRAGMENT_POINTABLE_FEATURE_TERMS | {
+    "curve",
+    "distinctive",
+    "edge",
+    "external",
+    "feature",
+    "form",
+    "geometry",
+    "hook",
+    "local",
+    "localized",
+    "outline",
+    "pointable",
+    "protrusion",
+    "recognizable",
+    "shape",
+    "specific",
+    "structur",
+    "tip",
+    "visible",
+}
 
 class PromptOrchestrator:
     def __init__(self, llm_api_key: str, openrouter_api_key: str = None):
@@ -125,6 +329,8 @@ class PromptOrchestrator:
         # Ensure directories exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.templates_dir.mkdir(parents=True, exist_ok=True)
+        self.latest_creature_fragment = ""
+        self.latest_creature_fragment_why_unique = ""
 
     def load_template(self, template_name: str) -> str:
         """Load prompt template from src/prompts/"""
@@ -486,6 +692,271 @@ class PromptOrchestrator:
         else:  # a_matches == max_matches
             return "Option A"
 
+    def _predict_blend_option(self, art_keywords_str: str) -> str:
+        """Predict blend option from art keywords without requiring an existing choice."""
+        art_keywords = [kw.strip().lower() for kw in art_keywords_str.split(',') if kw.strip()]
+
+        option_a_keywords = {
+            'crushing', 'collapsed', 'sinking', 'heavy', 'still',
+            'subdued', 'smoldering', 'suffocating',
+        }
+        option_b_keywords = {
+            'luminous', 'flowing', 'rhythmic', 'drifting', 'serene',
+            'expansive', 'balanced', 'harmonious', 'muted',
+        }
+        option_c_keywords = {
+            'volatile', 'fractured', 'turbulent', 'suspended',
+            'dissociated', 'brittle', 'unstable', 'devastated',
+        }
+
+        a_matches = sum(1 for kw in art_keywords if kw in option_a_keywords)
+        b_matches = sum(1 for kw in art_keywords if kw in option_b_keywords)
+        c_matches = sum(1 for kw in art_keywords if kw in option_c_keywords)
+        max_matches = max(a_matches, b_matches, c_matches)
+
+        if max_matches == 0:
+            return "Option B"
+        if b_matches == max_matches:
+            return "Option B"
+        if c_matches == max_matches:
+            return "Option C"
+        return "Option A"
+
+    def _is_generic_fragment_phrase(self, fragment_phrase: str) -> bool:
+        words = self._tokenize_fragment_text(fragment_phrase)
+        return len(words) == 1 and words[0] in GENERIC_FRAGMENT_SINGLETONS
+
+    def _reset_fragment_state(self):
+        self.latest_creature_fragment = ""
+        self.latest_creature_fragment_why_unique = ""
+
+    def _normalize_fragment_token(self, token: str) -> str:
+        normalized = token.casefold()
+        if normalized.endswith('ies') and len(normalized) > 4:
+            return normalized[:-3] + 'y'
+        if normalized.endswith('s') and len(normalized) > 3 and not normalized.endswith('ss'):
+            singular_candidate = normalized[:-1]
+            known_fragment_terms = (
+                GENERIC_FRAGMENT_SINGLETONS
+                | FRAGMENT_ENVIRONMENTAL_TERMS
+                | FRAGMENT_SYMBOLIC_TERMS
+                | FRAGMENT_CELESTIAL_MYTHIC_TERMS
+                | FRAGMENT_ENVIRONMENTAL_CONTAMINATION_TERMS
+                | FRAGMENT_POINTABLE_FEATURE_TERMS
+                | FRAGMENT_GENERAL_BODY_REGION_TERMS
+                | FRAGMENT_SCENE_WIDE_TERMS
+            )
+            if singular_candidate in known_fragment_terms:
+                return singular_candidate
+        return normalized
+
+    def _tokenize_fragment_text(self, text: str) -> list[str]:
+        return [self._normalize_fragment_token(token) for token in re.findall(r'[a-zA-Z]+', (text or '').casefold())]
+
+    def _analyze_signature_fragment(self, fragment_phrase: str, why_unique: str, creature_name: str) -> tuple[str, list[str]]:
+        reasons: list[str] = []
+        if not isinstance(fragment_phrase, str) or not fragment_phrase.strip():
+            return 'generic', ['fragment_missing_phrase']
+
+        normalized_fragment = fragment_phrase.strip()
+        fragment_tokens = self._tokenize_fragment_text(normalized_fragment)
+
+        if creature_name and creature_name.casefold() in normalized_fragment.casefold():
+            reasons.append('fragment_mentions_creature_name')
+        if self._is_generic_fragment_phrase(normalized_fragment):
+            reasons.append('fragment_generic_singleton')
+
+        word_count = len(fragment_tokens)
+        if word_count < 2:
+            reasons.append('fragment_too_short')
+        if word_count > 6:
+            reasons.append('fragment_too_long')
+        if re.search(r'\b(and|with)\b|[,/]', normalized_fragment, re.IGNORECASE):
+            reasons.append('fragment_multi_part_assembly')
+
+        if any(token in FRAGMENT_ENVIRONMENTAL_TERMS for token in fragment_tokens):
+            reasons.append('fragment_environmental_metaphor')
+        elif any(token in FRAGMENT_ENVIRONMENTAL_CONTAMINATION_TERMS for token in fragment_tokens):
+            reasons.append('fragment_environmental_contamination')
+        elif any(token in FRAGMENT_SYMBOLIC_TERMS or token in FRAGMENT_CELESTIAL_MYTHIC_TERMS for token in fragment_tokens):
+            reasons.append('fragment_symbolic_abstraction')
+        if any(token in FRAGMENT_SCENE_WIDE_TERMS for token in fragment_tokens):
+            reasons.append('fragment_scene_wide_structure')
+        if fragment_tokens and fragment_tokens[-1] in FRAGMENT_GENERAL_BODY_REGION_TERMS:
+            reasons.append('fragment_general_body_region')
+        if 'mane' in fragment_tokens and 'crown' in fragment_tokens:
+            reasons.append('fragment_full_identity_cue')
+        if not any(token in FRAGMENT_POINTABLE_FEATURE_TERMS for token in fragment_tokens):
+            reasons.append('fragment_not_pointable')
+
+        if word_count == 2 and fragment_tokens and fragment_tokens[-1] in GENERIC_FRAGMENT_SINGLETONS:
+            reasons.append('fragment_generic_decorated_singleton')
+
+        why_tokens = self._tokenize_fragment_text(why_unique)
+        why_unique_cf = (why_unique or '').casefold()
+        if why_tokens:
+            if any(any(term in token for term in WHY_UNIQUE_FORBIDDEN_TERMS) for token in why_tokens):
+                reasons.append('why_unique_symbolic')
+            if any(token in FRAGMENT_ENVIRONMENTAL_CONTAMINATION_TERMS for token in why_tokens):
+                reasons.append('why_unique_symbolic')
+            if not any(any(term in token for term in WHY_UNIQUE_STRUCTURAL_TERMS) for token in why_tokens):
+                reasons.append('why_unique_not_morphological')
+            if any(word in why_unique_cf for word in ('because it symbolizes', 'symbolizing', 'represents', 'echoes the myth', 'mythic passage')):
+                reasons.append('why_unique_symbolic')
+        else:
+            reasons.append('why_unique_missing')
+
+        generic_reason_keys = {
+            'fragment_generic_singleton',
+            'fragment_generic_decorated_singleton',
+            'fragment_too_short',
+            'fragment_too_long',
+            'fragment_missing_phrase',
+            'why_unique_missing',
+        }
+        symbolic_reason_keys = {
+            'fragment_environmental_metaphor',
+            'fragment_environmental_contamination',
+            'fragment_symbolic_abstraction',
+            'why_unique_symbolic',
+            'why_unique_not_morphological',
+        }
+        assembly_reason_keys = {
+            'fragment_multi_part_assembly',
+            'fragment_scene_wide_structure',
+            'fragment_full_identity_cue',
+        }
+        generic_reason_keys |= {
+            'fragment_general_body_region',
+            'fragment_not_pointable',
+        }
+
+        if any(reason in assembly_reason_keys for reason in reasons):
+            verdict = 'full-assembly risk'
+        elif any(reason in symbolic_reason_keys for reason in reasons):
+            verdict = 'symbolic/environmental'
+        elif any(reason in generic_reason_keys for reason in reasons):
+            verdict = 'generic'
+        else:
+            verdict = 'morphological'
+
+        return verdict, reasons
+
+    def _build_fragment_repair_prompt(
+        self,
+        *,
+        creature_name: str,
+        creature_reason: str,
+        previous_fragment: str,
+        previous_why_unique: str,
+        rejection_reasons: list[str],
+    ) -> str:
+        reason_map = {
+            'fragment_missing_phrase': 'signature_fragment is missing.',
+            'fragment_mentions_creature_name': 'signature_fragment must not contain the creature name.',
+            'fragment_generic_singleton': 'signature_fragment is too generic; avoid plain singleton parts.',
+            'fragment_generic_decorated_singleton': 'signature_fragment is still just a generic body part with decoration; pick a more creature-specific structural cue.',
+            'fragment_too_short': 'signature_fragment must be at least two words.',
+            'fragment_too_long': 'signature_fragment must be at most six words.',
+            'fragment_multi_part_assembly': 'signature_fragment is trying to assemble multiple body parts.',
+            'fragment_environmental_metaphor': 'signature_fragment is a terrain or landscape metaphor instead of creature morphology.',
+            'fragment_environmental_contamination': 'signature_fragment is contaminated by environment or material language instead of creature body structure.',
+            'fragment_symbolic_abstraction': 'signature_fragment is symbolic, mythic, emotional, or celestial instead of structural.',
+            'fragment_scene_wide_structure': 'signature_fragment is too broad or scene-wide; it should be one local pointable cue.',
+            'fragment_general_body_region': 'signature_fragment names a general body region instead of one specific local feature.',
+            'fragment_full_identity_cue': 'signature_fragment completes too much of a face or head read and will literalize the creature.',
+            'fragment_not_pointable': 'signature_fragment does not describe one small external feature a viewer could point to.',
+            'why_unique_symbolic': 'why_unique explains the fragment through symbolism, mythology, astrology, or theme instead of morphology.',
+            'why_unique_not_morphological': 'why_unique must explain what structural trait makes the fragment belong to the creature.',
+            'why_unique_missing': 'why_unique is missing.',
+        }
+        issue_lines = "\n".join(f"- {reason_map.get(reason, reason)}" for reason in rejection_reasons) or "- fragment validation failed"
+        return (
+            "You are repairing only the signature fragment for an already selected creature.\n\n"
+            f"Creature: {creature_name}\n"
+            f"Reason: {creature_reason}\n\n"
+            "Return JSON only with exactly these keys:\n"
+            "{\n"
+            '  "signature_fragment": "distinctive structural cue",\n'
+            '  "why_unique": "one short sentence explaining what structural property makes this fragment specific to this creature"\n'
+            "}\n\n"
+            "Rules:\n"
+            "- keep the creature fixed; do not rename or replace it\n"
+            "- find the minimum pointable identifier: one small external visible cue native to this creature\n"
+            "- prefer one local edge, hook, ridge, protrusion, tip, curl, or similarly specific outward feature\n"
+            "- reject anything that completes a full head/body read, spreads across the whole scene, or feels symbolic/environmental\n"
+            "- 2-6 words only\n"
+            "- not a generic singleton like claw, beak, tail, wing, or tentacle\n"
+            "- not a terrain feature, atmosphere phrase, or chart-derived metaphor\n"
+            "- why_unique must justify the fragment morphologically, not mythically or symbolically\n\n"
+            "Previous invalid fragment:\n"
+            f"- signature_fragment: {previous_fragment or '<missing>'}\n"
+            f"- why_unique: {previous_why_unique or '<missing>'}\n\n"
+            "Validation issues:\n"
+            f"{issue_lines}\n"
+        )
+
+    def _repair_signature_fragment(
+        self,
+        *,
+        creature_name: str,
+        creature_reason: str,
+        previous_fragment: str,
+        previous_why_unique: str,
+        rejection_reasons: list[str],
+    ) -> dict:
+        repair_prompt = self._build_fragment_repair_prompt(
+            creature_name=creature_name,
+            creature_reason=creature_reason,
+            previous_fragment=previous_fragment,
+            previous_why_unique=previous_why_unique,
+            rejection_reasons=rejection_reasons,
+        )
+        self.save_output('last_prompt_fragment_repair.txt', repair_prompt)
+        repair_raw_output = self.call_llm(repair_prompt)
+        repair_payload = parse_creature_payload(repair_raw_output)
+        repaired_fragment = (repair_payload.get('signature_fragment') or '').strip()
+        repaired_why_unique = (repair_payload.get('why_unique') or '').strip()
+        repair_verdict, repair_reasons = self._analyze_signature_fragment(
+            repaired_fragment,
+            repaired_why_unique,
+            creature_name,
+        )
+        return {
+            'raw_output': repair_raw_output,
+            'payload': repair_payload,
+            'signature_fragment': repaired_fragment,
+            'why_unique': repaired_why_unique,
+            'validation_verdict': repair_verdict,
+            'validation_reasons': repair_reasons,
+        }
+
+    def _parse_creature_response(self, raw_output: str) -> dict:
+        payload = parse_creature_payload(raw_output)
+        if payload:
+            name = (payload.get('name') or '').strip()
+            reason = (payload.get('reason') or '').strip()
+            signature_fragment = (payload.get('signature_fragment') or '').strip()
+            why_unique = (payload.get('why_unique') or '').strip()
+            return {
+                'name': name,
+                'reason': reason,
+                'signature_fragment': signature_fragment,
+                'why_unique': why_unique,
+                'format': 'json',
+                'raw_payload': payload,
+            }
+
+        name, reason = split_creature_output(raw_output)
+        return {
+            'name': name,
+            'reason': reason,
+            'signature_fragment': '',
+            'why_unique': '',
+            'format': 'legacy',
+            'raw_payload': {},
+        }
+
     def call_llm(self, prompt: str) -> str:
         """
         Call LLM API to generate text.
@@ -519,7 +990,14 @@ class PromptOrchestrator:
             elif "interpretation" in prompt.lower() and "maha" in prompt.lower():
                 return "The current planetary periods suggest an introspective and solitary focus. This highlights the depth of rest achieved today."
             elif "creature" in prompt.lower() and "archetype" in prompt.lower():
-                return "The Architect — A towering being of silent geometry, mapping cosmic patterns onto the terrain below."
+                return json.dumps(
+                    {
+                        "name": "The Architect",
+                        "reason": "A towering being of silent geometry, mapping cosmic patterns onto the terrain below.",
+                        "signature_fragment": "segmented crown lattice",
+                        "why_unique": "Uses a distinctive structural feature instead of a generic body part."
+                    }
+                )
             elif "environment" in prompt.lower() and "energy" in prompt.lower():
                 return "Bioluminescent — Organic tissue, natural glow, living light sources"
             return "Mock LLM response."
@@ -628,6 +1106,7 @@ class PromptOrchestrator:
 
     def generate_creature(self, daily_data: dict, interpretation: str) -> str:
         """Generate creature archetype (independent of energy zone)"""
+        self._reset_fragment_state()
         template = self.load_template('creature')
         dasha = daily_data.get('dasha', {})
         natal = daily_data.get('natal_context', {})
@@ -649,23 +1128,36 @@ class PromptOrchestrator:
         filled_prompt = self.fill_template(template, placeholders, template_name='creature')
         self.save_output('last_prompt_creature.txt', filled_prompt)
         retry_prompt_path = self.output_dir / 'last_prompt_creature_retry.txt'
-        resolved_creature_path = self.output_dir / 'creature_selected.txt'
         first_raw_output = self.call_llm(filled_prompt)
-        first_name, first_reason = split_creature_output(first_raw_output)
+        first_payload = self._parse_creature_response(first_raw_output)
+        first_name = first_payload['name']
+        first_reason = first_payload['reason']
+        first_fragment = first_payload['signature_fragment']
+        first_why_unique = first_payload['why_unique']
         first_norm = normalize_creature_name(first_name)
         first_canonical_output = format_creature_output(first_name, first_reason) if first_name else ""
+        first_fragment_verdict, first_fragment_reasons = self._analyze_signature_fragment(first_fragment, first_why_unique, first_name)
+        first_has_valid_fragment = not first_fragment_reasons
 
         banned_recent_names = recent_creature_context['banned_recent_names']
         retry_triggered = False
         retry_raw_output = ""
+        retry_payload = {}
         retry_name = ""
         retry_reason = ""
+        retry_fragment = ""
+        retry_why_unique = ""
+        retry_fragment_verdict = ""
+        retry_fragment_reasons: list[str] = []
         retry_canonical_output = ""
         final_output = first_canonical_output or first_raw_output
         final_name = first_name
         final_reason = first_reason
+        final_fragment = first_fragment if first_has_valid_fragment else ""
+        final_why_unique = first_why_unique
         retained_parseable_source = 'first'
-        should_retry = not first_norm or (
+        invalid_first_payload = not first_norm or not first_reason
+        should_retry = invalid_first_payload or (
             recent_creature_context['db_lookup_status'] == 'ok'
             and first_norm in banned_recent_names
         )
@@ -678,33 +1170,46 @@ class PromptOrchestrator:
                 first_name,
                 recent_creature_context['recent_creature_names'],
                 is_repeat=bool(first_norm and first_norm in banned_recent_names),
+                fragment_rejection_reasons=first_fragment_reasons,
             )
             self.save_output('last_prompt_creature_retry.txt', retry_prompt)
             retry_raw_output = self.call_llm(retry_prompt)
-            retry_name, retry_reason = split_creature_output(retry_raw_output)
+            retry_payload = self._parse_creature_response(retry_raw_output)
+            retry_name = retry_payload['name']
+            retry_reason = retry_payload['reason']
+            retry_fragment = retry_payload['signature_fragment']
+            retry_why_unique = retry_payload['why_unique']
             retry_norm = normalize_creature_name(retry_name)
             retry_canonical_output = format_creature_output(retry_name, retry_reason) if retry_name else ""
+            retry_fragment_verdict, retry_fragment_reasons = self._analyze_signature_fragment(retry_fragment, retry_why_unique, retry_name)
+            retry_has_valid_fragment = not retry_fragment_reasons
 
-            if retry_norm and retry_norm not in banned_recent_names:
+            if retry_norm and retry_reason and retry_norm not in banned_recent_names:
                 final_output = retry_canonical_output
                 final_name = retry_name
                 final_reason = retry_reason
                 retained_parseable_source = 'retry'
                 final_selection_source = 'corrective_retry_valid'
-            elif retry_name:
+                final_fragment = retry_fragment if retry_has_valid_fragment else ""
+                final_why_unique = retry_why_unique
+            elif retry_name and retry_reason:
                 final_output = retry_canonical_output
                 final_name = retry_name
                 final_reason = retry_reason
                 retained_parseable_source = 'retry'
                 final_selection_source = 'repeat_after_retry_warning'
-            elif first_name:
+                final_fragment = retry_fragment if retry_has_valid_fragment else ""
+                final_why_unique = retry_why_unique
+            elif first_name and first_reason:
                 final_output = first_canonical_output
                 final_name = first_name
                 final_reason = first_reason
                 retained_parseable_source = 'first'
                 final_selection_source = 'repeat_after_retry_warning'
+                final_fragment = first_fragment if first_has_valid_fragment else ""
+                final_why_unique = first_why_unique
             else:
-                raise RuntimeError("Creature selection failed: both attempts were unparseable.")
+                raise RuntimeError("Creature selection failed: both attempts were invalid.")
         else:
             if retry_prompt_path.exists():
                 retry_prompt_path.unlink()
@@ -713,8 +1218,64 @@ class PromptOrchestrator:
             else:
                 final_selection_source = 'llm_valid'
 
+        fragment_repair = {
+            'attempted': False,
+            'raw_output': '',
+            'payload': {},
+            'signature_fragment': '',
+            'why_unique': '',
+            'validation_verdict': '',
+            'validation_reasons': [],
+            'source': '',
+        }
+        winning_fragment_source = retained_parseable_source
+        final_fragment_verdict = retry_fragment_verdict if winning_fragment_source == 'retry' else first_fragment_verdict
+        final_fragment_reasons = retry_fragment_reasons if winning_fragment_source == 'retry' else first_fragment_reasons
+
+        if final_name and final_reason and final_fragment_reasons:
+            fragment_repair['attempted'] = True
+            fragment_repair = {
+                **fragment_repair,
+                **self._repair_signature_fragment(
+                    creature_name=final_name,
+                    creature_reason=final_reason,
+                    previous_fragment=final_fragment,
+                    previous_why_unique=final_why_unique,
+                    rejection_reasons=final_fragment_reasons,
+                ),
+            }
+            if not fragment_repair['validation_reasons']:
+                final_fragment = fragment_repair['signature_fragment']
+                final_why_unique = fragment_repair['why_unique']
+                final_fragment_verdict = fragment_repair['validation_verdict']
+                final_fragment_reasons = fragment_repair['validation_reasons']
+                final_selection_source = 'fragment_repair'
+                winning_fragment_source = 'fragment_repair'
+                fragment_repair['source'] = 'fragment_repair'
+            else:
+                final_fragment = ""
+                final_why_unique = ""
+                final_fragment_verdict = 'no-fragment'
+                final_fragment_reasons = fragment_repair['validation_reasons']
+                final_selection_source = 'no_fragment_continuation'
+                winning_fragment_source = 'no_fragment'
+                fragment_repair['source'] = 'no_fragment_continuation'
+
+        self.latest_creature_fragment = final_fragment
+        self.latest_creature_fragment_why_unique = final_why_unique
         self.save_output('creature.txt', final_output)
         self.save_output('creature_selected.txt', final_output)
+        self.save_json_output(
+            'creature_fragment.json',
+            {
+                'signature_fragment': final_fragment,
+                'why_unique': final_why_unique,
+                'source': final_selection_source,
+                'validation_verdict': final_fragment_verdict,
+                'validation_reasons': final_fragment_reasons,
+                'fragment_enabled': bool(final_fragment),
+            },
+        )
         self.save_json_output(
             'creature_selection_debug.json',
             {
@@ -725,16 +1286,38 @@ class PromptOrchestrator:
                 'normalized_banned_names': recent_creature_context['normalized_banned_names'],
                 'recent_creatures_prompt_names': recent_creature_context['recent_creature_names'],
                 'first_raw_output': first_raw_output,
+                'first_payload_format': first_payload['format'],
+                'first_payload': first_payload['raw_payload'],
                 'first_parsed_name': first_name,
                 'first_parsed_reason': first_reason,
+                'first_signature_fragment': first_fragment,
+                'first_signature_fragment_verdict': first_fragment_verdict,
+                'first_signature_fragment_rejections': first_fragment_reasons,
                 'first_canonical_output': first_canonical_output,
                 'retry_triggered': retry_triggered,
                 'retry_raw_output': retry_raw_output,
+                'retry_payload_format': retry_payload['format'] if retry_triggered else '',
+                'retry_payload': retry_payload['raw_payload'] if retry_triggered else {},
                 'retry_parsed_name': retry_name,
                 'retry_parsed_reason': retry_reason,
+                'retry_signature_fragment': retry_fragment,
+                'retry_signature_fragment_verdict': retry_fragment_verdict if retry_triggered else '',
+                'retry_signature_fragment_rejections': retry_fragment_reasons if retry_triggered else [],
                 'retry_canonical_output': retry_canonical_output,
+                'fragment_repair_attempted': fragment_repair['attempted'],
+                'fragment_repair_raw_output': fragment_repair['raw_output'],
+                'fragment_repair_payload': fragment_repair['payload'],
+                'fragment_repair_signature_fragment': fragment_repair['signature_fragment'],
+                'fragment_repair_why_unique': fragment_repair['why_unique'],
+                'fragment_repair_verdict': fragment_repair['validation_verdict'],
+                'fragment_repair_rejections': fragment_repair['validation_reasons'],
+                'winning_fragment_source': winning_fragment_source,
                 'final_name': final_name,
                 'final_reason': final_reason,
+                'final_signature_fragment': final_fragment,
+                'final_fragment_debug_reason': final_why_unique,
+                'final_signature_fragment_verdict': final_fragment_verdict,
+                'final_signature_fragment_rejections': final_fragment_reasons,
                 'final_output': final_output,
                 'final_selection_source': final_selection_source,
                 'retained_parseable_source': retained_parseable_source,
@@ -793,24 +1376,56 @@ class PromptOrchestrator:
         recent_creature_names: list[str],
         *,
         is_repeat: bool,
+        fragment_rejection_reasons: list[str] | None = None,
     ) -> str:
         if is_repeat and previous_name:
             retry_reason = (
                 f'Your previous choice "{previous_name}" is invalid because it appears in the recent-creatures exclusion list.'
             )
         else:
-            retry_reason = 'Your previous response could not be parsed into a valid creature name.'
+            retry_reason = 'Your previous response could not be parsed into a valid creature payload.'
 
         recent_names_text = ", ".join(recent_creature_names) if recent_creature_names else "None"
+        fragment_feedback = ""
+        if fragment_rejection_reasons:
+            reason_map = {
+                'fragment_missing_phrase': 'signature_fragment is missing.',
+                'fragment_mentions_creature_name': 'signature_fragment must not contain the creature name.',
+                'fragment_generic_singleton': 'signature_fragment is too generic; avoid plain singleton parts.',
+                'fragment_generic_decorated_singleton': 'signature_fragment is still just a generic body part with decoration; pick a more creature-specific structural cue.',
+                'fragment_too_short': 'signature_fragment must be at least two words.',
+                'fragment_too_long': 'signature_fragment must be at most six words.',
+                'fragment_multi_part_assembly': 'signature_fragment is trying to assemble multiple body parts.',
+                'fragment_environmental_metaphor': 'signature_fragment is a terrain or landscape metaphor instead of creature morphology.',
+                'fragment_environmental_contamination': 'signature_fragment is contaminated by environment or material language instead of creature body structure.',
+                'fragment_symbolic_abstraction': 'signature_fragment is symbolic, mythic, emotional, or celestial instead of structural.',
+                'fragment_scene_wide_structure': 'signature_fragment is too broad or scene-wide; it should be one local pointable cue.',
+                'fragment_general_body_region': 'signature_fragment names a general body region instead of one specific local feature.',
+                'fragment_full_identity_cue': 'signature_fragment completes too much of a face or head read and will literalize the creature.',
+                'fragment_not_pointable': 'signature_fragment does not describe one small external feature a viewer could point to.',
+                'why_unique_symbolic': 'why_unique explains the fragment through symbolism, mythology, astrology, or theme instead of morphology.',
+                'why_unique_not_morphological': 'why_unique must explain what structural trait makes the fragment belong to the creature.',
+                'why_unique_missing': 'why_unique is missing.',
+            }
+            bullet_lines = [f"- {reason_map.get(reason, reason)}" for reason in fragment_rejection_reasons]
+            fragment_feedback = (
+                "\nSignature fragment issues:\n"
+                f"{chr(10).join(bullet_lines)}\n"
+            )
         return (
             f"{filled_prompt}\n\n"
             "---\n\n"
             "## Correction\n\n"
             f"{retry_reason}\n"
             f"Recent banned creatures: {recent_names_text}\n"
-            "Return one different creature in the exact required format.\n"
+            f"{fragment_feedback}"
+            "Return one different creature in valid JSON with keys: name, reason, signature_fragment, why_unique.\n"
             "Do not repeat any banned creature.\n"
-            "Do not explain the correction.\n\n"
+            "signature_fragment must be the creature's minimum pointable identifier: one small external feature a viewer could point to in one place.\n"
+            "Prefer a local edge, hook, ridge, tip, curl, or similarly specific outward feature, not a broad field or full-body region.\n"
+            "Reject anything symbolic, environmental, scene-wide, or close to a full head/body solve.\n"
+            "why_unique must justify the fragment structurally, not through mythology, astrology, environment, or interpretation themes.\n"
+            "Do not explain the correction outside the JSON.\n\n"
             "Previous response:\n"
             f"{previous_output.strip()}"
         )
@@ -957,12 +1572,32 @@ class PromptOrchestrator:
         )
         return final_environment_output
 
-    def build_image_json(self, daily_data: dict, interpretation: str, creature: str, environment: str) -> dict:
+    def build_image_json(
+        self,
+        daily_data: dict,
+        interpretation: str,
+        creature: str,
+        environment: str,
+        *,
+        fragment_phrase: str | None = None,
+        fragment_grounding: str | None = None,
+    ) -> dict:
         """Build complete image generation JSON with blend option selection"""
         template = self.load_template('json_builder')
         creature_name = creature.split('—')[0].strip() if '—' in creature else creature.strip()
         environment_name = environment.split('—')[0].strip() if '—' in environment else environment.strip()
         behavior = daily_data.get('behavior_matrix', {})
+        if fragment_phrase is not None:
+            creature_fragment_phrase = fragment_phrase.strip()
+        else:
+            creature_fragment_phrase = self.latest_creature_fragment.strip()
+        if fragment_phrase is not None:
+            creature_fragment_grounding = (fragment_grounding or '').strip()
+        elif fragment_grounding is not None:
+            creature_fragment_grounding = fragment_grounding.strip()
+        else:
+            creature_fragment_grounding = self.latest_creature_fragment_why_unique.strip()
+        fragment_enabled = bool(creature_fragment_phrase)
 
         placeholders = {
             'interpretation': interpretation,
@@ -990,6 +1625,9 @@ class PromptOrchestrator:
             'sleep_score_pct': str(daily_data.get('sleep_score_pct', 'Unknown')),
             'sleep_score_zone': daily_data.get('sleep_score_zone', 'Unknown'),
             'sleep_hours': str(daily_data.get('sleep_hours', 'Unknown')),
+            'creature_fragment_phrase': creature_fragment_phrase,
+            'creature_fragment_grounding': creature_fragment_grounding,
+            'creature_negative_exclusion': f'no obvious literal {creature_name}',
         }
 
         filled_prompt = self.fill_template(template, placeholders, template_name='json_builder')
@@ -1013,7 +1651,15 @@ class PromptOrchestrator:
 
             if not rejection_reasons:
                 rejection_reasons.extend(self._validate_image_json_shape(image_json))
-                rejection_reasons.extend(self._validate_image_json(image_json, depth_level))
+                rejection_reasons.extend(
+                    self._validate_image_json(
+                        image_json,
+                        depth_level,
+                        creature_name=creature_name,
+                        fragment_phrase=creature_fragment_phrase,
+                        fragment_required=fragment_enabled,
+                    )
+                )
 
             if not rejection_reasons:
                 self.save_json_output('image_prompt.json', image_json)
@@ -1499,6 +2145,15 @@ class PromptOrchestrator:
         re.IGNORECASE,
     )
 
+    _POSITIVE_LITERALIZING = re.compile(
+        r'\b(silhouette|outline readable|shaped like|resembles|full-body|statue|animal figure)\b',
+        re.IGNORECASE,
+    )
+    _FRAGMENT_STAGING = re.compile(
+        r'\b(clearly visible|clearly shown|fully visible|fully revealed|displayed|showcased|staged|presented)\b',
+        re.IGNORECASE,
+    )
+
     def _split_video_sentences(self, video_prompt: str) -> list[str]:
         lines = [line.strip() for line in video_prompt.splitlines() if line.strip()]
         normalized = ' '.join(lines)
@@ -1540,8 +2195,85 @@ class PromptOrchestrator:
             if key in image_json:
                 yield from self._iter_text_fragments(image_json[key], key)
 
-    def _validate_image_json(self, image_json: dict, depth_level: str) -> list[str]:
+    def _iter_positive_image_fields(self, image_json: dict):
+        for key, value in image_json.items():
+            if key == 'mandatory_exclusions':
+                continue
+            if key == 'rendering':
+                if isinstance(value, dict):
+                    for subkey, child in value.items():
+                        if subkey == 'avoid':
+                            continue
+                        yield from self._iter_text_fragments(child, f'rendering.{subkey}')
+                continue
+            if key == 'consistency_anchors':
+                continue
+            yield from self._iter_text_fragments(value, key)
+
+    def _validate_image_json(
+        self,
+        image_json: dict,
+        depth_level: str,
+        *,
+        creature_name: str = '',
+        fragment_phrase: str = '',
+        fragment_required: bool = True,
+    ) -> list[str]:
         reasons: list[str] = []
+        positive_fragments = list(self._iter_positive_image_fields(image_json))
+
+        creature_name_cf = creature_name.casefold().strip()
+        if creature_name_cf:
+            for path, text in positive_fragments:
+                if creature_name_cf in text.casefold():
+                    reasons.append(f'creature_name_in_positive:{path}')
+                    break
+
+        fragment_phrase_cf = fragment_phrase.casefold().strip()
+        if fragment_required and fragment_phrase_cf:
+            fragment_occurrences: list[tuple[str, int]] = []
+            for path, text in positive_fragments:
+                count = text.casefold().count(fragment_phrase_cf)
+                if count:
+                    fragment_occurrences.append((path, count))
+            total_occurrences = sum(count for _path, count in fragment_occurrences)
+            if total_occurrences != 1:
+                reasons.append(f'fragment_occurrence_count:{total_occurrences}')
+            for path, _count in fragment_occurrences:
+                if path != 'creature_integration.visibility':
+                    reasons.append(f'fragment_outside_visibility:{path}')
+                    break
+            visibility_text = str(image_json.get('creature_integration', {}).get('visibility', ''))
+            if visibility_text:
+                match = self._first_unnegated_match(self._FRAGMENT_STAGING, visibility_text)
+                if match:
+                    reasons.append(f'fragment_staged_visibility:{match.group(0).lower()}')
+
+        for path, text in positive_fragments:
+            match = self._first_unnegated_match(self._POSITIVE_LITERALIZING, text)
+            if match:
+                reasons.append(f'positive_literalizing_language:{path}:{match.group(0).lower()}')
+                break
+
+        rendering_avoid = image_json.get('rendering', {}).get('avoid', [])
+        if creature_name_cf and isinstance(rendering_avoid, list):
+            for item in rendering_avoid:
+                if isinstance(item, str) and creature_name_cf in item.casefold():
+                    reasons.append('creature_name_in_rendering_avoid')
+                    break
+
+        mandatory_exclusions = image_json.get('mandatory_exclusions', [])
+        if creature_name_cf and isinstance(mandatory_exclusions, list):
+            expected_negative = f'no obvious literal {creature_name}'.casefold()
+            creature_specific_entries = [
+                item for item in mandatory_exclusions
+                if isinstance(item, str) and item.casefold() == expected_negative
+            ]
+            if len(creature_specific_entries) != 1:
+                reasons.append(f'creature_negative_count:{len(creature_specific_entries)}')
+            if not creature_specific_entries:
+                reasons.append('missing_standard_creature_negative')
+
         if depth_level not in {'DEEP', 'ABYSS'}:
             return reasons
 
@@ -1602,6 +2334,52 @@ class PromptOrchestrator:
                 corrections.append('The JSON must include creature_integration with a valid blend choice.')
             elif reason == 'image_json_missing_blend_option':
                 corrections.append('The JSON must include creature_integration.blend as a non-empty string.')
+            elif reason.startswith('creature_name_in_positive:'):
+                _, path = reason.split(':', 1)
+                corrections.append(
+                    f'The JSON field "{path}" contains the creature name in positive scene language. '
+                    'Remove the creature name from all positive fields and keep it only in the standardized negative exclusion.'
+                )
+            elif reason.startswith('fragment_occurrence_count:'):
+                _, count = reason.split(':', 1)
+                corrections.append(
+                    f'The creature fragment appears {count} times in positive fields. '
+                    'Use the fragment phrase exactly once, and only in creature_integration.visibility.'
+                )
+            elif reason.startswith('fragment_outside_visibility:'):
+                _, path = reason.split(':', 1)
+                corrections.append(
+                    f'The creature fragment appears in "{path}". '
+                    'The fragment phrase must appear only in creature_integration.visibility.'
+                )
+            elif reason.startswith('fragment_staged_visibility:'):
+                _, term = reason.split(':', 1)
+                corrections.append(
+                    f'creature_integration.visibility uses "{term}", which stages the fragment too explicitly. '
+                    'Write the fragment as something a close viewer might catch through pareidolia, partially obscured by surrounding massing or patterning.'
+                )
+            elif reason.startswith('positive_literalizing_language:'):
+                _, path, term = reason.split(':', 2)
+                corrections.append(
+                    f'The JSON field "{path}" contains "{term}", which literalizes the creature. '
+                    'Do not use silhouette, outline-readable, shaped-like, full-body, statue, or animal-figure language.'
+                )
+            elif reason == 'creature_name_in_rendering_avoid':
+                corrections.append(
+                    'Do not repeat the creature name inside rendering.avoid. '
+                    'Keep creature-specific naming only in one mandatory_exclusions entry.'
+                )
+            elif reason.startswith('creature_negative_count:'):
+                _, count = reason.split(':', 1)
+                corrections.append(
+                    f'The JSON contains {count} creature-specific mandatory exclusions. '
+                    'Keep exactly one creature-specific exclusion.'
+                )
+            elif reason == 'missing_standard_creature_negative':
+                corrections.append(
+                    'mandatory_exclusions must include exactly one standardized creature-specific entry: '
+                    '"no obvious literal <Creature>".'
+                )
             elif reason.startswith('deep_image_architectural_language:'):
                 _, path, term = reason.split(':', 2)
                 corrections.append(
