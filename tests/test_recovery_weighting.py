@@ -13,6 +13,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from prompts import PromptOrchestrator
+from creature_utils import parse_creature_payload
 
 
 class RecoveryPromptRegressionTests(unittest.TestCase):
@@ -333,6 +334,13 @@ class VideoPromptWiringTests(unittest.TestCase):
 
 
 class ImagePromptWiringTests(unittest.TestCase):
+    @staticmethod
+    def _image_fragment_kwargs():
+        return {
+            "fragment_phrase": "",
+            "fragment_grounding": "",
+        }
+
     def test_build_image_json_retries_until_deep_output_removes_overhead_aperture_language(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
@@ -351,7 +359,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             },
                             "composition": {"sky": "A pale upper opening is visible."},
                             "color_palette": {"sky_gradient": "Cold white shaft glow."},
-                            "creature_integration": {"blend": "Option B - Sculptural"},
+                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
+                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
                         }
                     ),
                     json.dumps(
@@ -363,7 +372,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             },
                             "composition": {"sky": "None visible."},
                             "color_palette": {"sky_gradient": "Omit direct sky glow."},
-                            "creature_integration": {"blend": "Option B - Sculptural"},
+                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
+                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
                         }
                     ),
                 ])
@@ -396,6 +406,7 @@ class ImagePromptWiringTests(unittest.TestCase):
                     "A buried recess holds under pressure.",
                     "Snow Leopard",
                     "Cave Systems — deep retry test",
+                    **self._image_fragment_kwargs(),
                 )
 
                 retry_prompt = (orchestrator.output_dir / "last_prompt_image_json_retry.txt").read_text(encoding="utf-8")
@@ -421,7 +432,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                         "lighting": {"time": "A shaft falls from above."},
                         "composition": {"sky": "Upper opening remains visible."},
                         "color_palette": {"sky_gradient": "Cold shaft glow."},
-                        "creature_integration": {"blend": "Option B - Sculptural"},
+                        "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
+                        "mandatory_exclusions": ["no obvious literal Snow Leopard"],
                     }
                 )
                 responses = iter([bad_output, bad_output, bad_output])
@@ -455,6 +467,7 @@ class ImagePromptWiringTests(unittest.TestCase):
                         "A buried recess holds under pressure.",
                         "Snow Leopard",
                         "Cave Systems — deep retry exhaustion test",
+                        **self._image_fragment_kwargs(),
                     )
 
                 output_path = orchestrator.output_dir / "image_prompt.json"
@@ -479,7 +492,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             "lighting": {"time": "Cold light enters laterally through a side-wall seam."},
                             "composition": {"sky": "None visible."},
                             "color_palette": {"sky_gradient": "Enclosed interior, no direct sky glow."},
-                            "creature_integration": {"blend": "Option B - Sculptural"},
+                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
+                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
                         }
                     ),
                 ])
@@ -512,6 +526,7 @@ class ImagePromptWiringTests(unittest.TestCase):
                     "A buried recess holds under pressure.",
                     "Snow Leopard",
                     "Cave Systems — parse recovery test",
+                    **self._image_fragment_kwargs(),
                 )
 
                 retry_prompt = (orchestrator.output_dir / "last_prompt_image_json_retry.txt").read_text(encoding="utf-8")
@@ -560,6 +575,7 @@ class ImagePromptWiringTests(unittest.TestCase):
                         "A buried recess holds under pressure.",
                         "Snow Leopard",
                         "Cave Systems — parse exhaustion test",
+                        **self._image_fragment_kwargs(),
                     )
 
                 output_path = orchestrator.output_dir / "image_prompt.json"
@@ -584,7 +600,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                                 "background": "A tunnel exit points to a horizon line.",
                                 "sky": "Bright upper opening visible.",
                             },
-                            "creature_integration": {"blend": "Option A - Default"},
+                            "creature_integration": {"blend": "Option A - Default", "visibility": "Sealed stone masses hold indirect predatory tension."},
+                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
                         }
                     ),
                     json.dumps(
@@ -593,7 +610,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             "lighting": {"time": "Interior pressure-light pulses through hairline seams."},
                             "composition": {"background": "Solid enclosed stone from all sides.", "sky": "None visible."},
                             "color_palette": {"sky_gradient": "No sky; interior mineral pressure glow only."},
-                            "creature_integration": {"blend": "Option A - Default"},
+                            "creature_integration": {"blend": "Option A - Default", "visibility": "Sealed stone masses hold indirect predatory tension."},
+                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
                         }
                     ),
                 ])
@@ -626,6 +644,7 @@ class ImagePromptWiringTests(unittest.TestCase):
                     "Sealed abyss pressure-world.",
                     "Snow Leopard",
                     "Cave Systems — abyss retry test",
+                    **self._image_fragment_kwargs(),
                 )
 
                 retry_prompt = (orchestrator.output_dir / "last_prompt_image_json_retry.txt").read_text(encoding="utf-8")
@@ -634,6 +653,270 @@ class ImagePromptWiringTests(unittest.TestCase):
         self.assertIn("ABYSS must stay sealed and interior", retry_prompt)
         self.assertIn("Sealed within the buried cave core", result["core_concept"])
         self.assertNotIn("horizon line", json.dumps(result).lower())
+
+
+class CreatureFragmentRegressionTests(unittest.TestCase):
+    @staticmethod
+    def _recent_creature_context():
+        return {
+            "db_lookup_status": "ok",
+            "db_lookup_error": None,
+            "raw_recent_history": [],
+            "normalized_banned_names": [],
+            "recent_creature_names": [],
+            "recent_creatures_prompt": "None — no restriction.",
+            "banned_recent_names": set(),
+        }
+
+    def test_parse_creature_payload_handles_fenced_plain_and_partial_json(self):
+        fenced = """```json
+{"name":"Phoenix","reason":"Fire pressure.","signature_fragment":"hooked beak ridge","why_unique":"The hooked bill edge is a small external marker."}
+```"""
+        plain = '{"name":"Dragon","reason":"Ancient pressure.","signature_fragment":"serrated dorsal ridge","why_unique":"The serrated ridge is the smallest outward cue."}'
+        partial = '{"name":"Octopus","reason":"Fluid tension."'
+
+        self.assertEqual(parse_creature_payload(fenced)["name"], "Phoenix")
+        self.assertEqual(parse_creature_payload(plain)["name"], "Dragon")
+        self.assertEqual(parse_creature_payload(partial), {})
+
+    def test_generate_creature_repairs_fragment_and_saves_source(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-15"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                responses = iter([
+                    json.dumps(
+                        {
+                            "name": "Phoenix",
+                            "reason": "Solar pressure makes the archetype feel charged and reborn.",
+                            "signature_fragment": "ember scar",
+                            "why_unique": "It symbolizes rebirth through fire.",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "signature_fragment": "curved crest plume",
+                            "why_unique": "The rising feathered crest is a small external marker that stays recognizable without needing the whole bird.",
+                        }
+                    ),
+                ])
+                orchestrator.call_llm = lambda prompt: next(responses)
+                orchestrator._resolve_recent_creatures = lambda run_date: self._recent_creature_context()
+
+                creature = orchestrator.generate_creature({"date": "2026-03-15"}, "Interpretation text.")
+                fragment_payload = json.loads((orchestrator.output_dir / "creature_fragment.json").read_text(encoding="utf-8"))
+                debug_payload = json.loads((orchestrator.output_dir / "creature_selection_debug.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(creature.split("—")[0].strip(), "Phoenix")
+        self.assertEqual(fragment_payload["source"], "fragment_repair")
+        self.assertEqual(fragment_payload["signature_fragment"], "curved crest plume")
+        self.assertTrue(debug_payload["fragment_repair_attempted"])
+        self.assertEqual(debug_payload["winning_fragment_source"], "fragment_repair")
+
+    def test_generate_creature_resets_fragment_state_and_degrades_to_no_fragment(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-16"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator._resolve_recent_creatures = lambda run_date: self._recent_creature_context()
+
+                first_responses = iter([
+                    json.dumps(
+                        {
+                            "name": "Naga",
+                            "reason": "Coiling pressure suits the day.",
+                            "signature_fragment": "hooked scale ridge",
+                            "why_unique": "The hooked ridge along the scutes is a small external marker native to this serpent form.",
+                        }
+                    )
+                ])
+                orchestrator.call_llm = lambda prompt: next(first_responses)
+                orchestrator.generate_creature({"date": "2026-03-16"}, "First interpretation.")
+                self.assertEqual(orchestrator.latest_creature_fragment, "hooked scale ridge")
+
+                second_responses = iter([
+                    json.dumps(
+                        {
+                            "name": "Phoenix",
+                            "reason": "Rising heat makes the archetype feel active.",
+                            "signature_fragment": "ember scar",
+                            "why_unique": "It symbolizes rebirth in flame.",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "signature_fragment": "lunar ink",
+                            "why_unique": "It feels mythic and celestial.",
+                        }
+                    ),
+                ])
+                orchestrator.call_llm = lambda prompt: next(second_responses)
+                orchestrator.generate_creature({"date": "2026-03-16"}, "Second interpretation.")
+                fragment_payload = json.loads((orchestrator.output_dir / "creature_fragment.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(orchestrator.latest_creature_fragment, "")
+        self.assertEqual(fragment_payload["source"], "no_fragment_continuation")
+        self.assertFalse(fragment_payload["fragment_enabled"])
+
+    def test_build_image_json_accepts_explicit_no_fragment_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-20"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = lambda prompt: json.dumps(
+                    {
+                        "core_concept": "Buried cave walls press close in indirect stone tension.",
+                        "lighting": {"time": "Cold lateral light filters through a mineral seam."},
+                        "composition": {"sky": "None visible."},
+                        "color_palette": {"sky_gradient": "No open sky."},
+                        "creature_integration": {
+                            "blend": "Option B - Sculptural",
+                            "visibility": "Compressed cave masses hold indirect predatory tension.",
+                        },
+                        "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                    }
+                )
+                orchestrator.latest_creature_fragment = "old stale fragment"
+                orchestrator.latest_creature_fragment_why_unique = "old stale reason"
+
+                result = orchestrator.build_image_json(
+                    {
+                        "depth_level": "DEEP",
+                        "depth_keywords": ["Buried-recess"],
+                        "visibility_range": "Near-field",
+                        "moon_count": 0,
+                        "energy_zone": "LOW",
+                        "recovery_pct": 42,
+                        "recovery_zone": "LOW",
+                        "sleep_score_pct": 74,
+                        "sleep_score_zone": "DEEP",
+                        "sleep_hours": 6.2,
+                        "strain": 15.4,
+                        "date": "2026-03-20",
+                        "date_display": "20 Mar 2026",
+                        "behavior_matrix": {
+                            "body_keywords": ["Wrecked"],
+                            "art_keywords": ["Collapsed"],
+                            "one_liner": "Total shutdown.",
+                        },
+                        "natal_context": {"ascendant": "Scorpio", "moon_nakshatra": "Anuradha"},
+                    },
+                    "A buried recess holds under pressure.",
+                    "Snow Leopard",
+                    "Cave Systems — explicit no-fragment test",
+                    fragment_phrase="",
+                    fragment_grounding="",
+                )
+
+        self.assertIn("indirect predatory tension", result["creature_integration"]["visibility"])
+
+
+class PromptStageSmokeTests(unittest.TestCase):
+    def test_prompt_stage_sequence_still_builds_metadata_and_video(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-21"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator._resolve_recent_creatures = lambda run_date: {
+                    "db_lookup_status": "ok",
+                    "db_lookup_error": None,
+                    "raw_recent_history": [],
+                    "normalized_banned_names": [],
+                    "recent_creature_names": [],
+                    "recent_creatures_prompt": "None — no restriction.",
+                    "banned_recent_names": set(),
+                }
+                orchestrator._resolve_environment_candidates = lambda energy_zone, run_date: {
+                    "full_options": ["Cave Systems — subterranean chambers"],
+                    "candidate_options": ["Cave Systems — subterranean chambers"],
+                    "recent_names": [],
+                    "excluded_names": [],
+                    "db_lookup_status": "ok",
+                    "db_lookup_error": None,
+                    "soft_fallback": False,
+                    "candidate_source": "filtered_candidates",
+                }
+
+                def fake_llm(prompt: str) -> str:
+                    if "## Output Format" in prompt and '"signature_fragment"' in prompt:
+                        return json.dumps(
+                            {
+                                "name": "Naga",
+                                "reason": "Coiling pressure suits the day.",
+                                "signature_fragment": "hooked scale ridge",
+                                "why_unique": "The hooked ridge along the scutes is a small external marker native to this serpent form.",
+                            }
+                        )
+                    if "environment options" in prompt.lower():
+                        return "Cave Systems — subterranean chambers"
+                    if "MASTER JSON TEMPLATE" in prompt:
+                        return json.dumps(
+                            {
+                                "core_concept": "Buried cave masses hold coiling pressure through enclosed stone.",
+                                "lighting": {"time": "Cold lateral light filters through a mineral seam."},
+                                "composition": {"sky": "None visible."},
+                                "color_palette": {"sky_gradient": "No open sky."},
+                                "creature_integration": {
+                                    "blend": "Option B - Sculptural",
+                                    "visibility": "Sculptural cave masses dominate, and to someone looking closely one hooked scale ridge might be half-lost in the patterning while landscape remains primary.",
+                                },
+                                "mandatory_exclusions": ["no obvious literal Naga"],
+                            }
+                        )
+                    if "video" in prompt.lower():
+                        return "The camera holds from stillness. Mineral dust pours from a side-wall fissure for the full shot. Film grain persists while dim light bleeds laterally across the rock."
+                    if "interpretation" in prompt.lower():
+                        return "The day compresses attention inward while keeping perception alert."
+                    return "Cave Systems — subterranean chambers"
+
+                orchestrator.call_llm = fake_llm
+                daily_data = {
+                    "depth_level": "DEEP",
+                    "depth_keywords": ["Buried-recess"],
+                    "visibility_range": "Near-field",
+                    "moon_count": 0,
+                    "energy_zone": "MEDIUM",
+                    "recovery_pct": 55,
+                    "recovery_zone": "MEDIUM",
+                    "sleep_score_pct": 78,
+                    "sleep_score_zone": "DEEP",
+                    "sleep_hours": 6.8,
+                    "strain": 12.1,
+                    "date": "2026-03-21",
+                    "date_display": "21 Mar 2026",
+                    "behavior_matrix": {
+                        "body_keywords": ["Held", "coiled"],
+                        "art_keywords": ["Balanced", "rhythmic"],
+                        "one_liner": "The pressure holds but does not collapse.",
+                    },
+                    "natal_context": {"ascendant": "Scorpio", "moon_nakshatra": "Anuradha"},
+                    "dasha": {"planets_detail": {}},
+                }
+
+                interpretation = orchestrator.generate_interpretation(daily_data)
+                creature = orchestrator.generate_creature(daily_data, interpretation)
+                environment = orchestrator.generate_environment(daily_data, interpretation)
+                image_json = orchestrator.build_image_json(daily_data, interpretation, creature, environment)
+                metadata = orchestrator.extract_metadata(daily_data, daily_data["date_display"], environment, image_json)
+                video_prompt = orchestrator.build_video_prompt(daily_data, environment, "Option B")
+
+        self.assertEqual(creature.split("—")[0].strip(), "Naga")
+        self.assertEqual(environment.split("—")[0].strip(), "Cave Systems")
+        self.assertIn("hooked scale ridge", image_json["creature_integration"]["visibility"])
+        self.assertEqual(metadata["date_display"], "21 Mar 2026")
+        self.assertIn("Mineral dust pours", video_prompt)
 
 
 if __name__ == "__main__":

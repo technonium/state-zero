@@ -79,14 +79,51 @@ Select a creature that has not appeared in this list. If the list shows "None", 
 - **Do NOT consider what environment the creature "should" live in** — creature and environment are chosen independently
 - A planet in a stellium carries the energy of all planets conjunct it — factor this in
 - Consider house lordships: a planet ruling certain houses activates those life areas
+- Also derive ONE `signature_fragment` using this process:
+  - Step 1 — find the minimum identifier:
+    - choose the smallest external visible part that still feels native to this creature
+    - if this fragment were half-buried in rock or ice, someone familiar with creatures should still feel it belongs to THIS one rather than five others
+    - if it could belong to many creatures, it is too generic
+  - Step 2 — keep it local and pointable:
+    - prefer one local edge, hook, ridge, protrusion, tip, curl, or similarly specific outward feature
+    - the fragment should feel like one thing a viewer could point to in one place
+    - avoid broad fields, full spreads, whole-body regions, or anything that would take over the entire scene
+  - Step 3 — reject the wrong kinds of fragments:
+    - reject anything that completes a full head or full body read
+    - reject anything that feels like atmosphere, residue, stain, aura, omen, memory, scar, ink, threshold, arch, gate, bend, riverbed, or other metaphor
+    - reject anything derived from today's chart, interpretation, mood, or environment
+
+- `signature_fragment` rules:
+  - 2-6 words
+  - one small external, body-derived feature only
+  - environment-agnostic
+  - rich enough to feel creature-native, but not a full body assembly
+  - not a plain singleton like `claw`, `beak`, `tail`, `wing`, or `tentacle`
+  - not a generic body part plus adjectives if it still does not identify the creature
+  - not a broad scene-wide structure
+  - not symbolic, mythic, emotional, or environmental
+  - not a terrain feature or landscape object
+  - not clinical textbook language
+  - use immediate visual language that still feels specific
+
+- `why_unique` is the pre-commitment test, not a caption:
+  - before finalizing `signature_fragment`, answer in one short sentence what visible structural property makes this fragment specific to this creature and not equally descriptive of many others
+  - explain only through morphology and recognizability
+  - do NOT justify it through mythology, symbolism, astrology, emotion, interpretation themes, or environment analogy
 
 ---
 
 ## Output Format
 
-[Creature Name] — [one sentence explaining why this creature embodies TODAY's energy, referencing which planets drove the choice]
+Return JSON only:
 
-Output only this, nothing else. Do not explain rejected creatures or show your reasoning.
+```json
+{
+  "name": "Creature Name",
+  "reason": "one sentence explaining why this creature embodies TODAY's energy, referencing which planets drove the choice",
+  "why_unique": "one short sentence explaining what structural property makes this fragment specific to this creature",
+  "signature_fragment": "distinctive structural cue"
+}
+```
 
-**Example:**
-"Raven — the watchful boundary-crosser embodies Mercury Prana's strategic intelligence while Saturn Sookshma's pressure gives it patience, omen-sense, and a presence that feels both terrestrial and otherworldly at once."
+Do not explain rejected creatures or show your reasoning outside the JSON.

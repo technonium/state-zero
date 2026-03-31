@@ -1,3 +1,4 @@
+import json
 import re
 
 
@@ -35,6 +36,47 @@ def format_creature_output(name: str, reason: str | None = None) -> str:
     if clean_name and clean_reason:
         return f"{clean_name} — {clean_reason}"
     return clean_name
+
+
+def extract_json_candidate(raw_text: str) -> str:
+    stripped = (raw_text or "").strip()
+    if not stripped:
+        return ""
+
+    for pattern in (r'```json\s*\n(.*?)\n```', r'```\s*\n(.*?)\n```'):
+        match = re.search(pattern, stripped, re.DOTALL)
+        if match:
+            return match.group(1).strip()
+
+    brace_start = stripped.find('{')
+    if brace_start != -1:
+        brace_count = 0
+        for idx in range(brace_start, len(stripped)):
+            ch = stripped[idx]
+            if ch == '{':
+                brace_count += 1
+            elif ch == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    return stripped[brace_start:idx + 1]
+
+    return ""
+
+
+def parse_creature_payload(raw_text: str) -> dict:
+    json_candidate = extract_json_candidate(raw_text)
+    if not json_candidate:
+        return {}
+
+    try:
+        payload = json.loads(json_candidate)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    return payload
 
 
 def split_creature_output(raw_text: str) -> tuple[str, str]:

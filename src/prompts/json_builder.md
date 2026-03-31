@@ -32,6 +32,9 @@ You are constructing a complete image generation JSON prompt for a State Zero ca
 ### Derived data:
 - **Ascendant:** {ascendant}
 - **Moon Nakshatra:** {moon_nakshatra}
+- **Creature Fragment Phrase:** {creature_fragment_phrase}
+- **Creature Fragment Grounding:** {creature_fragment_grounding}
+- **Creature Negative Exclusion:** {creature_negative_exclusion}
 
 ---
 
@@ -130,27 +133,27 @@ Once you've selected your option above, apply these language rules:
 
 ### Option A — Sculptural 100%
 - Creature IS the geology, pure sculptural forms
-- Required: the overall geological massing must carry the creature's outline form — readable at landscape scale through how formations are weighted and grouped, fully geological in material, never a separate subject in the frame.
+- Required: the creature read must stay indirect — pressure, weighting, grouping, and one secondary fragment inside the geology, never a full outline or separate subject.
 - **Required phrases:** "formations barely evoke", "geological features", "natural erosion patterns", "accidental arrangement", "viewer's pareidolia"
-- **creature_integration.visibility example:** "Geological formations barely evoke [QUALITY] through natural erosion patterns — massive stone structures whose accidental arrangement might suggest [QUALITY] to the viewer's imagination, nothing more"
+- **creature_integration.visibility example:** "Geological formations barely evoke [QUALITY] through natural erosion patterns — a close viewer might catch one [FRAGMENT] half-consumed by the surrounding massing, nothing more"
 - **core_concept phrasing (condensed):** "massive [environment] formations through natural erosion patterns, accidental geological arrangement carrying [QUALITY] to the viewer's imagination"
 - NO secondary texture mentioned
 
 ### Option B — Sculptural 60-70% + Pattern-Based 30-40%
 - Sculptural primary, with delicate crystal/frost/light patterns threading through
-- Required: the overall geological massing must carry the creature's outline form — readable at landscape scale through how formations are weighted and grouped, fully geological in material, never a separate subject in the frame.
+- Required: the landscape stays primary, with one embedded fragment appearing as a secondary read inside patterning or massing, never a full outline or separate subject.
 - **Required phrases:** "geological formations" + "patterns that might suggest", "viewer's pareidolia"
 - **CRYSTALLINE OVERRIDE:** If environment is "Crystalline (Active)", the sculptural mass itself IS optically active crystal. Describe with: "subsurface light scattering", "internal refraction", "volumetric mineral glow". The mass IS crystal, not stone decorated with crystal.
-- **creature_integration.visibility example:** "Sculptural geological masses dominate, with delicate [secondary texture] threading through that might suggest [QUALITY] — the viewer's pareidolia connects [pattern details] to [QUALITY], but landscape remains primary"
+- **creature_integration.visibility example:** "Sculptural geological masses dominate, with delicate [secondary texture] threading through that might suggest [QUALITY] — to someone looking closely, one [FRAGMENT] might be half-lost in the pattern details, while landscape remains primary"
 - **core_concept phrasing (condensed):** "sculptural [environment] masses dominate, delicate [secondary texture: heat refraction / frost tracery / light patterns] threading through, viewer's pareidolia finding [QUALITY] in [secondary texture details]"
 - Secondary is ALWAYS subordinate, never equal
 - **FORBIDDEN in core_concept when Option B selected:** "barely evoke", "natural erosion patterns", "accidental arrangement" — these are Option A phrases. Do NOT use them. core_concept must start with "sculptural [environment] masses dominate"
 
 ### Option C — Sculptural 60-70% + Physics 30-40%
 - Sculptural primary, with spatial distortion/gravitational lensing adding uncanny tension
-- Required: the overall geological massing must carry the creature's outline form — readable at landscape scale through how formations are weighted and grouped, fully geological in material, never a separate subject in the frame.
+- Required: the landscape stays primary, with one embedded fragment implied through warped massing or edge distortion, never a full outline or separate subject.
 - **Required phrases:** "geological formations" + "gravitational lensing", "atmospheric phenomenon", "spatial warping"
-- **creature_integration.visibility example:** "Massive geological formations barely evoke [QUALITY] through natural arrangement — gravitational lensing around formation edges creates subtle spatial distortion that adds uncanny tension, purely atmospheric phenomenon enhancing the viewer's perception"
+- **creature_integration.visibility example:** "Massive geological formations barely evoke [QUALITY] through natural arrangement — gravitational lensing around formation edges lets a close viewer momentarily read one [FRAGMENT], partially obscured and never dominant"
 - **core_concept phrasing (condensed):** "massive [environment] formations carrying [QUALITY], subtle spatial distortion warping the atmosphere around geological forms"
 - Physics effects are environmental, not dominant
 
@@ -163,13 +166,30 @@ Once you've selected your option above, apply these language rules:
 The creature name (`{creature}`) is **FORBIDDEN** in all descriptive/positive fields. The image generator reads this JSON directly — naming the creature anchors it toward literal representation even when surrounded by "avoid" language.
 
 **Allowed (negative prompt lists only):**
-- `rendering.avoid` — creature name in negative list is fine
-- `mandatory_exclusions` — creature name here is fine
+- `mandatory_exclusions` — creature name here is fine, but only in the single standardized exclusion
 
 **Forbidden (all other fields):**
 - `core_concept` — NO creature name, use [QUALITY] only
-- `composition.midground` — NO creature name
-- `creature_integration.visibility` — NO creature name, use [QUALITY] only
+- `composition.midground` — NO creature name, NO fragment phrase
+- `creature_integration.visibility` — NO creature name, use [QUALITY] plus one embedded fragment phrase only
+- `rendering.avoid` — DO NOT repeat the creature name here
+
+## CREATURE SIGNATURE FRAGMENT
+
+Use the provided fragment phrase `{creature_fragment_phrase}` as a secondary embedded cue.
+Use the fragment grounding `{creature_fragment_grounding}` only as hidden context to understand why this fragment belongs to this creature. Do NOT quote or restate that grounding directly.
+
+If the fragment phrase is blank, do not invent a replacement. Omit fragment language entirely and keep the creature read driven only by [QUALITY].
+
+- It must appear **exactly once** in the positive JSON.
+- It must appear in `creature_integration.visibility` **only**.
+- It must read as something the viewer might discover on a second look, never as a clearly presented feature.
+- It must stay partially obscured, half-consumed by surrounding massing, patterning, haze, or distortion.
+- It must read as a secondary interruption in the landscape, never the main contour, centerpiece, or hero subject.
+- It must not turn into a full head/body reconstruction.
+- Do not repeat it in `core_concept`, `composition`, `lighting`, `environment_details`, or anywhere else.
+- Treat it as a small discoverable reward inside the landscape, not the landscape's whole idea.
+- Prefer pareidolia language such as "might suggest", "to someone looking closely", or "the viewer's eye might catch" so the fragment is inferred rather than staged.
 
 **How to derive [QUALITY] — the creature's physical essence in geological terms:**
 
@@ -196,6 +216,12 @@ Look at the creature, find the closest archetype below, and pick the quality phr
 - Behavioral: "storm command", "watchful patience", "hunting focus" → produce recognizable creature poses
 - Character: "sovereign stillness", "regal weight", "noble mass" → produce humanoid/throne forms
 - Action: "poised to strike", "mid-flight tension" → produce literal creature action
+
+**CRITICAL — these fragment mistakes will cause creature bleed. AVOID them:**
+- Generic singleton parts: "claw", "beak", "tail", "wing", "tentacle", "fin"
+- Random body-part picks that are not distinctive to the chosen creature
+- Creature assembly: head + wing + tail, face + torso, or any combination that reconstructs a full body plan
+- Dominance language: "centerpiece", "hero form", "dominant contour", "main silhouette"
 
 ---
 
@@ -324,7 +350,7 @@ Adjust for environment type (volcanic = inherently warm, ice = inherently cool)
 ## FORBIDDEN LANGUAGE
 
 **NEVER use anywhere in the JSON:**
-- Anatomical terms: body, head, wings, tail, legs, antennae, scales, fins, claws
+- Broad anatomical reconstruction terms outside the single approved fragment phrase: body, head, wings, tail, legs, antennae, scales, fins, claws
 - Direct sculptural forms: "wing-shaped rock", "serpent body formation", "creature silhouette", "animal figure", "beast statue", "full-body creature form"
 - Action verbs: flying, swimming, standing, rising, soaring, prowling, watching
 - Literal descriptions: "shaped like [creature]", "resembles [creature]"
@@ -360,7 +386,7 @@ Fill ALL placeholders below using the input data and rules above:
 
 ```json
 {
-  "core_concept": "Surreal alien {environment} [SPATIAL LOCATION: use DEPTH VISUAL PHRASE mapping — translate {depth_level} + {depth_keywords} into spatial visual language for this specific {environment}; NEVER write the depth label literally] where [APPLY YOUR SELECTED BLEND OPTION LANGUAGE from core_concept phrasing guide — describe landscape formations only; DO NOT write the creature name {creature}; NO abstract creature quality phrases], felt state: {one_liner}, [APPLY Recovery Severity Mapping physically — the place must show whether it is intact, worn, or depleted through material condition, residue, fracture, or aftermath; DO NOT write the word recovery], more landscape than creature",
+  "core_concept": "Surreal alien {environment} [SPATIAL LOCATION: use DEPTH VISUAL PHRASE mapping — translate {depth_level} + {depth_keywords} into spatial visual language for this specific {environment}; NEVER write the depth label literally] where [APPLY YOUR SELECTED BLEND OPTION LANGUAGE from core_concept phrasing guide — describe landscape formations only; use [QUALITY] as the baseline creature layer; DO NOT write the creature name {creature}; if a fragment phrase is provided, DO NOT write the fragment phrase {creature_fragment_phrase}], felt state: {one_liner}, [APPLY Recovery Severity Mapping physically — the place must show whether it is intact, worn, or depleted through material condition, residue, fracture, or aftermath; DO NOT write the word recovery], more landscape than creature",
 
   "style_aesthetic": {
     "era": "1970s-1980s science fiction",
@@ -403,7 +429,7 @@ Fill ALL placeholders below using the input data and rules above:
   "composition": {
     "format": "VERTICAL PORTRAIT 3:4 ASPECT RATIO",
     "foreground": "[ENVIRONMENT-SPECIFIC foreground: lava fragments / ice shards / storm mist / desert sand / etc.]",
-    "midground": "[BLEND OPTION DESCRIPTION: sculptural formations with optional secondary texture based on Option A/B/C]",
+    "midground": "[BLEND OPTION DESCRIPTION: sculptural formations with optional secondary texture based on Option A/B/C; if a fragment phrase is provided, DO NOT mention the fragment phrase {creature_fragment_phrase}]",
     "background": "[Depth-aware background: SURFACE/MID-DEPTH/DEEP may use distance and atmospheric perspective; ABYSS: solid enclosing material pressing inward from all sides — above, behind, left, and right — no distant vista, no horizon, no cave-mouth read, no large bright zone in the upper frame; the upper portion of the image is enclosed material, not a luminous aperture]",
     "sky": "[APPLY depth-aware celestial treatment: SURFACE=open sky with moons clearly visible; MID-DEPTH=partial sky framed by shelter; DEEP=no open sky; moon may appear as faint cold light bleeding through a lateral side crack, or omit entirely — no vertical light beam, no overhead aperture; ABYSS=no open sky, no bright aperture, no glowing slot or fracture gap above — the upper zone of the frame is solid enclosed material; a moon impression may appear only as a faint shape embedded within the solid mass itself, or omit entirely]"
   },
@@ -431,8 +457,8 @@ Fill ALL placeholders below using the input data and rules above:
 
   "creature_integration": {
     "blend": "Option [A/B/C based on art keywords analysis]: [Copy exact blend description: 'Sculptural 100%' or 'Sculptural 60-70% + Pattern-Based 30-40%' or 'Sculptural 60-70% + Physics 30-40%']",
-    "clarity": "semi-abstract — creature silhouette or outline readable in the landscape's geological arrangement, fully geological in texture and material, never a separate entity",
-    "visibility": "[APPLY BLEND OPTION LANGUAGE RULES for YOUR SELECTED OPTION. The geological massing must carry the creature's outline form at landscape scale — readable in the overall arrangement of formations, never as a separate subject, never as a statue or isolated figure.]",
+    "clarity": "semi-abstract — geological dominant, any creature read remains incidental and partial, fully geological in texture and material, never a separate entity",
+    "visibility": "[APPLY BLEND OPTION LANGUAGE RULES for YOUR SELECTED OPTION using [QUALITY] as the baseline. If a fragment phrase is provided, use the fragment phrase {creature_fragment_phrase} exactly once, phrased as something a close viewer might infer through pareidolia rather than something clearly shown. Keep it partially obscured by surrounding massing/patterning/distortion, subordinate rather than central, and never enough to reconstruct a full creature. If no fragment phrase is provided, omit fragment language entirely and keep the creature read indirect through [QUALITY] alone.]",
     "priority": "100% landscape focus, creature as geological formation",
     "scale": "massive and epic",
     "texture": "{environment} materials completely dominant, sculptural always primary",
@@ -456,7 +482,8 @@ Fill ALL placeholders below using the input data and rules above:
     "no photorealistic animal anatomy",
     "no creature as a separate entity in the scene — creature IS the landscape",
     "no standalone animal subject, no statue-like creature, no mascot-like figure",
-    "no modern 3D render aesthetic"
+    "no modern 3D render aesthetic",
+    "{creature_negative_exclusion}"
   ],
 
   "consistency_anchors": {
