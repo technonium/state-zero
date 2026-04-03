@@ -583,6 +583,7 @@ class WHOOPPipeline:
         args: list = None,
         status: str = 'STARTING',
         fallback_eligible: bool = False,
+        env_overrides: dict | None = None,
     ):
         try:
             print(f"{Fore.CYAN}▶ Running {step_name}...{Style.RESET_ALL}")
@@ -591,6 +592,8 @@ class WHOOPPipeline:
             if args:
                 cmd.extend(args)
             env = os.environ.copy()
+            if env_overrides:
+                env.update(env_overrides)
             result = subprocess.run(cmd, capture_output=True, text=True, env=env)
             if result.stdout:
                 print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
@@ -1585,6 +1588,9 @@ class WHOOPPipeline:
             'src/scripts/prompts.py',
             ['--step', 'all', '--data', str(self.output_dir / 'daily_data.json')],
             fallback_eligible=True,
+            env_overrides={
+                'PIPELINE_PERSIST_ENVIRONMENT_HISTORY': 'true' if self.post_to_instagram else 'false',
+            },
         )
 
     def step_7_generate_image(self, image_json: dict) -> Path:
@@ -2198,7 +2204,7 @@ class WHOOPPipeline:
             'date': daily_data.get('date'),
             'title': metadata.get('title'),
             'scene_description': metadata.get('scene_description'),
-            'environment': environment,
+            'environment': resolved_environment_text,
             'environment_name': environment_name or None,
             'environment_reason': environment_reason or None,
             'creature': creature,

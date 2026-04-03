@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -52,6 +53,205 @@ class EnvironmentSelectionTests(unittest.TestCase):
                     "instagram_post_id": f"ig_{run_date}",
                 }
             )
+
+    def test_generate_environment_persists_history_without_affecting_recency_until_archive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = lambda prompt: "Frozen/Ice — ancient carved silence"
+
+                result = orchestrator.generate_environment(
+                    {"date": "2026-03-09", "energy_zone": "LOW"},
+                    "quiet interpretation",
+                    persist_environment_history=True,
+                )
+
+                db = CardDatabase()
+                recent_names = db.get_recent_environment_names("LOW", "2026-03-10", limit=5)
+                conn = sqlite3.connect(db.db_path)
+                history_row = conn.execute(
+                    """
+                    SELECT environment_name, selection_stage
+                    FROM environment_history
+                    WHERE date = ?
+                    """,
+                    ("2026-03-09",),
+                ).fetchone()
+                conn.close()
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "environment_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(result, "Frozen/Ice — ancient carved silence")
+        self.assertEqual(recent_names, [])
+        self.assertEqual(history_row, ("Frozen/Ice", "environment_selected"))
+        self.assertEqual(debug_payload["history_persist_status"], "ok")
+
+    def test_generate_environment_skips_history_persist_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = lambda prompt: "Frozen/Ice — ancient carved silence"
+
+                result = orchestrator.generate_environment(
+                    {"date": "2026-03-09", "energy_zone": "LOW"},
+                    "quiet interpretation",
+                )
+
+                db = CardDatabase()
+                recent_names = db.get_recent_environment_names("LOW", "2026-03-10", limit=5)
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "environment_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(result, "Frozen/Ice — ancient carved silence")
+        self.assertEqual(recent_names, [])
+        self.assertEqual(debug_payload["history_persist_status"], "skipped_non_persistent_run")
+        self.assertIsNone(debug_payload["history_persist_error"])
+
+    def test_insert_card_upgrades_environment_selected_to_cards_archive(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = lambda prompt: "Frozen/Ice — ancient carved silence"
+                orchestrator.generate_environment(
+                    {"date": "2026-03-09", "energy_zone": "LOW"},
+                    "quiet interpretation",
+                    persist_environment_history=True,
+                )
+
+                db = CardDatabase()
+                db.insert_card(
+                    {
+                        "date": "2026-03-09",
+                        "title": "Title",
+                        "scene_description": "scene",
+                        "environment": "Frozen/Ice — ancient carved silence",
+                        "environment_name": "Frozen/Ice",
+                        "environment_reason": "ancient carved silence",
+                        "creature": "Moth — quiet drift",
+                        "blend_option": "Option A",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "image_prompt_json": "{}",
+                        "instagram_post_id": "ig_2026-03-09",
+                    }
+                )
+
+                # Reopening the database reruns migration/backfill paths.
+                reopened_db = CardDatabase()
+                conn = sqlite3.connect(reopened_db.db_path)
+                history_row = conn.execute(
+                    """
+                    SELECT selection_stage
+                    FROM environment_history
+                    WHERE date = ?
+                    """,
+                    ("2026-03-09",),
+                ).fetchone()
+                conn.close()
+
+        self.assertEqual(history_row, ("cards_archive",))
+
+    def test_environment_history_backfills_missing_real_rows_without_restoring_mock_rows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                db = CardDatabase()
+                db.insert_card(
+                    {
+                        "date": "2026-03-06",
+                        "title": "Real One",
+                        "scene_description": "scene",
+                        "environment": "Frozen/Ice — stored reason",
+                        "environment_name": "Frozen/Ice",
+                        "environment_reason": "stored reason",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "instagram_post_id": "ig_real_1",
+                    }
+                )
+                db.insert_card(
+                    {
+                        "date": "2026-03-07",
+                        "title": "Real Two",
+                        "scene_description": "scene",
+                        "environment": "Crystal Caves — stored reason",
+                        "environment_name": "Crystal Caves",
+                        "environment_reason": "stored reason",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "instagram_post_id": "ig_real_2",
+                    }
+                )
+                db.insert_card(
+                    {
+                        "date": "2026-03-08",
+                        "title": "Mock Run",
+                        "scene_description": "scene",
+                        "environment": "Stone Monuments — stored reason",
+                        "environment_name": "Stone Monuments",
+                        "environment_reason": "stored reason",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "instagram_post_id": "mock_ig_12345",
+                    }
+                )
+
+                conn = sqlite3.connect(db.db_path)
+                conn.execute("DELETE FROM environment_history WHERE date IN (?, ?)", ("2026-03-07", "2026-03-08"))
+                conn.commit()
+                conn.close()
+
+                reopened_db = CardDatabase()
+                conn = sqlite3.connect(reopened_db.db_path)
+                history_rows = conn.execute(
+                    """
+                    SELECT date, environment_name, selection_stage
+                    FROM environment_history
+                    ORDER BY date ASC
+                    """
+                ).fetchall()
+                conn.close()
+
+        self.assertEqual(
+            history_rows,
+            [
+                ("2026-03-06", "Frozen/Ice", "cards_archive"),
+                ("2026-03-07", "Crystal Caves", "cards_backfill"),
+            ],
+        )
 
     def test_glacial_valley_is_wired_in_templates(self):
         json_builder = (PROJECT_ROOT / "src/prompts/json_builder.md").read_text(encoding="utf-8")
@@ -121,7 +321,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
         self.assertEqual(debug_payload["final_selection_source"], "repaired")
         self.assertEqual(debug_payload["final_name"], "Glacial Valley")
 
-    def test_recent_environment_names_exclude_mock_posts(self):
+    def test_recent_environment_names_use_environment_history_not_publish_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -132,38 +332,31 @@ class EnvironmentSelectionTests(unittest.TestCase):
                 clear=False,
             ):
                 db = CardDatabase()
-                db.insert_card(
-                    {
-                        "date": "2026-03-08",
-                        "title": "Real Environment Title",
-                        "scene_description": "scene",
-                        "environment": "Frozen/Ice — stored reason",
-                        "environment_name": "Frozen/Ice",
-                        "environment_reason": "stored reason",
-                        "energy_zone": "LOW",
-                        "image_path": "/tmp/image.png",
-                        "video_path": "/tmp/video.mp4",
-                        "instagram_post_id": "ig_real_123",
-                    }
+                db.upsert_environment_history(
+                    run_date="2026-03-08",
+                    energy_zone="LOW",
+                    environment_name="Frozen/Ice",
+                    environment_text="Frozen/Ice — stored reason",
+                    selection_stage="cards_archive",
                 )
-                db.insert_card(
-                    {
-                        "date": "2026-03-07",
-                        "title": "Mock Environment Title",
-                        "scene_description": "scene",
-                        "environment": "Crystal Caves — stored reason",
-                        "environment_name": "Crystal Caves",
-                        "environment_reason": "stored reason",
-                        "energy_zone": "LOW",
-                        "image_path": "/tmp/image.png",
-                        "video_path": "/tmp/video.mp4",
-                        "instagram_post_id": "mock_ig_12345",
-                    }
+                db.upsert_environment_history(
+                    run_date="2026-03-07",
+                    energy_zone="LOW",
+                    environment_name="Crystal Caves",
+                    environment_text="Crystal Caves — stored reason",
+                    selection_stage="cards_backfill",
+                )
+                db.upsert_environment_history(
+                    run_date="2026-03-06",
+                    energy_zone="LOW",
+                    environment_name="Stone Monuments",
+                    environment_text="Stone Monuments — selected but not archived",
+                    selection_stage="environment_selected",
                 )
 
                 names = db.get_recent_environment_names("LOW", "2026-03-09", limit=5)
 
-        self.assertEqual(names, ["Frozen/Ice"])
+        self.assertEqual(names, ["Frozen/Ice", "Crystal Caves"])
 
     def test_extract_valid_environment_name_prefers_explicit_choice_cue(self):
         repaired_name, status = extract_valid_environment_name(
