@@ -15,7 +15,7 @@ class CardDatabase:
         self.init_database()
 
     def init_database(self):
-        """Create cards and fallback post tables if not exists."""
+        """Create cards, fallback post, and environment history tables if not exists."""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
@@ -91,7 +91,19 @@ class CardDatabase:
         except sqlite3.OperationalError:
             cursor.execute("ALTER TABLE fallback_posts ADD COLUMN publish_mode TEXT")
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS environment_history (
+                date TEXT PRIMARY KEY,
+                energy_zone TEXT NOT NULL,
+                environment_name TEXT NOT NULL,
+                environment_text TEXT NOT NULL,
+                selection_stage TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         self._backfill_environment_fields(cursor)
+        self._backfill_environment_history(cursor)
         conn.commit()
         conn.close()
 
@@ -121,6 +133,59 @@ class CardDatabase:
                 """,
                 updates,
             )
+
+    def _backfill_environment_history(self, cursor):
+        rows = cursor.execute(
+            """
+            SELECT cards.date, cards.energy_zone, cards.environment_name, cards.environment
+            FROM cards
+            LEFT JOIN environment_history ON environment_history.date = cards.date
+            WHERE environment_history.date IS NULL
+              AND cards.date IS NOT NULL
+              AND cards.energy_zone IS NOT NULL
+              AND cards.environment IS NOT NULL
+              AND COALESCE(cards.instagram_post_id, '') != ''
+              AND cards.instagram_post_id NOT LIKE 'mock_%'
+            ORDER BY cards.date ASC
+            """
+        ).fetchall()
+
+        updates = []
+        for run_date, energy_zone, environment_name, environment in rows:
+            parsed_name, _parsed_reason = split_environment_output(environment or "")
+            next_name = environment_name or parsed_name
+            if not (run_date and energy_zone and next_name and environment):
+                continue
+            updates.append((run_date, energy_zone, next_name, environment, 'cards_backfill'))
+
+        if updates:
+            self._insert_missing_environment_history_many(cursor, updates)
+
+    def _insert_missing_environment_history_many(self, cursor, rows):
+        cursor.executemany(
+            """
+            INSERT INTO environment_history (
+                date, energy_zone, environment_name, environment_text, selection_stage
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(date) DO NOTHING
+            """,
+            rows,
+        )
+
+    def _upsert_environment_history_many(self, cursor, rows):
+        cursor.executemany(
+            """
+            INSERT INTO environment_history (
+                date, energy_zone, environment_name, environment_text, selection_stage
+            ) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(date) DO UPDATE SET
+                energy_zone=excluded.energy_zone,
+                environment_name=excluded.environment_name,
+                environment_text=excluded.environment_text,
+                selection_stage=excluded.selection_stage
+            """,
+            rows,
+        )
 
     def insert_card(self, card_data: dict):
         """Insert or update a card record for a run date."""
@@ -187,10 +252,66 @@ class CardDatabase:
                 card_data.get('instagram_post_id', ''),
                 card_data.get('instagram_permalink', '')
             ))
+            environment_name = card_data.get('environment_name')
+            environment_text = card_data.get('environment', 'Unknown')
+            instagram_post_id = str(card_data.get('instagram_post_id', '') or '')
+            if not environment_name:
+                environment_name, _parsed_reason = split_environment_output(environment_text or "")
+            if (
+                card_data.get('date')
+                and card_data.get('energy_zone')
+                and environment_name
+                and environment_text
+                and instagram_post_id
+                and not instagram_post_id.startswith('mock_')
+            ):
+                # Real posts promote the selected environment into archived history.
+                self._upsert_environment_history_many(
+                    cursor,
+                    [
+                        (
+                            card_data.get('date'),
+                            card_data.get('energy_zone'),
+                            environment_name,
+                            environment_text,
+                            'cards_archive',
+                        )
+                    ],
+                )
             conn.commit()
             print("✅ Successfully upserted card into database")
         except sqlite3.DatabaseError as e:
             raise RuntimeError(f"Failed to upsert card: {e}") from e
+        finally:
+            conn.close()
+
+    def upsert_environment_history(
+        self,
+        *,
+        run_date: str,
+        energy_zone: str,
+        environment_name: str,
+        environment_text: str,
+        selection_stage: str = 'environment_selected',
+    ):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            self._upsert_environment_history_many(
+                cursor,
+                [
+                    (
+                        run_date,
+                        energy_zone,
+                        environment_name,
+                        environment_text,
+                        selection_stage,
+                    )
+                ],
+            )
+            conn.commit()
+        except sqlite3.DatabaseError as e:
+            raise RuntimeError(f"Failed to upsert environment history: {e}") from e
         finally:
             conn.close()
 
@@ -200,12 +321,11 @@ class CardDatabase:
         try:
             rows = cursor.execute(
                 """
-                SELECT environment_name, environment
-                FROM cards
+                SELECT environment_name, environment_text
+                FROM environment_history
                 WHERE energy_zone = ?
                   AND date < ?
-                  AND COALESCE(instagram_post_id, '') != ''
-                  AND instagram_post_id NOT LIKE 'mock_%'
+                  AND selection_stage IN ('cards_archive', 'cards_backfill')
                 ORDER BY date DESC
                 LIMIT ?
                 """,

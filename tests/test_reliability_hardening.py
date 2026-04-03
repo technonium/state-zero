@@ -493,9 +493,32 @@ class ReliabilityHardeningTests(unittest.TestCase):
             )
 
             payload = json.loads((pipeline.output_dir / "last_archived_payload.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["environment"], "Totally Invalid Realm")
+            self.assertEqual(payload["environment"], "Glacial Valley — Resolved selection")
             self.assertEqual(payload["environment_name"], "Glacial Valley")
             self.assertEqual(payload["environment_reason"], "Resolved selection")
+
+    def test_step_4_6_prompts_enables_history_persist_only_for_real_runs(self):
+        pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
+        captured_calls = []
+
+        def fake_safe_step(*args, **kwargs):
+            captured_calls.append(kwargs)
+
+        pipeline.safe_step = fake_safe_step
+
+        pipeline.post_to_instagram = True
+        WHOOPPipeline.step_4_6_prompts(pipeline)
+        self.assertEqual(
+            captured_calls[-1]["env_overrides"]["PIPELINE_PERSIST_ENVIRONMENT_HISTORY"],
+            "true",
+        )
+
+        pipeline.post_to_instagram = False
+        WHOOPPipeline.step_4_6_prompts(pipeline)
+        self.assertEqual(
+            captured_calls[-1]["env_overrides"]["PIPELINE_PERSIST_ENVIRONMENT_HISTORY"],
+            "false",
+        )
 
     def test_lookups_write_json_atomic_fsyncs_and_round_trips_payload(self):
         with tempfile.TemporaryDirectory() as tmpdir:

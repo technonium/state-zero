@@ -26,7 +26,7 @@ from title_utils import (
     normalize_title,
     structural_title_key,
 )
-from utils import get_project_root, get_output_root
+from utils import env_bool, get_project_root, get_output_root
 
 load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
 
@@ -1136,7 +1136,14 @@ class PromptOrchestrator:
         first_why_unique = first_payload['why_unique']
         first_norm = normalize_creature_name(first_name)
         first_canonical_output = format_creature_output(first_name, first_reason) if first_name else ""
-        first_fragment_verdict, first_fragment_reasons = self._analyze_signature_fragment(first_fragment, first_why_unique, first_name)
+        if first_payload['format'] == 'json':
+            first_fragment_verdict, first_fragment_reasons = self._analyze_signature_fragment(
+                first_fragment,
+                first_why_unique,
+                first_name,
+            )
+        else:
+            first_fragment_verdict, first_fragment_reasons = 'no-fragment', []
         first_has_valid_fragment = not first_fragment_reasons
 
         banned_recent_names = recent_creature_context['banned_recent_names']
@@ -1181,7 +1188,14 @@ class PromptOrchestrator:
             retry_why_unique = retry_payload['why_unique']
             retry_norm = normalize_creature_name(retry_name)
             retry_canonical_output = format_creature_output(retry_name, retry_reason) if retry_name else ""
-            retry_fragment_verdict, retry_fragment_reasons = self._analyze_signature_fragment(retry_fragment, retry_why_unique, retry_name)
+            if retry_payload['format'] == 'json':
+                retry_fragment_verdict, retry_fragment_reasons = self._analyze_signature_fragment(
+                    retry_fragment,
+                    retry_why_unique,
+                    retry_name,
+                )
+            else:
+                retry_fragment_verdict, retry_fragment_reasons = 'no-fragment', []
             retry_has_valid_fragment = not retry_fragment_reasons
 
             if retry_norm and retry_reason and retry_norm not in banned_recent_names:
@@ -1209,7 +1223,7 @@ class PromptOrchestrator:
                 final_fragment = first_fragment if first_has_valid_fragment else ""
                 final_why_unique = first_why_unique
             else:
-                raise RuntimeError("Creature selection failed: both attempts were invalid.")
+                raise RuntimeError("Creature selection failed: both attempts were unparseable.")
         else:
             if retry_prompt_path.exists():
                 retry_prompt_path.unlink()
@@ -1501,7 +1515,13 @@ class PromptOrchestrator:
             'candidate_source': candidate_source,
         }
 
-    def generate_environment(self, daily_data: dict, interpretation: str) -> str:
+    def generate_environment(
+        self,
+        daily_data: dict,
+        interpretation: str,
+        *,
+        persist_environment_history: bool = False,
+    ) -> str:
         """Generate environment type (energy-constrained, independent of creature)"""
         template = self.load_template('environment')
         energy_zone = daily_data.get('energy_zone', 'MEDIUM')
@@ -1548,6 +1568,25 @@ class PromptOrchestrator:
 
         final_environment_output = format_environment_output(final_name, final_reason)
         self.save_output('environment_selected.txt', final_environment_output)
+        history_persist_status = 'skipped_non_persistent_run'
+        history_persist_error = None
+        if persist_environment_history and run_date:
+            try:
+                CardDatabase().upsert_environment_history(
+                    run_date=run_date,
+                    energy_zone=energy_zone,
+                    environment_name=final_name,
+                    environment_text=final_environment_output,
+                    selection_stage='environment_selected',
+                )
+                history_persist_status = 'ok'
+            except Exception as e:
+                history_persist_status = 'failed'
+                history_persist_error = str(e)
+                print(f"⚠️  Environment history persist failed: {e}")
+        elif persist_environment_history:
+            history_persist_status = 'missing_run_date'
+            history_persist_error = 'Missing run date; environment history not persisted.'
         self.save_json_output(
             'environment_selection_debug.json',
             {
@@ -1568,6 +1607,8 @@ class PromptOrchestrator:
                 'final_name': final_name,
                 'final_reason': final_reason,
                 'final_output': final_environment_output,
+                'history_persist_status': history_persist_status,
+                'history_persist_error': history_persist_error,
             },
         )
         return final_environment_output
@@ -2544,6 +2585,7 @@ def main():
 
     api_key = os.getenv('GOOGLE_API_KEY_PRIMARY', 'mock')
     or_key = os.getenv('OPENROUTER_API_KEY')
+    persist_environment_history = env_bool('PIPELINE_PERSIST_ENVIRONMENT_HISTORY', default=False)
     print(f"🔍 DEBUG: GOOGLE_API_KEY_PRIMARY={'set' if api_key and api_key != 'mock' else api_key}")
     print(f"🔍 DEBUG: OPENROUTER_API_KEY={'set' if or_key else 'NOT SET'}")
     orchestrator = PromptOrchestrator(
@@ -2579,7 +2621,11 @@ def main():
         print("▶ Generating Creature...")
         creature = orchestrator.generate_creature(daily_data, interpretation)
         print("▶ Generating Environment...")
-        environment = orchestrator.generate_environment(daily_data, interpretation)
+        environment = orchestrator.generate_environment(
+            daily_data,
+            interpretation,
+            persist_environment_history=persist_environment_history,
+        )
         print("▶ Building Image JSON...")
         image_json = orchestrator.build_image_json(daily_data, interpretation, creature, environment)
         print("▶ Extracting Metadata...")
