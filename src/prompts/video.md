@@ -7,6 +7,7 @@ Generate an 8-second single-take video animation prompt. Not looping.
 ## Input Data
 
 - **Environment:** {environment}
+- **Material Class:** {material_class}
 - **Depth Level:** {depth_level}
 - **Energy Zone:** {energy_zone}
 - **Recovery Zone:** {recovery_zone}
@@ -100,7 +101,7 @@ Recovery determines what happens in the landscape — not just how ambient thing
 
 - **HIGH recovery** — the environment is at rest and self-sustaining. Ambient motion is calm and cyclic. Nothing is happening beyond the world maintaining itself.
 - **MID recovery** — the environment is unsettled. The same ambient forces are present but irregular — more active than calm, not yet an event. Things are coasting under slight pressure.
-- **LOW recovery** — the environment is showing visible strain or active failure. Use the LOW recovery event from the environment table above — a fracture, a surge, a rupture, a collapse, a pressure release. The event is present and legible for the full 8 seconds or through its settling consequence. At **LOW + ABYSS**, maximum failure vocabulary is permitted: demolished structure, total material collapse, abomination-state aftermath — this is the most catastrophic state in the system. At **LOW + SURFACE**, the failure is exposed and open under full light.
+- **LOW recovery** — the environment is showing visible strain or active failure. Use the LOW recovery event from the environment table above — present and legible for the full 8 seconds or through its settling consequence. The failure must be physically correct for the environment: stone, ice, and crystal may crack, fracture, and shed debris; clouds, fog, mist, plasma, and water do not — they fail through pressure, shear, surge, compression, turbulence, density collapse, and the loss of form or visibility. Intensity is not the issue. Physics is. At **LOW + ABYSS**, maximum failure intensity is permitted within the material class. At **LOW + SURFACE**, the failure is exposed and open under full light.
 
 The underlying logic:
 - HIGH motion is **generative** — things move because the world has energy to give
@@ -112,6 +113,20 @@ The underlying logic:
 - **LOW + ABYSS** = most catastrophic possible state: sealed compression + total material failure — wrath, demolition, wreckage, abomination
 
 **CRITICAL for LOW:** The camera does not react to the event. It witnesses it with the same geological stillness it would witness anything. The contrast between a still witnessing camera and a visible environmental event is the point.
+
+---
+
+## Materiality
+
+The environment has a material nature, and failure must match it.
+
+Solid environments — stone, ice, crystal, earth — may crack, fracture, collapse, and shed debris. That language belongs there.
+
+Atmospheric environments — clouds, fog, mist, plasma, nebula — do not crack. They fail through pressure, shear, compression, turbulence, density collapse, and the loss of form or visibility. A LOW-recovery sky or fog scene should feel violent through weather physics, not through the vocabulary of breaking stone.
+
+Fluid environments — water, sediment — do not shatter. They surge, churn, billow, and obscure.
+
+Crack, fracture, shatter, and debris belong only when a named solid object — a rock face, a reef, a cliff formation — is explicitly what is failing.
 
 ---
 
@@ -157,13 +172,21 @@ Camera: slow zoom in, fixed axis, weighted and still
 Motion: fine dust drifts past stone bases; formations static and permanent
 Style: retro sci-fi, stone monument atmosphere, MID-DEPTH, sculptural-primary Option B, flowing balanced harmonious, LOW energy
 
-*Static hold (LOW recovery):*
+*Static hold (LOW recovery, solid):*
 
 The camera holds absolutely still, the fixed frame witnessing without comment as a crack propagates slowly across the compressed ice face — the fracture too slow to feel sudden, too present to ignore, the full 8 seconds given to its quiet advance. Fine ice splinters fall from the fracture line and scatter across the surface below, the only vertical motion in an otherwise sealed interior, each piece a consequence of pressure that has been building longer than the frame has existed. Pressure seams catch cold internal light along the fractured surface, film grain present throughout, lens bloom minimal at the break edge, the exposure holding steady from first frame to last.
 
 Camera: static hold, no movement, fixed axis — witnessing
 Motion: crack propagates across ice face; ice splinters fall from fracture line
 Style: retro sci-fi, glacial atmosphere, ABYSS, sculptural-primary Option A, crushing devastated suffocating, LOW recovery
+
+*Static hold (LOW recovery, atmospheric):*
+
+The camera holds without movement, fixed and pressing into the overdriven sky as if there is nowhere else to look. A pressure front drives laterally through the cloud mass — storm-thickened air streams in sustained directional bands, the lower layer shearing under compression, visibility failing across the full frame for the entire 8 seconds without any moment of release. The light is flattened and directionless, the sky's own form collapsed into a continuous oppressive slab, film grain present throughout, lens bloom diffused and cold, exposure holding from first frame to last.
+
+Camera: static hold, no movement, fixed axis — witnessing
+Motion: pressure front drives cloud mass laterally; lower layer shears and compresses
+Style: retro sci-fi, wind/sky atmosphere, SURFACE, LOW recovery
 
 ---
 

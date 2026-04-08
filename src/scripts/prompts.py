@@ -2186,6 +2186,38 @@ class PromptOrchestrator:
         re.IGNORECASE,
     )
 
+    # Material class lookup — used by video prompt generation only.
+    # Environments not listed here default to solid behavior.
+    ENVIRONMENT_MATERIAL_CLASS: dict[str, str] = {
+        'Wind/Sky Realms':      'atmospheric',
+        'Mist/Fog Realms':      'atmospheric',
+        'Plasma/Nebula':        'atmospheric',
+        'Ocean/Underwater':     'fluid',
+    }
+
+    # Solid-matter failure terms that are inappropriate for atmospheric / fluid environments
+    # unless a named solid formation is the explicit subject.
+    _ATMOSPHERIC_SOLID_FAILURE = re.compile(
+        r'\b(crack(?:s|ed|ing|le)?|fractur\w*|shatter\w*|debris|splinter\w*|ruptur\w*)\b'
+        r'|broken surface|impact point|surface collapse',
+        re.IGNORECASE,
+    )
+
+    # Narrow list of clearly solid subjects. Intentionally excludes generic words like
+    # "formation", "structure", "wall", and "ground" because those appear in soft-matter
+    # scenes (cloud formation, fog wall, storm structure) and weaken the guardrail.
+    _SOLID_SUBJECT = re.compile(
+        r'\b(stone|rock\w*|ice|crystal\w*|cliff\w*|reef\w*|pillar\w*|column\w*|'
+        r'slab\w*|boulder\w*|crust|mineral\w*|stalactite\w*|stalagmite\w*|granite|basalt)\b',
+        re.IGNORECASE,
+    )
+
+    _SOLID_FAILURE_VERB = re.compile(
+        r'\b(crack(?:s|ed|ing|le)?|fractur\w*|shatter\w*|ruptur\w*|splinter\w*|'
+        r'collaps\w*|shed\w*|falls?|drops?|calv\w*|cascad\w*)\b',
+        re.IGNORECASE,
+    )
+
     _POSITIVE_LITERALIZING = re.compile(
         r'\b(silhouette|outline readable|shaped like|resembles|full-body|statue|animal figure)\b',
         re.IGNORECASE,
@@ -2453,7 +2485,48 @@ class PromptOrchestrator:
             f"{previous_output.strip()}\n"
         )
 
-    def _validate_video_prompt(self, video_prompt: str, depth_level: str, recovery_zone: str) -> list[str]:
+    def _check_materiality_violation(self, sentence: str, material_class: str) -> str | None:
+        """Return a rejection reason if a soft-matter scene uses hard-material failure language."""
+        if material_class not in ('atmospheric', 'fluid'):
+            return None
+        for match in self._ATMOSPHERIC_SOLID_FAILURE.finditer(sentence):
+            if self._is_negated_visual_match(sentence, match):
+                continue
+            if self._has_explicit_solid_failure_subject(sentence, match.start(), match.end()):
+                continue
+            term = match.group(0).lower()
+            return f'materiality_violation_{material_class}:{term}'
+        return None
+
+    def _has_explicit_solid_failure_subject(self, sentence: str, match_start: int, match_end: int) -> bool:
+        """Return True only when a clearly solid subject is explicitly the thing failing.
+
+        This is intentionally stricter than a proximity check. A nearby solid noun should
+        not pardon phrases like "the water fractures around a reef" or "the cloud bank
+        shatters beside a cliff wall".
+        """
+        prefix = sentence[:match_end]
+        for solid_match in self._SOLID_SUBJECT.finditer(prefix):
+            gap_text = prefix[solid_match.end():match_end]
+            failure_match = self._SOLID_FAILURE_VERB.search(gap_text)
+            if not failure_match:
+                continue
+            # The solid subject needs to lead directly into the failure clause with only a
+            # few descriptive words between them. Once that clause is established, later
+            # debris/fallout in the same sentence is allowed to ride on it.
+            subject_to_failure = gap_text[:failure_match.start()]
+            if len(re.findall(r'\b\w+\b', subject_to_failure)) > 4:
+                continue
+            return True
+        return False
+
+    def _validate_video_prompt(
+        self,
+        video_prompt: str,
+        depth_level: str,
+        recovery_zone: str,
+        material_class: str = '',
+    ) -> list[str]:
         reasons: list[str] = []
         if depth_level == 'DEEP':
             m = self._first_unnegated_match(self._DEEP_ARCHITECTURAL, video_prompt)
@@ -2471,6 +2544,12 @@ class PromptOrchestrator:
             motion_sentence = sentences[1] if len(sentences) >= 2 else ''
             if not motion_sentence or not self._LOW_FAILURE_EVENT.search(motion_sentence):
                 reasons.append('low_recovery_sentence_two_no_failure_event')
+        if material_class in ('atmospheric', 'fluid'):
+            sentences = self._split_video_sentences(video_prompt)
+            motion_sentence = sentences[1] if len(sentences) >= 2 else video_prompt
+            violation = self._check_materiality_violation(motion_sentence, material_class)
+            if violation:
+                reasons.append(violation)
         return reasons
 
     def _build_video_retry_prompt(
@@ -2512,6 +2591,26 @@ class PromptOrchestrator:
                     'Keep it scene-specific and visible in the world itself. '
                     'Mood and atmosphere are not substitutes — the viewer should be able to tell what is physically wrong.'
                 )
+            elif reason.startswith('materiality_violation_atmospheric:'):
+                term = reason.split(':', 1)[1]
+                corrections.append(
+                    f'Your output used "{term}" — a solid-matter failure term — in an atmospheric environment. '
+                    'Clouds, vapor, wind, and fog do not crack, fracture, shatter, or produce debris. '
+                    'Rewrite sentence 2 so that failure happens through weather physics: '
+                    'pressure fronts, shear, turbulence, compression, cloud-bank collapse, '
+                    'density drop, visibility suppression, directional bands, or storm-thickened air. '
+                    'Keep the same intensity — just make the physics correct for atmosphere.'
+                )
+            elif reason.startswith('materiality_violation_fluid:'):
+                term = reason.split(':', 1)[1]
+                corrections.append(
+                    f'Your output used "{term}" — a solid-matter failure term — in a fluid/underwater environment. '
+                    'Water, sediment, and current do not crack or fracture. '
+                    'Rewrite sentence 2 so failure uses fluid physics: surge, churn, billowing sediment, '
+                    'undertow, pressure displacement, or obscuring cloud of disturbed matter. '
+                    'Solid failure terms are only acceptable when a named rock, reef, or formation is '
+                    'explicitly the object that is failing.'
+                )
         correction_text = '\n'.join(f'- {c}' for c in corrections)
         return (
             f"{filled_prompt}\n\n"
@@ -2532,6 +2631,8 @@ class PromptOrchestrator:
         depth_level = daily_data.get('depth_level', '')
         recovery_zone = daily_data.get('recovery_zone', '')
 
+        material_class = self.ENVIRONMENT_MATERIAL_CLASS.get(environment_name, 'solid')
+
         placeholders = {
             'environment': environment_name,
             'depth_level': depth_level,
@@ -2541,7 +2642,8 @@ class PromptOrchestrator:
             'art_keywords': ', '.join(behavior.get('art_keywords', [])),
             'one_liner': behavior.get('one_liner', ''),
             'moon_count': str(daily_data.get('moon_count', 0)),
-            'blend_option': blend_option
+            'blend_option': blend_option,
+            'material_class': material_class,
         }
 
         filled_prompt = self.fill_template(template, placeholders, template_name='video')
@@ -2551,7 +2653,7 @@ class PromptOrchestrator:
         last_rejection_reasons: list[str] = []
         for attempt in range(3):
             video_prompt = self.call_llm(prompt_to_send)
-            rejection_reasons = self._validate_video_prompt(video_prompt, depth_level, recovery_zone)
+            rejection_reasons = self._validate_video_prompt(video_prompt, depth_level, recovery_zone, material_class)
             if not rejection_reasons:
                 self.save_output('video_prompt.txt', video_prompt)
                 return video_prompt
