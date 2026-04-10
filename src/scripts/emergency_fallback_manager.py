@@ -176,6 +176,8 @@ class EmergencyFallbackManager:
         instagram_post_id: str | None,
         instagram_permalink: str | None,
         reused_existing_post: bool = False,
+        publish_status: str | None = None,
+        publish_diagnostics: dict | str | None = None,
     ) -> Path:
         manifest = self._require_manifest()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -198,6 +200,10 @@ class EmergencyFallbackManager:
             "prehosted_video_url": manifest["prehosted_video_url"],
             "prehosted_thumb_url": manifest["prehosted_thumb_url"],
         }
+        if publish_status is not None:
+            payload["publish_status"] = publish_status
+        if publish_diagnostics is not None:
+            payload["publish_diagnostics"] = publish_diagnostics
         log_path = output_dir / "emergency_fallback_used.json"
         tmp_path = None
         try:

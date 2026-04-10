@@ -2,14 +2,32 @@ import os
 import sys
 import time
 import argparse
+import json
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
 import requests
 from typing import Optional, Tuple
 
 # Import token manager - works both as script and module
 try:
     from .instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
+    from .utils import ensure_path, get_output_root
 except ImportError:
     from instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
+    from utils import ensure_path, get_output_root
+
+
+class InstagramPublishDiagnosticsError(RuntimeError):
+    """Raised when Meta returns a terminal publish/container error."""
+
+    def __init__(self, phase: str, message: str, diagnostics: dict):
+        self.phase = phase
+        self.diagnostics = diagnostics
+        super().__init__(message)
+
+    def details_tail(self, limit: int = 4000) -> str:
+        return json.dumps(self.diagnostics, indent=2, ensure_ascii=False)[:limit]
 
 
 class InstagramPublishResult:
@@ -52,6 +70,142 @@ class InstagramPoster:
             
         self.base_url = "https://graph.facebook.com/v21.0"
         self.mock_mode = not self.access_token or self.access_token == 'mock'
+        self.diagnostics_output_dir: Path | None = None
+        self.run_date: str | None = None
+
+    def _diagnostics_path(self) -> Path | None:
+        if self.diagnostics_output_dir is None:
+            if self.run_date:
+                return get_output_root() / self.run_date / "instagram_publish_diagnostics.json"
+            return None
+        return self.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+
+    def _response_snapshot(self, response: requests.Response) -> dict:
+        headers = {}
+        for key in (
+            "debug-link",
+            "error-mid",
+            "x-fb-request-id",
+            "x-fb-trace-id",
+            "facebook-api-version",
+            "x-ad-api-version-warning",
+        ):
+            value = response.headers.get(key)
+            if value:
+                headers[key] = value
+
+        try:
+            body = response.json()
+        except Exception:
+            text = getattr(response, "text", "") or ""
+            body = {"text_tail": text[-2000:]}
+
+        return {
+            "http_status": response.status_code,
+            "headers": headers,
+            "body": body,
+        }
+
+    def _persist_diagnostics(self, updates: dict) -> Path | None:
+        path = self._diagnostics_path()
+        if path is None:
+            return None
+
+        ensure_path(path.parent)
+        payload = {}
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+
+        payload.update(updates)
+        payload.setdefault("run_date", self.run_date)
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                delete=False,
+            ) as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+                tmp_path = handle.name
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        return path
+
+    def _base_diagnostics(self, phase: str, **context) -> dict:
+        payload = {
+            "phase": phase,
+            "run_date": self.run_date,
+            "user_id": self.user_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        payload.update(context)
+        return payload
+
+    def _raise_diagnostics_error(
+        self,
+        *,
+        phase: str,
+        message: str,
+        creation_id: str | None = None,
+        response: requests.Response | None = None,
+        response_snapshot: dict | None = None,
+        extra: dict | None = None,
+    ) -> "InstagramPublishDiagnosticsError":
+        diagnostics = self._base_diagnostics(phase, creation_id=creation_id)
+        if response_snapshot is None and response is not None:
+            response_snapshot = self._response_snapshot(response)
+        if response_snapshot is not None:
+            diagnostics["response"] = response_snapshot
+            debug_link = response_snapshot.get("headers", {}).get("debug-link")
+            if debug_link:
+                diagnostics["debug_link"] = debug_link
+        if extra:
+            diagnostics.update(extra)
+        artifact_path = self._persist_diagnostics(diagnostics)
+        if artifact_path is not None:
+            diagnostics["artifact_path"] = str(artifact_path)
+        return InstagramPublishDiagnosticsError(phase, message, diagnostics)
+
+    def build_processing_timeout_error(self, creation_id: str, max_polls: int | None = None) -> InstagramPublishDiagnosticsError:
+        diagnostics = self._base_diagnostics(
+            "poll_processing",
+            creation_id=creation_id,
+            terminal_status_code="TIMEOUT",
+        )
+        if max_polls is not None:
+            diagnostics["max_polls"] = max_polls
+        artifact_path = self._persist_diagnostics(diagnostics)
+        if artifact_path is not None:
+            diagnostics["artifact_path"] = str(artifact_path)
+        return InstagramPublishDiagnosticsError(
+            "poll_processing",
+            f"Instagram processing timed out before FINISHED for creation_id={creation_id}",
+            diagnostics,
+        )
+
+    @staticmethod
+    def _is_media_like_content_type(content_type: str, label: str) -> bool:
+        normalized = (content_type or "").split(";", 1)[0].strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"application/octet-stream", "binary/octet-stream"}:
+            return True
+        if label == "video":
+            return normalized.startswith("video/")
+        return normalized.startswith("image/")
 
     def _is_transient_error(self, response_data: dict) -> Tuple[bool, str]:
         """
@@ -171,7 +325,10 @@ class InstagramPoster:
         for attempt in range(max_attempts):
             try:
                 response = requests.post(url, data=payload, timeout=self.REQUEST_TIMEOUT)
-                response_data = response.json()
+                try:
+                    response_data = response.json()
+                except Exception:
+                    response_data = self._response_snapshot(response).get("body", {})
                 
                 if 'id' in response_data:
                     print(f"✅ Container created with ID: {response_data['id']}")
@@ -190,7 +347,20 @@ class InstagramPoster:
                 # Non-transient or exhausted retries
                 error_msg = f"Failed to create container: {response_data}"
                 print(f"❌ {error_msg}")
-                raise RuntimeError(error_msg)
+                raise self._raise_diagnostics_error(
+                    phase="create_container",
+                    message=error_msg,
+                    response=response,
+                    extra={
+                        "context": {
+                            "video_url": video_url,
+                            "cover_url": cover_url,
+                            "caption_tail": (caption or "")[-500:],
+                            "share_to_feed": payload["share_to_feed"],
+                        },
+                        "create_container_response": self._response_snapshot(response),
+                    },
+                )
                 
             except requests.exceptions.RequestException as e:
                 if attempt < max_attempts - 1:
@@ -199,7 +369,19 @@ class InstagramPoster:
                     print(f"▶ Retrying in {wait_time}s... (attempt {attempt + 1}/{max_attempts})")
                     time.sleep(wait_time)
                     continue
-                raise RuntimeError(f"Failed to create container after {max_attempts} attempts: {e}")
+                message = f"Failed to create container after {max_attempts} attempts: {e}"
+                diagnostics = self._base_diagnostics(
+                    "create_container",
+                    video_url=video_url,
+                    cover_url=cover_url,
+                    caption_tail=(caption or "")[-500:],
+                    share_to_feed=payload["share_to_feed"],
+                    network_error=str(e),
+                )
+                artifact_path = self._persist_diagnostics(diagnostics)
+                if artifact_path is not None:
+                    diagnostics["artifact_path"] = str(artifact_path)
+                raise InstagramPublishDiagnosticsError("create_container", message, diagnostics) from e
 
     def poll_processing_status(self, creation_id: str, max_polls=30) -> bool:
         """Step 14b: Poll for processing completion"""
@@ -251,7 +433,18 @@ class InstagramPoster:
                 time.sleep(min(delay, remaining))
                 continue
 
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception as parse_error:
+                raise self._raise_diagnostics_error(
+                    phase="poll_processing",
+                    message=f"Instagram processing returned non-JSON response for creation_id={creation_id}",
+                    creation_id=creation_id,
+                    response=response,
+                    extra={
+                        "parse_error": str(parse_error),
+                    },
+                ) from parse_error
             status = data.get('status_code', 'UNKNOWN')
             transient_errors = 0
 
@@ -259,7 +452,6 @@ class InstagramPoster:
                 print(f"✅ Processing FINISHED for {creation_id}")
                 return True
             elif status == 'ERROR':
-                # Print full error details if available
                 error_data = data.get('error', {})
                 if error_data:
                     error_message = error_data.get('message', 'Unknown error')
@@ -267,7 +459,17 @@ class InstagramPoster:
                     print(f"❌ Processing ERROR for {creation_id}: Code={error_code}, Message={error_message}")
                 else:
                     print(f"❌ Processing ERROR for {creation_id}")
-                return False
+                raise self._raise_diagnostics_error(
+                    phase="poll_processing",
+                    message=f"Instagram processing returned terminal status_code=ERROR for creation_id={creation_id}",
+                    creation_id=creation_id,
+                    response=response,
+                    extra={
+                        "terminal_status_code": status,
+                        "poll_response": self._response_snapshot(response),
+                        "error_object": error_data or None,
+                    },
+                )
 
             if status != 'IN_PROGRESS':
                 print(f"⚠ Unexpected processing status for {creation_id}: {status}")
@@ -299,7 +501,12 @@ class InstagramPoster:
         for attempt in range(max_attempts):
             try:
                 response = requests.post(url, data=payload, timeout=self.REQUEST_TIMEOUT)
-                response_data = response.json()
+                parse_error_message = None
+                try:
+                    response_data = response.json()
+                except Exception as parse_error:
+                    parse_error_message = str(parse_error)
+                    response_data = self._response_snapshot(response).get("body", {})
                 
                 if 'id' in response_data:
                     print(f"✅ Reel published successfully: {response_data['id']}")
@@ -318,7 +525,16 @@ class InstagramPoster:
                 # Non-transient or exhausted retries
                 error_msg = f"Failed to publish reel: {response_data}"
                 print(f"❌ {error_msg}")
-                raise RuntimeError(error_msg)
+                raise self._raise_diagnostics_error(
+                    phase="publish_media",
+                    message=error_msg,
+                    creation_id=creation_id,
+                    response=response,
+                    extra={
+                        "parse_error": parse_error_message,
+                        "publish_response": self._response_snapshot(response),
+                    },
+                )
                 
             except requests.exceptions.RequestException as e:
                 if attempt < max_attempts - 1:
@@ -327,7 +543,16 @@ class InstagramPoster:
                     print(f"▶ Retrying in {wait_time}s... (attempt {attempt + 1}/{max_attempts})")
                     time.sleep(wait_time)
                     continue
-                raise RuntimeError(f"Failed to publish after {max_attempts} attempts: {e}")
+                message = f"Failed to publish after {max_attempts} attempts: {e}"
+                diagnostics = self._base_diagnostics(
+                    "publish_media",
+                    creation_id=creation_id,
+                    network_error=str(e),
+                )
+                artifact_path = self._persist_diagnostics(diagnostics)
+                if artifact_path is not None:
+                    diagnostics["artifact_path"] = str(artifact_path)
+                raise InstagramPublishDiagnosticsError("publish_media", message, diagnostics) from e
     
     def get_permalink(self, post_id: str, max_retries: int = 5) -> Optional[str]:
         """
@@ -392,7 +617,7 @@ class InstagramPoster:
         
         # Wait for processing
         if not self.poll_processing_status(creation_id):
-            raise RuntimeError("Media processing failed on Instagram side")
+            raise self.build_processing_timeout_error(creation_id)
         
         # Publish
         post_id = self.publish_media(creation_id)

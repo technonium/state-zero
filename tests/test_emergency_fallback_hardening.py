@@ -8,7 +8,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -202,6 +202,80 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
             },
         )
 
+    def test_write_emergency_log_can_include_publish_failure_diagnostics(self):
+        tmpdir, manager, _fallback_root = self._build_manager_with_temp_runtime()
+        self.addCleanup(tmpdir.cleanup)
+
+        manager.manifest = {
+            "version": "error_404_v1",
+            "title": "ERROR 404",
+            "scene_description": "fallback scene",
+            "local_png_path": "fallback/error_404_v1/card.png",
+            "local_mp4_path": "fallback/error_404_v1/card.mp4",
+            "prehosted_video_url": "https://example.com/fallback/error_404_v1/card.mp4",
+            "prehosted_thumb_url": "https://example.com/fallback/error_404_v1/card.png",
+        }
+
+        output_dir = Path(tmpdir.name) / "runtime" / "output" / "failed-run"
+        log_path = manager.write_emergency_log(
+            output_dir,
+            trigger_stage="Instagram Posting",
+            reason="failed",
+            publish_mode="prehosted",
+            video_url="https://example.com/fallback/error_404_v1/card.mp4",
+            thumb_url="https://example.com/fallback/error_404_v1/card.png",
+            instagram_post_id=None,
+            instagram_permalink=None,
+            publish_status="failed",
+            publish_diagnostics={
+                "creation_id": "creation-1",
+                "terminal_status_code": "ERROR",
+                "response": {"headers": {"debug-link": "https://debug.example/1"}},
+            },
+        )
+
+        payload = json.loads(log_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["publish_status"], "failed")
+        self.assertEqual(payload["publish_diagnostics"]["creation_id"], "creation-1")
+        self.assertEqual(payload["publish_diagnostics"]["response"]["headers"]["debug-link"], "https://debug.example/1")
+
+    def test_public_url_preflight_accepts_media_and_rejects_bad_responses(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+
+        def make_response(status_code, content_type, body=b"binary-data"):
+            response = Mock()
+            response.status_code = status_code
+            response.headers = {"Content-Type": content_type}
+            response.iter_content.side_effect = lambda chunk_size=1: iter([body])
+            response.close = Mock()
+            return response
+
+        ok_video = make_response(200, "video/mp4", b"video-bytes")
+        ok_thumb = make_response(200, "image/png", b"png-bytes")
+        with patch("pipeline.requests.get", side_effect=[ok_video, ok_thumb]):
+            WHOOPPipeline._ensure_public_urls_reachable(
+                pipeline,
+                (
+                    ("video", "video", "https://example.com/video.mp4"),
+                    ("image", "thumb", "https://example.com/thumb.png"),
+                ),
+            )
+
+        bad_cases = [
+            ("404", make_response(404, "application/octet-stream", b"not-found"), "unreachable_public_video_url"),
+            ("redirect", make_response(302, "text/html", b""), "unreachable_public_video_url"),
+            ("html", make_response(200, "text/html", b"<html>ok</html>"), "invalid_public_video_content_type"),
+        ]
+        for label, response, expected_reason in bad_cases:
+            with self.subTest(label=label):
+                with patch("pipeline.requests.get", return_value=response):
+                    with self.assertRaises(RuntimeError) as ctx:
+                        WHOOPPipeline._ensure_public_urls_reachable(
+                            pipeline,
+                            (("video", "video", "https://example.com/video.mp4"),),
+                        )
+                self.assertIn(expected_reason, str(ctx.exception))
+
     def test_non_retryable_lookup_failure_is_fallback_eligible(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.base_dir = PROJECT_ROOT
@@ -226,6 +300,121 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertEqual(ctx.exception.stage, "Data Retrieve & Dasha Lookups")
         self.assertTrue(ctx.exception.fallback_eligible)
         self.assertEqual(ctx.exception.message, "Script reported a terminal lookup failure")
+
+    def test_emergency_fallback_writes_publish_diagnostics_when_post_fails(self):
+        captured_logs = []
+
+        fake_fallback_module = types.ModuleType("emergency_fallback_manager")
+
+        class _FakeFallbackUnavailableError(RuntimeError):
+            pass
+
+        class _FakeManager:
+            def __init__(self):
+                pass
+
+            def load_and_validate_manifest(self):
+                return {
+                    "version": "error_404_v1",
+                    "title": "ERROR 404",
+                    "scene_description": "fallback scene",
+                }
+
+            def verify_integrity(self):
+                return True
+
+            def copy_to_run_output(self, output_dir):
+                mp4_path = output_dir / "card_final.mp4"
+                png_path = output_dir / "card_final.png"
+                mp4_path.write_bytes(b"video")
+                png_path.write_bytes(b"image")
+                return {"mp4_path": mp4_path, "png_path": png_path}
+
+            def get_publish_strategy(self):
+                return {
+                    "mode": "prehosted",
+                    "video_url": "https://prehosted.example/video.mp4",
+                    "thumb_url": "https://prehosted.example/thumb.png",
+                }
+
+            def build_fallback_caption(self, run_date):
+                return f"caption {run_date}"
+
+            def write_emergency_log(self, output_dir, **kwargs):
+                captured_logs.append(kwargs)
+                return output_dir / "emergency_fallback_used.json"
+
+        fake_fallback_module.EmergencyFallbackManager = _FakeManager
+        fake_fallback_module.FallbackUnavailableError = _FakeFallbackUnavailableError
+
+        fake_db_module = types.ModuleType("database_manager")
+
+        class _FakeCardDatabase:
+            def insert_fallback_post(self, payload):
+                return payload
+
+        fake_db_module.CardDatabase = _FakeCardDatabase
+
+        failure_diagnostics = {
+            "creation_id": "creation-1",
+            "terminal_status_code": "ERROR",
+            "response": {
+                "headers": {
+                    "debug-link": "https://debug.example/1",
+                }
+            },
+        }
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            pipeline.run_date = "2026-03-08"
+            pipeline.output_dir = output_dir
+            pipeline.daily_run = _FakeDailyRun()
+            pipeline.asset_source = "auto_api"
+            pipeline.in_emergency_fallback = False
+            pipeline._last_emergency_fallback_error = None
+            pipeline._last_emergency_fallback_details = None
+            pipeline._last_emergency_fallback_classification = None
+            pipeline._active_emergency_fallback_version = None
+            pipeline._active_emergency_fallback_publish_mode = None
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+            pipeline._ensure_owner_runtime_dirs = lambda: output_dir.mkdir(parents=True, exist_ok=True)
+            pipeline._ensure_public_urls_reachable = lambda media_urls: True
+            pipeline.step_12_upload_vps = lambda final_mp4, cover_image: self.fail("runtime upload should not run")
+            pipeline.step_14_post_instagram = lambda *args, **kwargs: (_ for _ in ()).throw(
+                PipelineStageError(
+                    stage="Instagram Posting",
+                    message="Media processing failed on Instagram side.",
+                    details=json.dumps(failure_diagnostics),
+                    details_obj=failure_diagnostics,
+                    fallback_eligible=False,
+                )
+            )
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "emergency_fallback_manager": fake_fallback_module,
+                    "database_manager": fake_db_module,
+                },
+            ):
+                with patch("pipeline.get_notifier", return_value=_FakeNotifier()):
+                    success = WHOOPPipeline._run_emergency_fallback(
+                        pipeline,
+                        "Instagram Posting",
+                        "rerun after crash",
+                    )
+
+        self.assertFalse(success)
+        self.assertEqual(len(captured_logs), 1)
+        self.assertEqual(captured_logs[0]["publish_status"], "failed")
+        self.assertEqual(captured_logs[0]["publish_mode"], "prehosted")
+        self.assertEqual(captured_logs[0]["publish_diagnostics"]["creation_id"], "creation-1")
+        self.assertEqual(
+            captured_logs[0]["publish_diagnostics"]["response"]["headers"]["debug-link"],
+            "https://debug.example/1",
+        )
 
     def test_retryable_lookup_failure_before_rescue_releases_for_retry(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
@@ -533,6 +722,111 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertEqual(log_publish_modes, ["runtime_vps_upload"])
         self.assertEqual(inserted_rows[0]["publish_mode"], "runtime_vps_upload")
 
+    def test_emergency_fallback_keeps_prehosted_publish_when_video_kind_is_explicit(self):
+        inserted_rows = []
+        log_publish_modes = []
+
+        fake_fallback_module = types.ModuleType("emergency_fallback_manager")
+
+        class _FakeFallbackUnavailableError(RuntimeError):
+            pass
+
+        class _FakeManager:
+            def load_and_validate_manifest(self):
+                return {
+                    "version": "error_404_v1",
+                    "title": "ERROR 404",
+                    "scene_description": "fallback scene",
+                }
+
+            def verify_integrity(self):
+                return True
+
+            def copy_to_run_output(self, output_dir):
+                mp4_path = output_dir / "card_final.mp4"
+                png_path = output_dir / "card_final.png"
+                mp4_path.write_bytes(b"video")
+                png_path.write_bytes(b"image")
+                return {"mp4_path": mp4_path, "png_path": png_path}
+
+            def get_publish_strategy(self):
+                return {
+                    "mode": "prehosted",
+                    "video_url": "https://prehosted.example/video.mp4",
+                    "thumb_url": "https://prehosted.example/thumb.png",
+                }
+
+            def build_fallback_caption(self, run_date):
+                return f"caption {run_date}"
+
+            def write_emergency_log(self, output_dir, **kwargs):
+                log_publish_modes.append(kwargs["publish_mode"])
+                return output_dir / "emergency_fallback_used.json"
+
+        fake_fallback_module.EmergencyFallbackManager = _FakeManager
+        fake_fallback_module.FallbackUnavailableError = _FakeFallbackUnavailableError
+
+        fake_db_module = types.ModuleType("database_manager")
+
+        class _FakeCardDatabase:
+            def insert_fallback_post(self, payload):
+                inserted_rows.append(payload)
+
+        fake_db_module.CardDatabase = _FakeCardDatabase
+
+        def make_response(status_code, content_type, body=b"binary-data"):
+            response = Mock()
+            response.status_code = status_code
+            response.headers = {"Content-Type": content_type}
+            response.iter_content.side_effect = lambda chunk_size=1: iter([body])
+            response.close = Mock()
+            return response
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir)
+            pipeline.run_date = "2026-03-08"
+            pipeline.output_dir = output_dir
+            pipeline.daily_run = _FakeDailyRun()
+            pipeline.asset_source = "auto_api"
+            pipeline.in_emergency_fallback = False
+            pipeline._last_emergency_fallback_error = None
+            pipeline._last_emergency_fallback_details = None
+            pipeline._last_emergency_fallback_classification = None
+            pipeline._active_emergency_fallback_version = None
+            pipeline._active_emergency_fallback_publish_mode = None
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+            pipeline._ensure_owner_runtime_dirs = lambda: output_dir.mkdir(parents=True, exist_ok=True)
+            pipeline.step_12_upload_vps = lambda *args, **kwargs: self.fail("runtime upload should not run")
+            pipeline.step_14_post_instagram = lambda *args, **kwargs: {
+                "already_posted": False,
+                "post_id": "123",
+                "permalink": "https://instagram.example/p/123",
+                "mock": False,
+            }
+
+            with patch.dict(
+                sys.modules,
+                {
+                    "emergency_fallback_manager": fake_fallback_module,
+                    "database_manager": fake_db_module,
+                },
+            ):
+                with patch("pipeline.requests.get", side_effect=[
+                    make_response(200, "video/mp4", b"video"),
+                    make_response(200, "image/png", b"image"),
+                ]):
+                    with patch("pipeline.get_notifier", return_value=_FakeNotifier()):
+                        success = WHOOPPipeline._run_emergency_fallback(
+                            pipeline,
+                            "Image Generation",
+                            "image generation failed",
+                        )
+
+        self.assertTrue(success)
+        self.assertEqual(log_publish_modes, ["prehosted"])
+        self.assertEqual(inserted_rows[0]["publish_mode"], "prehosted")
+
     def test_emergency_fallback_already_posted_still_writes_log_and_db(self):
         inserted_rows = []
         emergency_logs = []
@@ -651,7 +945,11 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
             def create_media_container(self, video_url, thumb_url, caption):
                 raise RuntimeError("publish broke")
 
+        class _FakeDiagnosticsError(RuntimeError):
+            pass
+
         fake_poster_module.InstagramPoster = _BrokenPoster
+        fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
 
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.daily_run = _FakeDailyRun()
@@ -661,6 +959,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline.run_date = "2026-03-08"
         pipeline._active_emergency_fallback_version = "error_404_v1"
         pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._ensure_public_urls_reachable = lambda media_urls: True
         pipeline._mark_posted_terminal_success = lambda **kwargs: self.fail("should not mark posted on publish failure")
 
         with patch.dict(
@@ -670,7 +969,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                 "instagram_poster": fake_poster_module,
             },
         ):
-            with self.assertRaises(RuntimeError) as ctx:
+            with self.assertRaises(PipelineStageError) as ctx:
                 WHOOPPipeline.step_14_post_instagram(
                     pipeline,
                     "https://example.com/video.mp4",
@@ -679,7 +978,137 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                     fallback_eligible_on_publish_failure=False,
                 )
 
-        self.assertEqual(str(ctx.exception), "publish broke")
+        self.assertEqual(ctx.exception.stage, "Instagram Posting")
+        self.assertIn("publish broke", ctx.exception.message)
+
+    def test_step_14_poll_timeout_raises_stage_error(self):
+        fake_token_module = types.ModuleType("instagram_token_manager")
+
+        class _HealthyTokenManager:
+            def get_valid_token(self):
+                return "token"
+
+            def get_user_id(self):
+                return "123"
+
+        fake_token_module.get_instagram_token_manager = lambda: _HealthyTokenManager()
+
+        fake_poster_module = types.ModuleType("instagram_poster")
+
+        class _FakeDiagnosticsError(RuntimeError):
+            def __init__(self, phase, message, diagnostics):
+                self.phase = phase
+                self.diagnostics = diagnostics
+                super().__init__(message)
+
+            def details_tail(self, limit=4000):
+                return json.dumps(self.diagnostics)
+
+        class _Poster:
+            def __init__(self, access_token, user_id):
+                self.access_token = access_token
+                self.user_id = user_id
+                self.diagnostics_output_dir = None
+                self.run_date = None
+
+            def create_media_container(self, video_url, thumb_url, caption):
+                return "creation-1"
+
+            def poll_processing_status(self, creation_id):
+                return False
+
+            def build_processing_timeout_error(self, creation_id):
+                return _FakeDiagnosticsError(
+                    "poll_processing",
+                    f"Instagram processing timed out before FINISHED for creation_id={creation_id}",
+                    {
+                        "phase": "poll_processing",
+                        "creation_id": creation_id,
+                        "terminal_status_code": "TIMEOUT",
+                    },
+                )
+
+        fake_poster_module.InstagramPoster = _Poster
+        fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.daily_run = _FakeDailyRun()
+        pipeline.post_to_instagram = True
+        pipeline.in_emergency_fallback = False
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline.run_date = "2026-03-08"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._ensure_public_urls_reachable = lambda media_urls: True
+        pipeline._mark_posted_terminal_success = lambda **kwargs: self.fail("should not mark posted on timeout")
+
+        with patch.dict(
+            sys.modules,
+            {
+                "instagram_token_manager": fake_token_module,
+                "instagram_poster": fake_poster_module,
+            },
+        ):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline.step_14_post_instagram(
+                    pipeline,
+                    "https://example.com/video.mp4",
+                    "https://example.com/thumb.png",
+                    "caption",
+                )
+
+        self.assertEqual(ctx.exception.stage, "Instagram Posting")
+        self.assertEqual(ctx.exception.details_obj["terminal_status_code"], "TIMEOUT")
+
+    def test_post_failure_during_run_does_not_archive_as_dry_run(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.base_dir = PROJECT_ROOT
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline.run_date = "2026-03-08"
+        pipeline.post_to_instagram = True
+        pipeline.mode = "automatic"
+        pipeline.media_mode = "live_vps"
+        pipeline.run_token = "token123"
+        pipeline.asset_source = "auto_api"
+        pipeline.daily_run = _FakeDailyRun()
+        pipeline._claim_daily_run_or_exit = lambda: None
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._start_heartbeat_thread = lambda: None
+        pipeline._stop_heartbeat_thread = lambda: None
+        pipeline._ensure_owner_runtime_dirs = lambda: None
+        pipeline._cleanup_non_authoritative_daily_state = lambda: None
+        pipeline._handle_runtime_stage_error = lambda exc: (_ for _ in ()).throw(exc)
+        pipeline.step_1_validate = lambda: None
+        pipeline.step_1b_validate_instagram_token = lambda: None
+        pipeline.step_2_3_lookups = lambda: {"date": "2026-03-08"}
+        pipeline.step_4_6_prompts = lambda: None
+        metadata = {"title": "Test"}
+        image_json = {"ok": True}
+        pipeline._load_required_json = lambda path, label: image_json if label == "image_prompt.json" else metadata
+        pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
+        pipeline.step_7_generate_image = lambda image_json: PROJECT_ROOT / "tmp-art.png"
+        pipeline.step_9_generate_video = lambda art, prompt_path: PROJECT_ROOT / "tmp-video.mp4"
+        pipeline.step_10a_render_image = lambda *args, **kwargs: PROJECT_ROOT / "tmp-card.png"
+        pipeline.step_10b_render_video = lambda *args, **kwargs: PROJECT_ROOT / "tmp-card.mp4"
+        pipeline.step_12_upload_vps = lambda *args, **kwargs: (
+            "https://example.com/video.mp4",
+            "https://example.com/thumb.png",
+        )
+        pipeline._build_caption_or_raise = lambda metadata, daily_data: "caption"
+        pipeline.step_14_post_instagram = lambda *args, **kwargs: (_ for _ in ()).throw(
+            PipelineStageError(
+                stage="Instagram Posting",
+                message="publish timeout",
+                details="publish timeout",
+                fallback_eligible=True,
+            )
+        )
+        pipeline.step_15_archive = lambda *args, **kwargs: self.fail("archive should not run after publish failure")
+
+        with patch("pipeline._setup_global_exception_handler", lambda instance: None):
+            with self.assertRaises(PipelineStageError) as ctx:
+                pipeline.run()
+
+        self.assertEqual(ctx.exception.stage, "Instagram Posting")
 
     def test_unexpected_lookup_exit_code_is_not_fallback_eligible(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)

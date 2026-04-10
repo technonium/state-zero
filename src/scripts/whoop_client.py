@@ -1,5 +1,6 @@
 import logging
 from datetime import date, datetime, time, timedelta, timezone
+import math
 from zoneinfo import ZoneInfo
 import httpx
 from whoop_token_manager import WHOOPTokenManager, WhoopReauthRequired
@@ -11,6 +12,12 @@ class WhoopAPIError(Exception):
         self.status_code = status_code
         self.message = message
         super().__init__(f"WHOOP API Error ({status_code}): {message}")
+
+
+class WhoopDailyDataPendingError(WhoopAPIError):
+    def __init__(self, reason: str, message: str):
+        self.reason = reason
+        super().__init__(404, message)
 
 class WHOOPClient:
     def __init__(self):
@@ -83,20 +90,74 @@ class WHOOPClient:
         response = await self.get("/v2/cycle", params)
         return response.get("records", [])
 
-    async def get_yesterday_cycle(self, target_date: datetime = None) -> dict:
+    @staticmethod
+    def _has_valid_strain_score(cycle: dict) -> bool:
+        score = cycle.get("score", {}) if isinstance(cycle, dict) else {}
+        raw = score.get("strain") if isinstance(score, dict) else None
+        if raw is None:
+            return False
+        try:
+            strain = float(raw)
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(strain)
+
+    @staticmethod
+    def _cycle_sort_id(cycle: dict) -> int:
+        try:
+            return int(cycle.get("id"))
+        except (TypeError, ValueError):
+            return -1
+
+    async def get_prior_completed_strain_cycle(self, target_date: datetime = None, sleep_data: dict | None = None) -> dict:
         """
-        Get cycle for strain attribution:
-        for local target day D, use cycle with start_ist == D-1.
+        Get strain attribution cycle for local target day D.
+
+        We define "yesterday's strain" as the most recent completed, scored cycle
+        that ended at or before the primary sleep start for the sleep ending on D.
         """
         day = (target_date.date() if isinstance(target_date, datetime) else target_date) or datetime.now(self.local_tz).date()
+        sleep = sleep_data or await self.get_last_sleep(target_date)
+        sleep_start = self._parse_iso_utc(sleep.get("start"))
+        if not sleep_start:
+            raise WhoopDailyDataPendingError("primary_sleep_start_missing", f"Primary sleep start missing for {day} IST")
+
         cycles = await self._get_cycles_window(day)
-        target_start_day = day - timedelta(days=1)
-        candidates = [c for c in cycles if self._to_ist_date(c.get("start")) == target_start_day]
+        candidates = []
+        for cycle in cycles:
+            end_dt = self._parse_iso_utc(cycle.get("end"))
+            if not end_dt or end_dt > sleep_start:
+                continue
+
+            score_state = str(cycle.get("score_state") or "").strip().upper()
+            if score_state != "SCORED":
+                continue
+
+            if not self._has_valid_strain_score(cycle):
+                continue
+
+            updated_dt = self._parse_iso_utc(cycle.get("updated_at")) or datetime.min.replace(tzinfo=timezone.utc)
+            candidates.append((cycle, end_dt, updated_dt))
+
         if not candidates:
-            raise WhoopAPIError(404, f"No strain cycle found with start date {target_start_day} IST")
-        # Pick the latest cycle that started on D-1 IST.
-        candidates.sort(key=lambda c: self._parse_iso_utc(c.get("start")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        return candidates[0]
+            raise WhoopDailyDataPendingError(
+                "completed_pre_sleep_cycle_missing",
+                f"No completed strain cycle found before primary sleep start for {day} IST",
+            )
+
+        candidates.sort(
+            key=lambda item: (
+                item[1],
+                item[2],
+                self._cycle_sort_id(item[0]),
+            ),
+            reverse=True,
+        )
+        return candidates[0][0]
+
+    async def get_yesterday_cycle(self, target_date: datetime = None) -> dict:
+        """Compatibility shim for older callers expecting the previous helper name."""
+        return await self.get_prior_completed_strain_cycle(target_date)
 
     async def get_today_recovery(self, target_date: datetime = None) -> dict:
         """
@@ -106,7 +167,7 @@ class WHOOPClient:
         day = (target_date.date() if isinstance(target_date, datetime) else target_date) or datetime.now(self.local_tz).date()
         cycles = await self._get_cycles_window(day)
         if not cycles:
-            raise WhoopAPIError(404, f"No cycle data around {day} for recovery lookup")
+            raise WhoopDailyDataPendingError("recovery_cycle_window_empty", f"No cycle data around {day} for recovery lookup")
 
         matches: list[tuple[dict, datetime]] = []
         for cycle in cycles:
@@ -126,7 +187,7 @@ class WHOOPClient:
                     matches.append((recovery, updated_dt))
 
         if not matches:
-            raise WhoopAPIError(404, f"No recovery entry found for {day} IST")
+            raise WhoopDailyDataPendingError("recovery_missing", f"No recovery entry found for {day} IST")
 
         matches.sort(key=lambda t: t[1], reverse=True)
         return matches[0][0]
@@ -149,6 +210,6 @@ class WHOOPClient:
         primary_sleeps = [s for s in records if not s.get("nap", False)]
         matches = [s for s in primary_sleeps if self._to_ist_date(s.get("end")) == day]
         if not matches:
-            raise WhoopAPIError(404, f"No primary sleep found ending on {day} IST")
+            raise WhoopDailyDataPendingError("primary_sleep_missing", f"No primary sleep found ending on {day} IST")
         matches.sort(key=lambda s: self._parse_iso_utc(s.get("end")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         return matches[0]
