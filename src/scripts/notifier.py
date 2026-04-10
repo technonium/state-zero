@@ -21,11 +21,10 @@ from pathlib import Path
 from typing import Optional
 
 import requests
-from dotenv import load_dotenv
 from zoneinfo import ZoneInfo
-from utils import get_project_root
+from utils import load_project_dotenv
 
-load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
+load_project_dotenv()
 
 # Configure local logging as fallback
 LOCAL_LOG = logging.getLogger("notifier")

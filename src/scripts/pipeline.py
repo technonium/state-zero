@@ -15,7 +15,6 @@ from zoneinfo import ZoneInfo
 
 import requests
 from colorama import Fore, Style, init
-from dotenv import load_dotenv
 from PIL import Image
 
 from utils import (
@@ -27,12 +26,14 @@ from utils import (
     env_bool,
     ensure_path,
     get_pipeline_run_date_str,
+    get_live_vps_config_error,
+    load_project_dotenv,
 )
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
 from daily_run_state import DailyRunStateManager, OwnershipLostError
 
-load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
+load_project_dotenv()
 init()
 
 
@@ -1795,6 +1796,14 @@ class WHOOPPipeline:
                 ssh_host = (os.getenv('VPS_SSH_HOST') or '').strip()
                 ssh_user = (os.getenv('VPS_SSH_USER') or '').strip()
                 ssh_path = (os.getenv('VPS_SSH_PATH') or '').strip()
+                live_vps_config_error = get_live_vps_config_error()
+                if live_vps_config_error:
+                    raise PipelineStageError(
+                        stage='VPS Upload',
+                        message=live_vps_config_error,
+                        details=live_vps_config_error,
+                        fallback_eligible=True,
+                    )
                 if not (ssh_host and ssh_user and ssh_path):
                     raise PipelineStageError(
                         stage='VPS Upload',

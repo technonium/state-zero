@@ -4,7 +4,6 @@ import yaml
 from datetime import date as date_cls
 from pathlib import Path
 from colorama import init, Fore, Style
-from dotenv import load_dotenv
 from utils import (
     get_project_root,
     get_astrology_root,
@@ -18,10 +17,12 @@ from utils import (
     env_bool,
     ensure_dir,
     ensure_path,
+    get_live_vps_config_error,
+    load_project_dotenv,
 )
 
-# Load .env
-load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
+# Load .env as fallback only; real process env wins in production.
+load_project_dotenv()
 
 # Initialize colorama for cross-platform colored output
 init()
@@ -181,6 +182,11 @@ def validate_environment():
         for var in missing_vars:
             print(f"   - {var}")
         print_info("Tip: If running dry-run, set PIPELINE_POST_TO_INSTAGRAM=false")
+        sys.exit(1)
+
+    live_vps_config_error = get_live_vps_config_error()
+    if live_vps_config_error:
+        print_error(live_vps_config_error)
         sys.exit(1)
 
     if post_to_instagram and env_bool("EMERGENCY_FALLBACK_ENABLED", default=False):

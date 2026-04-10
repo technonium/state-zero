@@ -4,7 +4,6 @@ import json
 import argparse
 import re
 from pathlib import Path
-from dotenv import load_dotenv
 from database_manager import CardDatabase
 from creature_utils import (
     format_creature_output,
@@ -26,9 +25,9 @@ from title_utils import (
     normalize_title,
     structural_title_key,
 )
-from utils import env_bool, get_project_root, get_output_root
+from utils import env_bool, get_output_root, load_project_dotenv
 
-load_dotenv(dotenv_path=get_project_root() / '.env', override=True)
+load_project_dotenv()
 
 # Import OpenRouter client for LLM calls
 from openrouter_client import (
