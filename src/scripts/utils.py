@@ -1,4 +1,6 @@
 import os
+import posixpath
+from ipaddress import ip_address
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,6 +12,20 @@ VALID_MEDIA_MODES = ("local_test", "live_vps")
 PROJECT_ROOT_SENTINELS = (".git", "requirements.txt", "Dockerfile")
 DEFAULT_PIPELINE_TIMEZONE = "Asia/Kolkata"
 LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
+LOCALISH_HOST_ALIASES = {
+    "host.docker.internal",
+    "gateway.docker.internal",
+    "docker.for.mac.localhost",
+    "docker.for.win.localhost",
+}
+LOCAL_PATH_PREFIXES = (
+    "/users/",
+    "/home/",
+    "/tmp/",
+    "/var/tmp/",
+    "/private/tmp/",
+    "/run/user/",
+)
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -149,7 +165,26 @@ def load_project_dotenv(*, override: bool = False) -> bool:
 
 
 def is_localhost_host(host: str | None) -> bool:
-    return (host or "").strip().lower() in LOCALHOST_HOSTS
+    normalized = (host or "").strip().lower()
+    if normalized in LOCALHOST_HOSTS or normalized in LOCALISH_HOST_ALIASES:
+        return True
+    try:
+        parsed = ip_address(normalized)
+    except ValueError:
+        return normalized.startswith("localhost.")
+    return parsed.is_loopback
+
+
+def is_invalid_live_vps_path(path: str | None) -> bool:
+    normalized = (path or "").strip().replace("\\", "/")
+    if not normalized:
+        return False
+    if not posixpath.isabs(normalized):
+        return True
+    lowered = normalized.lower()
+    if lowered in {"/tmp", "/var/tmp", "/private/tmp"}:
+        return True
+    return lowered.startswith(LOCAL_PATH_PREFIXES)
 
 
 def get_live_vps_config_error() -> str | None:
@@ -171,10 +206,10 @@ def get_live_vps_config_error() -> str | None:
         )
 
     normalized_path = ssh_path.replace("\\", "/")
-    if normalized_path.startswith("/Users/"):
+    if is_invalid_live_vps_path(normalized_path):
         return (
-            "Invalid live_vps configuration: VPS_SSH_PATH points at a local macOS path. "
-            "Production live_vps uploads must target the remote VPS media directory."
+            "Invalid live_vps configuration: VPS_SSH_PATH must be an absolute remote server path, "
+            "not a local user/scratch/relative path."
         )
 
     return None
