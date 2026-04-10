@@ -25,7 +25,7 @@ from title_utils import (
     normalize_title,
     structural_title_key,
 )
-from utils import env_bool, get_output_root, load_project_dotenv
+from utils import env_bool, get_output_root, get_project_root, load_project_dotenv
 
 load_project_dotenv()
 

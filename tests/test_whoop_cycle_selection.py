@@ -23,7 +23,11 @@ class WhoopCycleSelectionTests(unittest.IsolatedAsyncioTestCase):
         async def _fake_cycles_window(_day):
             return cycles
 
+        async def _fake_fetch_cycles(_start_local, _end_local, _limit):
+            return cycles
+
         client._get_cycles_window = _fake_cycles_window
+        client._fetch_cycles = _fake_fetch_cycles
         return client
 
     async def test_selects_completed_cycle_before_sleep_start_over_newer_in_progress_cycle(self):
@@ -145,6 +149,49 @@ class WhoopCycleSelectionTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ctx.exception.status_code, 404)
         self.assertIn("No completed strain cycle found before primary sleep start", ctx.exception.message)
+
+    async def test_expands_cycle_search_beyond_initial_window_when_needed(self):
+        client = WHOOPClient.__new__(WHOOPClient)
+        client.local_tz = ZoneInfo("Asia/Kolkata")
+
+        initial_cycles = [
+            {
+                "id": 1422135324,
+                "start": "2026-04-09T19:32:00Z",
+                "end": None,
+                "updated_at": "2026-04-10T03:42:28Z",
+                "score_state": "SCORED",
+                "score": {"strain": 4.024952},
+            }
+        ]
+        expanded_cycles = [
+            {
+                "id": 1419977379,
+                "start": "2026-04-06T17:02:00Z",
+                "end": "2026-04-09T19:32:00Z",
+                "updated_at": "2026-04-10T03:42:28Z",
+                "score_state": "SCORED",
+                "score": {"strain": 11.703202},
+            }
+        ]
+        sleep_data = {
+            "start": "2026-04-09T19:32:00Z",
+            "end": "2026-04-10T03:24:00Z",
+        }
+
+        async def _fake_cycles_window(_day):
+            return initial_cycles
+
+        async def _fake_fetch_cycles(start_local, end_local, limit):
+            return expanded_cycles
+
+        client._get_cycles_window = _fake_cycles_window
+        client._fetch_cycles = _fake_fetch_cycles
+
+        selected = await client.get_prior_completed_strain_cycle(date(2026, 4, 10), sleep_data=sleep_data)
+
+        self.assertEqual(selected["id"], 1419977379)
+        self.assertEqual(selected["score"]["strain"], 11.703202)
 
     async def test_get_yesterday_cycle_alias_delegates_to_new_selector(self):
         client = self._build_client([])

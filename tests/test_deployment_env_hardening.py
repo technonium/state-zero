@@ -68,6 +68,36 @@ class DeploymentEnvHardeningTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, 1)
 
+    def test_validate_environment_rejects_relative_live_vps_path(self):
+        env = self._base_live_vps_env()
+        env["VPS_SSH_PATH"] = "relative/upload-dir"
+
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                validate.validate_environment()
+
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_validate_environment_rejects_tmp_live_vps_path(self):
+        env = self._base_live_vps_env()
+        env["VPS_SSH_PATH"] = "/tmp/state-zero-media"
+
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                validate.validate_environment()
+
+        self.assertEqual(ctx.exception.code, 1)
+
+    def test_validate_environment_rejects_loopback_alias_in_live_vps_mode(self):
+        env = self._base_live_vps_env()
+        env["VPS_SSH_HOST"] = "127.0.0.42"
+
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                validate.validate_environment()
+
+        self.assertEqual(ctx.exception.code, 1)
+
     def test_step_12_upload_vps_rejects_invalid_live_vps_config_before_ssh(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.run_date = "2026-04-10"
@@ -92,6 +122,32 @@ class DeploymentEnvHardeningTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.stage, "VPS Upload")
         self.assertIn("VPS_SSH_HOST resolves to localhost", ctx.exception.message)
+        run_mock.assert_not_called()
+
+    def test_step_12_upload_vps_rejects_relative_live_vps_path_before_ssh(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.run_date = "2026-04-10"
+        pipeline.post_to_instagram = True
+        pipeline.media_mode = "live_vps"
+        pipeline.local_vps_dir = Path(tempfile.gettempdir()) / "state-zero-local-vps"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "card_final.mp4"
+            thumb_path = Path(tmpdir) / "card_final.png"
+            video_path.write_bytes(b"video")
+            thumb_path.write_bytes(b"thumb")
+
+            env = self._base_live_vps_env()
+            env["VPS_SSH_PATH"] = "relative/upload-dir"
+
+            with patch.dict(os.environ, env, clear=True):
+                with patch("pipeline.subprocess.run") as run_mock:
+                    with self.assertRaises(PipelineStageError) as ctx:
+                        WHOOPPipeline.step_12_upload_vps(pipeline, video_path, thumb_path)
+
+        self.assertEqual(ctx.exception.stage, "VPS Upload")
+        self.assertIn("VPS_SSH_PATH must be an absolute remote server path", ctx.exception.message)
         run_mock.assert_not_called()
 
     def test_dockerignore_excludes_env_file(self):
