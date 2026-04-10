@@ -18,7 +18,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from database_manager import CardDatabase
-from instagram_poster import InstagramPoster
+from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError
 
 
 class SafeRuntimeHardeningTests(unittest.TestCase):
@@ -64,6 +64,53 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
 
         self.assertEqual(permalink, "https://instagram.com/p/example")
         self.assertEqual(get_mock.call_args.kwargs["timeout"], (10, 60))
+
+    def test_create_media_container_failure_writes_diagnostics_artifact(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        response = Mock()
+        response.status_code = 400
+        response.headers = {"debug-link": "https://debug.example/create"}
+        response.json.return_value = {
+            "error": {
+                "message": "bad request",
+                "code": 400,
+            }
+        }
+        response.text = '{"error":{"message":"bad request","code":400}}'
+
+        with patch("instagram_poster.requests.post", return_value=response):
+            with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                poster.create_media_container(
+                    "https://example.com/video.mp4",
+                    "https://example.com/cover.png",
+                    "caption",
+                )
+
+        self.assertEqual(ctx.exception.phase, "create_container")
+        self.assertIn("Failed to create container", str(ctx.exception))
+
+        artifact_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+        self.assertTrue(artifact_path.is_file())
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["phase"], "create_container")
+        self.assertEqual(payload["context"]["video_url"], "https://example.com/video.mp4")
+        self.assertEqual(payload["context"]["cover_url"], "https://example.com/cover.png")
+        self.assertEqual(payload["response"]["http_status"], 400)
+        self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/create")
+        self.assertEqual(payload["create_container_response"]["http_status"], 400)
 
     def test_poll_processing_status_retries_transient_network_then_succeeds(self):
         poster = InstagramPoster.__new__(InstagramPoster)
@@ -132,6 +179,128 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
 
         self.assertTrue(ok)
         self.assertEqual(get_mock.call_count, 5)
+
+    def test_poll_processing_status_terminal_error_writes_diagnostics_artifact(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        error_response = Mock()
+        error_response.status_code = 200
+        error_response.headers = {
+            "debug-link": "https://debug.example/poll",
+            "x-fb-request-id": "req-123",
+        }
+        error_response.json.return_value = {
+            "status_code": "ERROR",
+            "error": {
+                "code": 2207076,
+                "message": "media processing failed",
+            },
+        }
+
+        with patch("instagram_poster.requests.get", return_value=error_response):
+            with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                poster.poll_processing_status("creation-id", max_polls=1)
+
+        self.assertEqual(ctx.exception.phase, "poll_processing")
+        self.assertIn("terminal status_code=ERROR", str(ctx.exception))
+
+        artifact_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+        self.assertTrue(artifact_path.is_file())
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["phase"], "poll_processing")
+        self.assertEqual(payload["creation_id"], "creation-id")
+        self.assertEqual(payload["terminal_status_code"], "ERROR")
+        self.assertEqual(payload["error_object"]["code"], 2207076)
+        self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/poll")
+
+    def test_publish_media_terminal_error_writes_diagnostics_artifact(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        response = Mock()
+        response.status_code = 400
+        response.headers = {
+            "debug-link": "https://debug.example/publish",
+            "x-fb-request-id": "req-publish",
+        }
+        response.json.return_value = {
+            "error": {
+                "message": "publish failed",
+                "code": 190,
+            }
+        }
+
+        with patch("instagram_poster.requests.post", return_value=response):
+            with patch("instagram_poster.time.sleep", return_value=None):
+                with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                    poster.publish_media("creation-id")
+
+        self.assertEqual(ctx.exception.phase, "publish_media")
+        artifact_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+        self.assertTrue(artifact_path.is_file())
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["phase"], "publish_media")
+        self.assertEqual(payload["creation_id"], "creation-id")
+        self.assertEqual(payload["publish_response"]["http_status"], 400)
+        self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/publish")
+
+    def test_publish_media_non_json_writes_diagnostics_artifact(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        response = Mock()
+        response.status_code = 502
+        response.headers = {"debug-link": "https://debug.example/publish-non-json"}
+        response.json.side_effect = ValueError("not json")
+        response.text = "<html>bad gateway</html>"
+
+        with patch("instagram_poster.requests.post", return_value=response):
+            with patch("instagram_poster.time.sleep", return_value=None):
+                with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                    poster.publish_media("creation-id")
+
+        self.assertEqual(ctx.exception.phase, "publish_media")
+        artifact_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+        self.assertTrue(artifact_path.is_file())
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["phase"], "publish_media")
+        self.assertEqual(payload["creation_id"], "creation-id")
+        self.assertEqual(payload["response"]["http_status"], 502)
+        self.assertIn("not json", payload["parse_error"])
 
     def test_poll_processing_status_fails_after_time_budget_expires(self):
         poster = InstagramPoster.__new__(InstagramPoster)

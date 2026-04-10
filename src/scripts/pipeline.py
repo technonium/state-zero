@@ -117,11 +117,13 @@ class PipelineStageError(Exception):
         stage: str,
         message: str,
         details: str | None = None,
+        details_obj: object | None = None,
         fallback_eligible: bool = False,
     ):
         self.stage = stage
         self.message = message
         self.details = details
+        self.details_obj = details_obj
         self.fallback_eligible = fallback_eligible
         super().__init__(message)
 
@@ -490,11 +492,11 @@ class WHOOPPipeline:
 
     def _handle_retryable_lookup_not_ready(self, details_tail: str | None = None):
         self._release_retryable_lookup_failure(
-            retry_message='WHOOP recovery entry for today is not ready yet. Releasing claim for next cron retry.',
+            retry_message='WHOOP daily data for today is not ready yet. Releasing claim for next cron retry.',
             rescue_stage='WHOOP Data Unavailable',
-            rescue_message='WHOOP recovery data never arrived. Terminal rescue run triggering emergency fallback.',
+            rescue_message='WHOOP daily data never became ready. Terminal rescue run triggering emergency fallback.',
             notifier_step='WHOOPRecoveryNotReady',
-            notifier_message='WHOOP recovery not ready yet. This run was released for the next cron retry.',
+            notifier_message='WHOOP daily data not ready yet. This run was released for the next cron retry.',
             details_tail=details_tail,
         )
 
@@ -545,6 +547,52 @@ class WHOOPPipeline:
             return None
         return '\n\n'.join(parts)
 
+    def _coerce_publish_diagnostics(self, details_obj: object | None, details: str | None) -> dict | str | None:
+        if isinstance(details_obj, dict):
+            return details_obj
+        if details:
+            try:
+                parsed = json.loads(details)
+            except Exception:
+                return details
+            if isinstance(parsed, dict):
+                return parsed
+        return details
+
+    def _write_emergency_fallback_publish_failure_log(
+        self,
+        manager,
+        *,
+        trigger_stage: str,
+        reason: str,
+        publish_mode: str | None,
+        video_url: str | None,
+        thumb_url: str | None,
+        publish_diagnostics: dict | str | None,
+    ) -> None:
+        try:
+            manager.write_emergency_log(
+                self.output_dir,
+                trigger_stage=trigger_stage,
+                reason=reason,
+                publish_mode=publish_mode,
+                video_url=video_url or '',
+                thumb_url=thumb_url or '',
+                instagram_post_id=None,
+                instagram_permalink=None,
+                reused_existing_post=False,
+                publish_status='failed',
+                publish_diagnostics=publish_diagnostics,
+            )
+        except Exception as e:
+            notifier = get_notifier()
+            notifier.notify_warning(
+                run_date=self.run_date,
+                step='Emergency Fallback Archive',
+                message='Emergency fallback failed, and emergency_fallback_used.json could not be written.',
+                details_tail=str(e),
+            )
+
     def _build_subprocess_details_tail(self, result: subprocess.CompletedProcess) -> str | None:
         """
         Build stderr/stdout tail using TELEGRAM_NOTIFY_INCLUDE_STDERR_LINES.
@@ -565,6 +613,17 @@ class WHOOPPipeline:
         if not chunks:
             return None
         return '\n\n'.join(chunks)
+
+    @staticmethod
+    def _is_media_like_content_type(content_type: str, media_kind: str) -> bool:
+        normalized = (content_type or "").split(";", 1)[0].strip().lower()
+        if not normalized:
+            return False
+        if normalized in {"application/octet-stream", "binary/octet-stream"}:
+            return True
+        if media_kind == "video":
+            return normalized.startswith("video/")
+        return normalized.startswith("image/")
 
     def _set_emergency_fallback_failure(
         self,
@@ -1797,7 +1856,7 @@ class WHOOPPipeline:
         if 'mock' not in vps_base and self.post_to_instagram:
             try:
                 self._ensure_public_urls_reachable(
-                    (('video', video_url), ('thumbnail', thumb_url)),
+                    (('video', 'video', video_url), ('image', 'thumbnail', thumb_url)),
                 )
             except Exception as e:
                 raise PipelineStageError(
@@ -1811,29 +1870,43 @@ class WHOOPPipeline:
         self._set_heartbeat_context(status='STARTING', note='VPS media upload completed.', pulse=True)
         return video_url, thumb_url
 
-    def _ensure_public_urls_reachable(self, media_urls: tuple[tuple[str, str], ...]):
-        for label, url in media_urls:
+    def _ensure_public_urls_reachable(self, media_urls: tuple[tuple[str, str, str], ...]):
+        for media_kind, label, url in media_urls:
             reachable = False
             last_err = None
             for attempt in range(3):
+                response = None
                 try:
-                    head = requests.head(url, timeout=20, allow_redirects=True)
-                    if head.status_code in (405, 403):
-                        get_resp = requests.get(url, timeout=20, stream=True)
-                        get_resp.close()
-                        if get_resp.status_code < 400:
+                    response = requests.get(url, timeout=20, stream=True, allow_redirects=True)
+                    content_type = response.headers.get("Content-Type", "")
+                    if response.status_code != 200:
+                        last_err = f"HTTP {response.status_code}"
+                    else:
+                        first_chunk = next(response.iter_content(chunk_size=1), b"")
+                        if not first_chunk:
+                            last_err = "empty body"
+                        elif not self._is_media_like_content_type(content_type, media_kind):
+                            last_err = f"unexpected content-type {content_type or 'missing'}"
+                        else:
                             reachable = True
                             break
-                    elif head.status_code < 400:
-                        reachable = True
-                        break
-                    last_err = f"HTTP {head.status_code}"
                 except Exception as e:
                     last_err = str(e)
+                finally:
+                    if response is not None:
+                        response.close()
+
+                if last_err == "empty body":
+                    reason_code = f"empty_public_{label}_body"
+                elif last_err and last_err.startswith("unexpected content-type"):
+                    reason_code = f"invalid_public_{label}_content_type"
+                else:
+                    reason_code = f"unreachable_public_{label}_url"
+
                 if attempt < 2:
                     time.sleep(2)
             if not reachable:
-                raise RuntimeError(f'Public {label} URL is not reachable: {url} ({last_err})')
+                raise RuntimeError(f'{reason_code}: Public {label} URL is not reachable: {url} ({last_err})')
 
     def _run_emergency_fallback(self, trigger_stage: str, reason: str) -> bool:
         self._last_emergency_fallback_error = None
@@ -1910,7 +1983,10 @@ class WHOOPPipeline:
 
             try:
                 self._ensure_public_urls_reachable(
-                    (('fallback video', strategy['video_url']), ('fallback thumbnail', strategy['thumb_url'])),
+                    (
+                        ('video', 'fallback video', strategy['video_url']),
+                        ('image', 'fallback thumbnail', strategy['thumb_url']),
+                    ),
                 )
                 publish_mode = strategy['mode']
                 video_url = strategy['video_url']
@@ -1958,6 +2034,7 @@ class WHOOPPipeline:
                 )
             except PipelineStageError as e:
                 classification = 'instagram_token_failed' if e.stage == 'Instagram Token' else 'instagram_publish_failed'
+                publish_diagnostics = self._coerce_publish_diagnostics(e.details_obj, e.details)
                 self._set_emergency_fallback_failure(
                     classification,
                     e.message,
@@ -1965,6 +2042,15 @@ class WHOOPPipeline:
                         e.details,
                         prehosted_failure and f'[prehosted_unreachable] {prehosted_failure}',
                     ),
+                )
+                self._write_emergency_fallback_publish_failure_log(
+                    manager,
+                    trigger_stage=trigger_stage,
+                    reason=reason,
+                    publish_mode=publish_mode,
+                    video_url=video_url,
+                    thumb_url=thumb_url,
+                    publish_diagnostics=publish_diagnostics,
                 )
                 return False
             except Exception as e:
@@ -1975,6 +2061,15 @@ class WHOOPPipeline:
                         str(e),
                         prehosted_failure and f'[prehosted_unreachable] {prehosted_failure}',
                     ),
+                )
+                self._write_emergency_fallback_publish_failure_log(
+                    manager,
+                    trigger_stage=trigger_stage,
+                    reason=reason,
+                    publish_mode=publish_mode,
+                    video_url=video_url,
+                    thumb_url=thumb_url,
+                    publish_diagnostics=str(e),
                 )
                 return False
 
@@ -2111,63 +2206,93 @@ class WHOOPPipeline:
 
         print(f"{Fore.CYAN}▶ Posting to Instagram (Real)...{Style.RESET_ALL}")
         self._set_heartbeat_context(status='POSTING', note='Posting media to Instagram.', pulse=True)
-        from instagram_poster import InstagramPoster
+        from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError
+
+        try:
+            self._ensure_public_urls_reachable(
+                (('video', 'video', video_url), ('image', 'thumb', thumb_url)),
+            )
+        except Exception as e:
+            if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
+                raise PipelineStageError(
+                    stage='Instagram Media Preflight',
+                    message=str(e),
+                    details=str(e),
+                    fallback_eligible=True,
+                ) from e
+            raise PipelineStageError(
+                stage='Instagram Media Preflight',
+                message=str(e),
+                details=str(e),
+                fallback_eligible=False,
+            ) from e
 
         try:
             poster = InstagramPoster(access_token, user_id)
+            poster.diagnostics_output_dir = self.output_dir
+            poster.run_date = self.run_date
 
             creation_id = poster.create_media_container(video_url, thumb_url, caption)
-            if poster.poll_processing_status(creation_id):
-                post_id = poster.publish_media(creation_id)
-                
-                # Get permalink
-                permalink = poster.get_permalink(post_id)
-                
-                print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
-                success_note = (
-                    'Emergency fallback Instagram publish succeeded.'
-                    if success_notification_mode == 'fallback'
-                    else 'Instagram publish succeeded.'
+            if not poster.poll_processing_status(creation_id):
+                raise poster.build_processing_timeout_error(creation_id)
+
+            post_id = poster.publish_media(creation_id)
+
+            # Get permalink
+            permalink = poster.get_permalink(post_id)
+
+            print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
+            success_note = (
+                'Emergency fallback Instagram publish succeeded.'
+                if success_notification_mode == 'fallback'
+                else 'Instagram publish succeeded.'
+            )
+            self._mark_posted_terminal_success(
+                post_id=post_id,
+                permalink=permalink,
+                note=success_note,
+            )
+
+            # Send success notification with MP4 and permalink
+            final_mp4 = self.output_dir / 'card_final.mp4'
+            notifier = get_notifier()
+            if success_notification_mode == 'fallback':
+                notifier.notify_emergency_fallback_posted(
+                    run_date=self.run_date,
+                    final_mp4_path=final_mp4,
+                    instagram_permalink=permalink or 'Permalink unavailable',
+                    fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
                 )
-                self._mark_posted_terminal_success(
-                    post_id=post_id,
-                    permalink=permalink,
-                    note=success_note,
+            else:
+                notifier.notify_success_posted(
+                    run_date=self.run_date,
+                    final_mp4_path=final_mp4,
+                    instagram_permalink=permalink or 'Permalink unavailable'
                 )
-                
-                # Send success notification with MP4 and permalink
-                final_mp4 = self.output_dir / 'card_final.mp4'
-                notifier = get_notifier()
-                if success_notification_mode == 'fallback':
-                    notifier.notify_emergency_fallback_posted(
-                        run_date=self.run_date,
-                        final_mp4_path=final_mp4,
-                        instagram_permalink=permalink or 'Permalink unavailable',
-                        fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
-                    )
-                else:
-                    notifier.notify_success_posted(
-                        run_date=self.run_date,
-                        final_mp4_path=final_mp4,
-                        instagram_permalink=permalink or 'Permalink unavailable'
-                    )
-                
-                # Return both post_id and permalink as dict for archive step
-                return {
-                    'already_posted': False,
-                    'post_id': post_id,
-                    'permalink': permalink,
-                    'mock': False,
-                }
-            
-            # Processing failed
+
+            # Return both post_id and permalink as dict for archive step
+            return {
+                'already_posted': False,
+                'post_id': post_id,
+                'permalink': permalink,
+                'mock': False,
+            }
+        except InstagramPublishDiagnosticsError as e:
             if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
                 raise PipelineStageError(
                     stage='Instagram Posting',
-                    message='Media processing failed on Instagram side.',
+                    message=str(e),
+                    details=e.details_tail(),
+                    details_obj=e.diagnostics,
                     fallback_eligible=True,
-                )
-            raise RuntimeError('Media processing failed on Instagram side.')
+                ) from e
+            raise PipelineStageError(
+                stage='Instagram Posting',
+                message=str(e),
+                details=e.details_tail(),
+                details_obj=e.diagnostics,
+                fallback_eligible=False,
+            ) from e
 
         except PipelineStageError:
             raise
@@ -2179,7 +2304,12 @@ class WHOOPPipeline:
                     details=str(e),
                     fallback_eligible=True,
                 ) from e
-            raise
+            raise PipelineStageError(
+                stage='Instagram Posting',
+                message=f'Instagram posting failed: {str(e)}',
+                details=str(e),
+                fallback_eligible=False,
+            ) from e
 
     def step_15_archive(
         self,

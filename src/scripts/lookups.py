@@ -9,7 +9,7 @@ import asyncio
 import logging
 import tempfile
 import httpx
-from whoop_client import WHOOPClient, WhoopAPIError
+from whoop_client import WHOOPClient, WhoopAPIError, WhoopDailyDataPendingError
 from utils import (
     get_astrology_root,
     get_output_root,
@@ -35,8 +35,15 @@ SPECIAL_ASPECT_OFFSETS = {
 }
 
 
-class WhoopRecoveryNotReady(Exception):
-    """Raised when today's WHOOP recovery entry has not landed yet."""
+class WhoopDailyDataNotReady(Exception):
+    """Raised when today's WHOOP sleep/strain/recovery data is not complete yet."""
+
+    def __init__(self, message: str, reason: str | None = None):
+        self.reason = reason
+        super().__init__(message)
+
+
+WhoopRecoveryNotReady = WhoopDailyDataNotReady
 
 
 class RetryableLookupFailure(Exception):
@@ -431,17 +438,10 @@ def get_whoop_data(target_date: date = None):
     """Fetch real WHOOP data from API. Raises on any failure — no silent fallback."""
     try:
         return asyncio.run(_fetch_whoop_data(target_date))
+    except WhoopDailyDataPendingError as e:
+        print(f"⚠ [WHOOP] Daily data still incomplete: {e.message}")
+        raise WhoopDailyDataNotReady(e.message, reason=e.reason) from e
     except WhoopAPIError as e:
-        if e.status_code == 404 and "No recovery entry found" in e.message:
-            print(f"⚠ [WHOOP] Recovery not ready yet: {e.message}")
-            raise WhoopRecoveryNotReady(e.message) from e
-        if e.status_code == 404 and (
-            "No cycle data around" in e.message
-            or "No strain cycle found" in e.message
-            or "No primary sleep found" in e.message
-        ):
-            print(f"⚠ [WHOOP] Daily data still incomplete: {e.message}")
-            raise RetryableLookupFailure(e.message) from e
         if e.status_code == 401:
             print(f"❌ [WHOOP] Auth error (401): {e.message}")
             print("   → Run ops/auth_whoop.py to get a fresh token.")
@@ -464,19 +464,19 @@ async def _fetch_whoop_data(target_date: date = None):
     client = WHOOPClient()
     
     target_dt = datetime.combine(target_date, datetime.min.time()) if target_date else None
-    
-    # Fetch yesterday's cycle (for strain)
-    cycle = await client.get_yesterday_cycle(target_dt)
-    strain = cycle.get("score", {}).get("strain", 0)
-
-    # Fetch today's recovery
-    recovery_data = await client.get_today_recovery(target_dt)
-    recovery_score = recovery_data.get("score", {}).get("recovery_score", 0)
 
     # Fetch last night's sleep
     sleep_data = await client.get_last_sleep(target_dt)
     sleep_score = sleep_data.get("score", {}).get("sleep_performance_percentage", 0)
     sleep_hours = derive_sleep_hours(sleep_data)
+
+    # Fetch the completed waking-day cycle immediately before that sleep starts.
+    cycle = await client.get_prior_completed_strain_cycle(target_dt, sleep_data=sleep_data)
+    strain = cycle.get("score", {}).get("strain", 0)
+
+    # Fetch today's recovery
+    recovery_data = await client.get_today_recovery(target_dt)
+    recovery_score = recovery_data.get("score", {}).get("recovery_score", 0)
 
     return {
         "strain": strain,              # 0-21 scale
@@ -504,7 +504,7 @@ def main():
     print(f"▶ Fetching WHOOP data for {target_date}...")
     try:
         whoop_data = get_whoop_data(target_date)
-    except WhoopRecoveryNotReady:
+    except WhoopDailyDataNotReady:
         sys.exit(LOOKUP_EXIT_WHOOP_NOT_READY)
     except RetryableLookupFailure:
         sys.exit(LOOKUP_EXIT_RETRYABLE_EXTERNAL_FAILURE)
