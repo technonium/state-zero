@@ -3,10 +3,13 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
+
 
 VALID_MEDIA_MODES = ("local_test", "live_vps")
 PROJECT_ROOT_SENTINELS = (".git", "requirements.txt", "Dockerfile")
 DEFAULT_PIPELINE_TIMEZONE = "Asia/Kolkata"
+LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 def env_bool(name: str, default: bool = False) -> bool:
@@ -138,6 +141,43 @@ def get_pipeline_run_date_str() -> str:
     if configured:
         return configured
     return get_pipeline_today().isoformat()
+
+
+def load_project_dotenv(*, override: bool = False) -> bool:
+    """Load the repo .env file without clobbering real process env by default."""
+    return load_dotenv(dotenv_path=get_project_root() / ".env", override=override)
+
+
+def is_localhost_host(host: str | None) -> bool:
+    return (host or "").strip().lower() in LOCALHOST_HOSTS
+
+
+def get_live_vps_config_error() -> str | None:
+    """
+    Return a human-readable configuration error for dangerous live_vps settings.
+
+    These guards intentionally only apply when the effective media mode is live_vps.
+    """
+    if get_media_mode() != "live_vps":
+        return None
+
+    ssh_host = (os.getenv("VPS_SSH_HOST") or "").strip()
+    ssh_path = (os.getenv("VPS_SSH_PATH") or "").strip()
+
+    if is_localhost_host(ssh_host):
+        return (
+            "Invalid live_vps configuration: VPS_SSH_HOST resolves to localhost. "
+            "Production live_vps uploads must target the real VPS host."
+        )
+
+    normalized_path = ssh_path.replace("\\", "/")
+    if normalized_path.startswith("/Users/"):
+        return (
+            "Invalid live_vps configuration: VPS_SSH_PATH points at a local macOS path. "
+            "Production live_vps uploads must target the remote VPS media directory."
+        )
+
+    return None
 
 
 def resolve_path(relative_path: str) -> Path:

@@ -7,8 +7,6 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
-from dotenv import load_dotenv
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_ROOT = PROJECT_ROOT / "src" / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
@@ -16,9 +14,9 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from instagram_token_manager import get_instagram_token_manager
 from notifier import get_notifier
-from utils import ensure_path, get_pipeline_run_date_str, get_project_root, get_state_root
+from utils import ensure_path, get_pipeline_run_date_str, get_state_root, load_project_dotenv
 
-load_dotenv(dotenv_path=get_project_root() / ".env", override=True)
+load_project_dotenv()
 
 
 def _load_state(path: Path) -> dict:

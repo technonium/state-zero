@@ -1,0 +1,15 @@
+.git
+.env
+.venv
+venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+.DS_Store
+.idea/
+.vscode/
+.playwright/
+.claude/
+.kilocode/
