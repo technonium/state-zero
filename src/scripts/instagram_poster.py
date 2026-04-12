@@ -68,7 +68,7 @@ class InstagramPoster:
         else:
             self.user_id = self.token_manager.get_user_id()
             
-        self.base_url = "https://graph.facebook.com/v21.0"
+        self.base_url = "https://graph.facebook.com/v22.0"
         self.mock_mode = not self.access_token or self.access_token == 'mock'
         self.diagnostics_output_dir: Path | None = None
         self.run_date: str | None = None
@@ -390,7 +390,7 @@ class InstagramPoster:
             time.sleep(1)
             return True
 
-        url = f"{self.base_url}/{creation_id}?fields=status_code&access_token={self.access_token}"
+        url = f"{self.base_url}/{creation_id}?fields=status_code,status,error_message&access_token={self.access_token}"
         max_duration_seconds = max_polls * self.POLL_INTERVAL_SECONDS
         deadline = time.monotonic() + max_duration_seconds
         polls = 0
@@ -453,12 +453,16 @@ class InstagramPoster:
                 return True
             elif status == 'ERROR':
                 error_data = data.get('error', {})
+                error_message_field = data.get('error_message', '')
+                status_field = data.get('status', '')
                 if error_data:
                     error_message = error_data.get('message', 'Unknown error')
                     error_code = error_data.get('code', 'N/A')
                     print(f"❌ Processing ERROR for {creation_id}: Code={error_code}, Message={error_message}")
+                elif error_message_field:
+                    print(f"❌ Processing ERROR for {creation_id}: {error_message_field}")
                 else:
-                    print(f"❌ Processing ERROR for {creation_id}")
+                    print(f"❌ Processing ERROR for {creation_id} (status={status_field})")
                 raise self._raise_diagnostics_error(
                     phase="poll_processing",
                     message=f"Instagram processing returned terminal status_code=ERROR for creation_id={creation_id}",
@@ -468,6 +472,8 @@ class InstagramPoster:
                         "terminal_status_code": status,
                         "poll_response": self._response_snapshot(response),
                         "error_object": error_data or None,
+                        "error_message": error_message_field or None,
+                        "status": status_field or None,
                     },
                 )
 
