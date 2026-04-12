@@ -390,7 +390,7 @@ class InstagramPoster:
             time.sleep(1)
             return True
 
-        url = f"{self.base_url}/{creation_id}?fields=status_code,status,error_message&access_token={self.access_token}"
+        url = f"{self.base_url}/{creation_id}?fields=status_code,status&access_token={self.access_token}"
         max_duration_seconds = max_polls * self.POLL_INTERVAL_SECONDS
         deadline = time.monotonic() + max_duration_seconds
         polls = 0
@@ -445,7 +445,26 @@ class InstagramPoster:
                         "parse_error": str(parse_error),
                     },
                 ) from parse_error
+            # Guard: if Meta returned a top-level API error instead of a status object,
+            # fail fast rather than looping on UNKNOWN (e.g. #100 OAuthException for bad fields)
+            api_error = data.get('error')
+            if api_error and 'status_code' not in data:
+                error_code = api_error.get('code', 'N/A')
+                error_msg = api_error.get('message', 'Unknown error')
+                raise self._raise_diagnostics_error(
+                    phase="poll_processing",
+                    message=f"Instagram poll request rejected for creation_id={creation_id}: Code={error_code}, {error_msg}",
+                    creation_id=creation_id,
+                    response=response,
+                    extra={
+                        "terminal_status_code": "API_ERROR",
+                        "poll_response": self._response_snapshot(response),
+                        "error_object": api_error,
+                    },
+                )
+
             status = data.get('status_code', 'UNKNOWN')
+            status_field = data.get('status', '')
             transient_errors = 0
 
             if status == 'FINISHED':
@@ -453,14 +472,10 @@ class InstagramPoster:
                 return True
             elif status == 'ERROR':
                 error_data = data.get('error', {})
-                error_message_field = data.get('error_message', '')
-                status_field = data.get('status', '')
                 if error_data:
                     error_message = error_data.get('message', 'Unknown error')
                     error_code = error_data.get('code', 'N/A')
                     print(f"❌ Processing ERROR for {creation_id}: Code={error_code}, Message={error_message}")
-                elif error_message_field:
-                    print(f"❌ Processing ERROR for {creation_id}: {error_message_field}")
                 else:
                     print(f"❌ Processing ERROR for {creation_id} (status={status_field})")
                 raise self._raise_diagnostics_error(
@@ -472,7 +487,6 @@ class InstagramPoster:
                         "terminal_status_code": status,
                         "poll_response": self._response_snapshot(response),
                         "error_object": error_data or None,
-                        "error_message": error_message_field or None,
                         "status": status_field or None,
                     },
                 )
