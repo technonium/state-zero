@@ -14,7 +14,6 @@ Generate an 8-second single-take video animation prompt. Not looping.
 - **Body Keywords:** {body_keywords}
 - **Behavioral Art Keywords:** {art_keywords}
 - **Behavioral One-liner:** {one_liner}
-- **Moon Count:** {moon_count}
 - **Blend Option:** {blend_option}
 
 ---
@@ -61,24 +60,24 @@ Use the single most characteristic motion for this environment, scaled to recove
 
 | Environment | HIGH recovery | LOW recovery |
 |---|---|---|
-| **Plasma/Nebula** | outer gas edges drift slowly apart in stellar wind; fine particles settle | a pressure wave releases from the core — gas expands outward in a visible ripple, particles scatter and resettle |
-| **Bioluminescent** | organic surfaces pulse once or twice with slow breathing light; a few spores lift upward | a discharge event — one cluster pulses rapidly in irregular bursts, light briefly overloads and dims, spores scatter |
+| **Plasma/Nebula** | outer gas edges drift slowly apart in stellar wind; fine particles drift without settling | a pressure wave releases from the core — gas expands outward in a visible ripple, particles scatter and disperse outward, holding suspended throughout |
+| **Bioluminescent** | organic surfaces pulse in slow rhythmic waves of breathing light; a few spores lift upward and hold | a discharge event — one cluster pulses rapidly in irregular bursts, light overloads and refuses to return to baseline, spores scatter and hold in suspension throughout |
 | **Stone Monuments** | near total stillness; fine dust shifts at formation bases in a barely perceptible current | a stone fragment sheds from a formation surface and falls; fine dust cascades from the impact point |
-| **Volcanic** | heat shimmer warps the air above formations; fine ash settles across stone | a fissure ruptures along the formation base — ash pours from the breach in a sustained column; a surface seam splits and widens, spilling inner glow before crust collapses over it |
-| **Lightning/Storm** | a single electrical arc traces a surface slowly; conductive rock absorbs and dims | storm intensifies — multiple arcs trace surfaces in succession; wind drives particles across the frame in lateral streams |
-| **Crystal Caves** | internal light shifts and refracts within crystal mass; a slow prismatic color rotation moves across formation surfaces | a hairline fracture spreads across one formation surface; light refracts sharply from the break point before dimming into scattered refraction |
+| **Volcanic** | heat shimmer warps the air above formations; fine ash settles across stone | a fissure ruptures along the formation base — ash billows upward from the breach in a dense sustained plume, spreading and refusing to clear for the full 8 seconds |
+| **Lightning/Storm** | a single electrical arc traces a surface slowly; conductive rock absorbs and dims | storm intensifies — a sustained arc traces and re-traces the same formation surface, wind-driven particles streaming laterally across the frame for the full duration |
+| **Crystal Caves** | internal light shifts and refracts within crystal mass; a slow prismatic color shift moves across formation surfaces | a hairline fracture spreads across one formation surface; light refracts sharply from the break point and holds in scattered refraction, the fracture state persisting throughout |
 | **Crystalline (Active)** | internal light refracts and shifts slightly within formation mass; geometry holds still | a crystal mass shears from the formation — fragments cascade from the break in a sustained fall; internal light extinguishes at the fracture and does not recover |
 | **Frozen/Ice** | near absolute stillness; frost crystallizes at one edge; light shifts slowly across ice planes | a crack propagates slowly across an ice plane; fine ice splinters fall from the fracture line |
 | **Glacial Valley** | near absolute stillness; a thin mist drifts slowly across the valley floor; light shifts faintly across polished stone | ice calves at the far edge — a mass separates and drops with visible impact; the break sends a dense ice-dust cloud rolling across the valley floor and persisting |
-| **Ocean/Underwater** | one slow caustic ripple crosses a formation surface and fades | a surge current blasts sediment from the base in a billowing cloud that expands and holds; formations obscured for the full duration as disturbed matter refuses to settle |
+| **Ocean/Underwater** | one slow caustic ripple crosses a formation surface and holds its distortion across the full frame | a surge current blasts sediment from the base in a billowing cloud that expands and holds; formations obscured for the full duration as disturbed matter refuses to settle |
 | **Forest/Jungle** | canopy breathes once; a single patch of filtered light shifts across the ground | a downpour overwhelms the canopy — foliage bows and collapses under load; filtered light extinguishes, runoff streams down every visible surface as the overhead structure fails |
-| **Cave Systems** | thin air current stirs fine particles near the base; stone formations hold in absolute stillness | water accelerates into a visible stream from an overhead stalactite formation; mineral dust sheds from the fractured overhead rock in a persistent fall, accumulating below |
-| **Desert (Calm)** | sand grains drift slowly along formation base; distant heat shimmer rises | a dust column rises from the far ground; wind-driven sand streams across formation stone in a visible lateral flow |
+| **Cave Systems** | thin air current stirs fine particles near the base; stone formations hold in absolute stillness | mineral dust sheds from fractured overhead rock in a persistent fall — a continuous stream of fine debris accumulates below and refuses to clear for the full 8 seconds |
+| **Desert (Calm)** | sand grains drift slowly along formation base; distant heat shimmer rises | a dust plume rises from the far ground and spreads — wind-driven sand streams across formation stone in a sustained lateral flow that holds throughout |
 | **Wind/Sky Realms** | a cloud layer shifts slightly at its own speed; air current moves particles through frame | a weather front passes through — cloud mass darkens and accelerates; particles driven across the frame in directional streams |
 | **Mist/Fog Realms** | fog bank thickens and holds; particulate matter suspends without settling | pressure collapses the fog density — heavy saturated air drops sharply to the ground; visibility extinguishes as the mass compresses into near-zero depth |
-| **Void/Space (Low)** | distant particle clouds drift in a slow current; stellar light holds faint and steady | a debris cascade releases from above — particles stream downward in accelerating columns, fine matter scatters across the frame and refuses to clear |
+| **Void/Space (Low)** | distant particle clouds drift in a slow current; stellar light holds faint and steady | a debris cascade releases from above — particles stream downward in accelerating diagonal drifts, fine matter scatters across the frame and refuses to clear |
 | **Desert (Intense)** | heat shimmer warps the air continuously above scorched terrain; cracked earth holds still | a surface shelf fractures and collapses — cracked earth buckles and drops; abrasive dust streams laterally in choking directional flow across the full frame |
-| **Fire Realms** | ember glow pulses in a slow steady rhythm; thin smoke drifts upward in a single thread | combustion surges — a flame front expands across stone formation surfaces; dense smoke pours across the frame and engulfs formations, residual glow only beneath the layer |
+| **Fire Realms** | ember glow pulses in a slow steady rhythm; thin smoke drifts upward in a continuous wisp | combustion surges — a flame front expands across stone formation surfaces; dense smoke pours across the frame and engulfs formations, residual glow only beneath the layer |
 
 ---
 
@@ -138,7 +137,7 @@ Write as if directing a cinematographer for a slow, contemplative 8-second take.
 
 1. Camera movement — describe what the camera does and why it feels right for this scene. Translate the weight of the behavioral one-liner and the recovery severity into how the camera moves. Do not quote keywords verbatim.
 2. Environment motion — select the motion from the environment table that matches the recovery zone: HIGH tier for HIGH recovery, LOW tier for LOW recovery, or the MID principle (unsettled ambient, same class as HIGH but more active and irregular) for MID recovery. Describe it concretely and lasting the full 8 seconds. Do not substitute generic adjectives — if recovery is LOW, describe the actual event from the table, not a vague version of the HIGH motion with different words.
-3. Atmosphere close — quality of light, celestial presence as appropriate to depth, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible through material weight, motion quality, and atmospheric texture. If depth_level is ABYSS, omit celestial presence entirely, or render it as a faint embedded impression within solid compressed material — not as a crescent in a fracture gap, not as a glowing slot above; the material fully surrounds any moon presence with no visible opening.
+3. Atmosphere close — quality of light, film grain present throughout, lens bloom on the brightest area. Recovery severity must be visible through material weight, motion quality, and atmospheric texture.
 
 **Hard rules:**
 - Camera movement is a creative choice — there is no default
@@ -166,7 +165,7 @@ Raw prompt text only. No markdown, no commentary.
 
 *Zoom in:*
 
-The camera draws slowly inward toward the colossal stone formations, the zoom so unhurried it feels more like attention settling than motion — the stillness of the environment meeting the stillness of the camera with equal weight. Fine atmospheric dust lifts from the base of the monuments and drifts past in a barely perceptible current, the only movement in an otherwise absolute silence. Two moons rest in the upper frame, their overlapping light pooling in the recessed stone geometry, film grain present throughout, lens bloom softening the brightest edge into a warm haze.
+The camera draws slowly inward toward the colossal stone formations, the zoom so unhurried it feels more like attention settling than motion — the stillness of the environment meeting the stillness of the camera with equal weight. Fine atmospheric dust lifts from the base of the monuments and drifts past in a barely perceptible current, the only movement in an otherwise absolute silence. Diffuse light pools in the recessed stone geometry, film grain present throughout, lens bloom softening the brightest edge into a warm haze.
 
 Camera: slow zoom in, fixed axis, weighted and still
 Motion: fine dust drifts past stone bases; formations static and permanent
