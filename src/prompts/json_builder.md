@@ -430,8 +430,8 @@ Fill ALL placeholders below using the input data and rules above:
     "format": "VERTICAL PORTRAIT 3:4 ASPECT RATIO",
     "foreground": "[ENVIRONMENT-SPECIFIC foreground: lava fragments / ice shards / storm mist / desert sand / etc.]",
     "midground": "[BLEND OPTION DESCRIPTION: sculptural formations with optional secondary texture based on Option A/B/C; if a fragment phrase is provided, DO NOT mention the fragment phrase {creature_fragment_phrase}]",
-    "background": "[Depth-aware background: SURFACE/MID-DEPTH/DEEP may use distance and atmospheric perspective; ABYSS: solid enclosing material pressing inward from all sides — above, behind, left, and right — no distant vista, no horizon, no cave-mouth read, no large bright zone in the upper frame; the upper portion of the image is enclosed material, not a luminous aperture]",
-    "sky": "[APPLY depth-aware celestial treatment: SURFACE=open sky with moons clearly visible; MID-DEPTH=partial sky framed by shelter; DEEP=no open sky; moon may appear as faint cold light bleeding through a lateral side crack, or omit entirely — no vertical light beam, no overhead aperture; ABYSS=no open sky, no bright aperture, no glowing slot or fracture gap above — the upper zone of the frame is solid enclosed material; a moon impression may appear only as a faint shape embedded within the solid mass itself, or omit entirely]"
+    "background": "[Depth-aware background: SURFACE/MID-DEPTH/DEEP may use distance and atmospheric perspective; ABYSS: geological mass fills the frame — weight and compression, no container geometry, no directional enclosure; no distant vista, no horizon, no cave-mouth read, no large bright zone in the upper frame]",
+    "sky": "[APPLY depth-aware celestial treatment: SURFACE=open sky with moons clearly visible; MID-DEPTH=partial sky framed by shelter; DEEP=no open sky; moon may appear as faint cold light bleeding through a lateral side crack, or omit entirely — no vertical light beam, no overhead aperture; ABYSS=no open sky, no bright aperture, no glowing slot or fracture gap above — the upper zone of the frame is solid enclosed material; omit celestial presence entirely]"
   },
 
   "lighting": {
@@ -452,7 +452,7 @@ Fill ALL placeholders below using the input data and rules above:
     "setting": "{environment} at {depth_level}",
     "terrain": "[Combine environment materials + depth manifestation, THEN apply Recovery Severity Mapping to the world's condition: intact and coherent at HIGH, worn and held together at MID, fractured/depleted/cooling/post-event at LOW. Example target logic: open glacial floor but stress-fractured, or sealed magma core cooling into split stone.]",
     "atmosphere": "[In 1-2 short phrases describe what the physical {environment} looks like carrying this state — what the viewer sees in the materials, formations, air, residue, and structural condition. Visual description only, NOT behavioral or emotional text. Recovery severity must be visible in the physical world, not just implied by mood. depth layers creating spatial separation]",
-    "celestial": "[APPLY depth-aware moon handling: SURFACE={moon_count} moons openly visible; MID-DEPTH={moon_count} moons partially framed by overhangs or cover; DEEP=moonlight may enter from a distant opening but moons need not be directly visible; ABYSS=omit entirely, or render as a faint shape impression fully embedded within solid compressed material — not within a fracture gap, not as a crescent above an opening, not as a glowing slot; the material surrounds it completely on all sides; any moon presence must read as entombed in the mass, not glimpsed through it]"
+    "celestial": "[APPLY depth-aware moon handling: SURFACE={moon_count} moons openly visible; MID-DEPTH={moon_count} moons partially framed by overhangs or cover; DEEP=moonlight may enter from a distant opening but moons need not be directly visible; ABYSS=omit entirely]"
   },
 
   "creature_integration": {
