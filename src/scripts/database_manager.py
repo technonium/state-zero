@@ -325,7 +325,7 @@ class CardDatabase:
                 FROM environment_history
                 WHERE energy_zone = ?
                   AND date < ?
-                  AND selection_stage IN ('cards_archive', 'cards_backfill')
+                  AND selection_stage IN ('cards_archive', 'cards_backfill', 'environment_selected')
                 ORDER BY date DESC
                 LIMIT ?
                 """,
@@ -353,8 +353,7 @@ class CardDatabase:
                 SELECT creature
                 FROM cards
                 WHERE date < ?
-                  AND COALESCE(instagram_post_id, '') != ''
-                  AND instagram_post_id NOT LIKE 'mock_%'
+                  AND COALESCE(instagram_post_id, '') NOT LIKE 'mock_%'
                 ORDER BY date DESC
                 LIMIT ?
                 """,
@@ -379,8 +378,7 @@ class CardDatabase:
                 SELECT title
                 FROM cards
                 WHERE date < ?
-                  AND COALESCE(instagram_post_id, '') != ''
-                  AND instagram_post_id NOT LIKE 'mock_%'
+                  AND COALESCE(instagram_post_id, '') NOT LIKE 'mock_%'
                 ORDER BY date DESC
                 LIMIT ?
                 """,
