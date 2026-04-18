@@ -7,6 +7,7 @@ import threading
 import time
 import types
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -33,6 +34,26 @@ class _FakeDailyRun:
     def current_status(self):
         status = self._state.get("status")
         return str(status).strip().upper() if status else None
+
+
+class _TrackingDailyRun(_FakeDailyRun):
+    def __init__(self, state=None):
+        super().__init__(state=state)
+        self.retryable_calls = []
+        self.fatal_calls = []
+        self.release_calls = 0
+
+    def is_owner(self):
+        return True
+
+    def mark_retryable_failure(self, **kwargs):
+        self.retryable_calls.append(kwargs)
+
+    def mark_fatal_failure(self, **kwargs):
+        self.fatal_calls.append(kwargs)
+
+    def release_claim(self):
+        self.release_calls += 1
 
 
 class _FakeNotifier:
@@ -463,6 +484,26 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertIn("Terminal rescue run", ctx.exception.message)
         self.assertEqual(stop_calls, ["stopped"])
 
+    def test_deadline_infers_terminal_rescue_for_whoop_not_ready(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        stop_calls = []
+        pipeline._stop_heartbeat_thread = lambda: stop_calls.append("stopped")
+        pipeline.deadline_dt = datetime(2026, 3, 8, 14, 0, 0)
+        pipeline._now = lambda: datetime(2026, 3, 8, 14, 0, 3)
+        pipeline.daily_run = types.SimpleNamespace(
+            mark_retryable_failure=lambda **kwargs: self.fail("should not mark retryable on inferred rescue path"),
+            release_claim=lambda: self.fail("should not release claim on inferred rescue path"),
+        )
+
+        with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false"}, clear=False):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline._handle_retryable_lookup_not_ready(pipeline, "whoop still missing")
+
+        self.assertEqual(ctx.exception.stage, "WHOOP Data Unavailable")
+        self.assertTrue(ctx.exception.fallback_eligible)
+        self.assertEqual(ctx.exception.failure_classification, "lookup_not_ready")
+        self.assertEqual(stop_calls, ["stopped"])
+
     def test_terminal_rescue_run_stops_real_heartbeat_thread_before_escalation(self):
         fail = self.fail
 
@@ -500,6 +541,79 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         time.sleep(0.05)
         self.assertIsNone(pipeline._heartbeat_thread)
         self.assertFalse(heartbeat_thread.is_alive())
+
+    def test_pre_cutoff_stage_error_releases_retryable_run(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.run_date = "2026-03-08"
+        pipeline.post_to_instagram = True
+        pipeline.in_emergency_fallback = False
+        pipeline.deadline_dt = datetime(2026, 3, 8, 14, 0, 0)
+        pipeline._now = lambda: datetime(2026, 3, 8, 13, 30, 0)
+        pipeline._stop_heartbeat_thread = lambda: None
+        pipeline.daily_run = _TrackingDailyRun()
+
+        notifications = []
+        notifier = types.SimpleNamespace(notify_warning=lambda **kwargs: notifications.append(kwargs))
+        pipeline._run_emergency_fallback = lambda *args, **kwargs: self.fail("fallback should not run before cutoff")
+
+        with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false"}, clear=False):
+            with patch("pipeline.get_notifier", return_value=notifier):
+                with self.assertRaises(SystemExit) as ctx:
+                    WHOOPPipeline._handle_runtime_stage_error(
+                        pipeline,
+                        PipelineStageError(stage="Image Generation", message="image failed", details="boom", fallback_eligible=True),
+                    )
+
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(pipeline.daily_run.release_calls, 1)
+        self.assertEqual(pipeline.daily_run.retryable_calls[0]["failure_classification"], "generation")
+        self.assertIn("next cron retry", notifications[0]["message"])
+
+    def test_validation_fallback_unavailable_fails_fatally_before_cutoff(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.base_dir = PROJECT_ROOT
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+
+        failed = subprocess.CompletedProcess(
+            args=["validate.py"],
+            returncode=1,
+            stdout="❌ Emergency fallback validation failed: Manifest not found\nEMERGENCY_FALLBACK_UNAVAILABLE: Manifest not found",
+            stderr="",
+        )
+
+        with patch("pipeline.subprocess.run", return_value=failed):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline.step_1_validate(pipeline)
+
+        self.assertFalse(ctx.exception.fallback_eligible)
+        self.assertEqual(ctx.exception.stage, "Validation")
+        self.assertEqual(ctx.exception.failure_classification, "fallback_unavailable")
+        self.assertIn("Manifest not found", ctx.exception.message)
+
+    def test_terminal_rescue_stage_error_attempts_emergency_fallback(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.run_date = "2026-03-08"
+        pipeline.post_to_instagram = True
+        pipeline.in_emergency_fallback = False
+        pipeline.deadline_dt = datetime(2026, 3, 8, 14, 0, 0)
+        pipeline._now = lambda: datetime(2026, 3, 8, 14, 5, 0)
+        pipeline.daily_run = _TrackingDailyRun()
+        pipeline._run_emergency_fallback = lambda stage, message: (stage, message) == ("Image Generation", "image failed")
+
+        notifier_calls = []
+        notifier = types.SimpleNamespace(notify_warning=lambda **kwargs: notifier_calls.append(kwargs))
+
+        with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
+            with patch("pipeline.get_notifier", return_value=notifier):
+                success = WHOOPPipeline._handle_runtime_stage_error(
+                    pipeline,
+                    PipelineStageError(stage="Image Generation", message="image failed", details="boom", fallback_eligible=True),
+                )
+
+        self.assertTrue(success)
+        self.assertEqual(len(pipeline.daily_run.retryable_calls), 0)
+        self.assertEqual(notifier_calls[0]["step"], "Image Generation")
 
     def test_caption_build_failure_is_fallback_eligible(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
@@ -592,6 +706,28 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
             },
         )
 
+    def test_instagram_token_preflight_failure_raises_pipeline_stage_error(self):
+        fake_module = types.ModuleType("instagram_token_manager")
+
+        class _BrokenTokenManager:
+            def get_valid_token(self):
+                raise RuntimeError("preflight broke")
+
+            def get_user_id(self):
+                return "123"
+
+        fake_module.get_instagram_token_manager = lambda: _BrokenTokenManager()
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+
+        with patch.dict(sys.modules, {"instagram_token_manager": fake_module}):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline.step_1b_validate_instagram_token(pipeline)
+
+        self.assertEqual(ctx.exception.stage, "Instagram Token Preflight")
+        self.assertEqual(ctx.exception.failure_classification, "instagram_main_post")
+
     def test_instagram_token_failure_raises_in_emergency_fallback(self):
         fake_module = types.ModuleType("instagram_token_manager")
 
@@ -621,6 +757,35 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.stage, "Instagram Token")
         self.assertIn("emergency fallback", ctx.exception.message.lower())
+
+    def test_instagram_token_failure_raises_pipeline_stage_error_on_main_path(self):
+        fake_module = types.ModuleType("instagram_token_manager")
+
+        class _BrokenTokenManager:
+            def get_valid_token(self):
+                raise RuntimeError("token fetch broke")
+
+            def get_user_id(self):
+                return "123"
+
+        fake_module.get_instagram_token_manager = lambda: _BrokenTokenManager()
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.daily_run = _FakeDailyRun()
+        pipeline.post_to_instagram = True
+        pipeline.in_emergency_fallback = False
+
+        with patch.dict(sys.modules, {"instagram_token_manager": fake_module}):
+            with self.assertRaises(PipelineStageError) as ctx:
+                WHOOPPipeline.step_14_post_instagram(
+                    pipeline,
+                    "https://example.com/video.mp4",
+                    "https://example.com/thumb.png",
+                    "caption",
+                )
+
+        self.assertEqual(ctx.exception.stage, "Instagram Token")
+        self.assertEqual(ctx.exception.failure_classification, "instagram_main_post")
 
     def test_emergency_fallback_uses_runtime_upload_when_prehosted_urls_unreachable(self):
         inserted_rows = []

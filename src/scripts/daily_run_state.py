@@ -101,16 +101,32 @@ class DailyRunStateManager:
     def update_status(self, *, status: str, note: str | None = None, extra: dict | None = None) -> dict:
         return self._update_state(status=status, note=note, extra=extra, touch_heartbeat=True)
 
-    def mark_retryable_failure(self, *, step: str, message: str, details_tail: str | None = None):
+    def mark_retryable_failure(
+        self,
+        *,
+        step: str,
+        message: str,
+        details_tail: str | None = None,
+        failure_classification: str | None = None,
+    ):
         extra = {
             "last_error_step": step,
             "last_error_message": message,
             "last_error_details_tail": details_tail,
             "retryable": True,
         }
+        if failure_classification:
+            extra["failure_classification"] = failure_classification
         self._update_state(status="FAILED_RETRYABLE", note=message, extra=extra, touch_heartbeat=True)
 
-    def mark_fatal_failure(self, *, step: str, message: str, details_tail: str | None = None):
+    def mark_fatal_failure(
+        self,
+        *,
+        step: str,
+        message: str,
+        details_tail: str | None = None,
+        failure_classification: str | None = None,
+    ):
         state = self.load_state() or {}
         if str(state.get("status") or "").strip().upper() == "POSTED":
             return
@@ -121,6 +137,8 @@ class DailyRunStateManager:
             "last_error_details_tail": details_tail,
             "retryable": False,
         }
+        if failure_classification:
+            extra["failure_classification"] = failure_classification
         self._update_state(status="FAILED_FATAL", note=message, extra=extra, touch_heartbeat=True)
 
     def mark_posted(

@@ -1,7 +1,7 @@
 import os
 import posixpath
 from ipaddress import ip_address
-from datetime import datetime
+from datetime import date as date_cls, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -157,6 +157,74 @@ def get_pipeline_run_date_str() -> str:
     if configured:
         return configured
     return get_pipeline_today().isoformat()
+
+
+def _coerce_pipeline_now(now: datetime | None = None) -> datetime:
+    tz = get_pipeline_timezone()
+    if now is None:
+        return datetime.now(tz)
+    if now.tzinfo is None:
+        return now.replace(tzinfo=tz)
+    return now.astimezone(tz)
+
+
+def get_pipeline_deadline(now: datetime | None = None) -> tuple[datetime, str]:
+    current_time = _coerce_pipeline_now(now)
+    effective_deadline = (os.getenv("PIPELINE_EFFECTIVE_DEADLINE_ISO") or "").strip()
+    if effective_deadline:
+        parsed_deadline = datetime.fromisoformat(effective_deadline)
+        if parsed_deadline.tzinfo is None:
+            parsed_deadline = parsed_deadline.replace(tzinfo=current_time.tzinfo)
+        else:
+            parsed_deadline = parsed_deadline.astimezone(current_time.tzinfo)
+        reason = (os.getenv("PIPELINE_EFFECTIVE_DEADLINE_REASON") or "effective_deadline_override").strip()
+        return parsed_deadline, reason
+
+    deadline_mode = (os.getenv("PIPELINE_MANUAL_DEADLINE_MODE") or "run_date").strip().lower()
+
+    if deadline_mode == "from_now":
+        try:
+            minutes = int((os.getenv("PIPELINE_MANUAL_WINDOW_MINUTES") or "120").strip())
+        except ValueError:
+            minutes = 120
+        minutes = max(1, minutes)
+        return current_time + timedelta(minutes=minutes), f"from_now(+{minutes}m)"
+
+    configured_run_date = (os.getenv("PIPELINE_DATE") or "").strip()
+    if configured_run_date:
+        try:
+            run_day = date_cls.fromisoformat(configured_run_date)
+        except ValueError:
+            run_day = current_time.date()
+    else:
+        run_day = current_time.date()
+
+    deadline_raw = (os.getenv("PIPELINE_MANUAL_DEADLINE_LOCAL") or "14:00").strip() or "14:00"
+    try:
+        hour_str, minute_str = deadline_raw.split(":", 1)
+        hour = int(hour_str)
+        minute = int(minute_str)
+    except Exception:
+        deadline_raw = "14:00"
+        hour = 14
+        minute = 0
+
+    deadline = datetime(run_day.year, run_day.month, run_day.day, hour, minute, tzinfo=current_time.tzinfo)
+    return deadline, f"run_date({deadline_raw})"
+
+
+def is_terminal_rescue_run(now: datetime | None = None, *, deadline: datetime | None = None) -> bool:
+    if env_bool("PIPELINE_TERMINAL_RESCUE_RUN", default=False):
+        return True
+    current_time = _coerce_pipeline_now(now)
+    resolved_deadline = deadline
+    if resolved_deadline is None:
+        resolved_deadline, _reason = get_pipeline_deadline(now=current_time)
+    elif resolved_deadline.tzinfo is None:
+        resolved_deadline = resolved_deadline.replace(tzinfo=current_time.tzinfo)
+    else:
+        resolved_deadline = resolved_deadline.astimezone(current_time.tzinfo)
+    return current_time >= resolved_deadline
 
 
 def load_project_dotenv(*, override: bool = False) -> bool:

@@ -101,7 +101,7 @@ PIPELINE_MODE=telegram    # Mode 2
 | `INSTAGRAM_TOKEN_ALERT_DAYS` | Comma-separated alert thresholds in days (default: `14,7,3,1`) |
 | `VPS_PUBLIC_BASE_URL` | Public base URL for hosted files, e.g. `https://your-ip/media` |
 | `EMERGENCY_FALLBACK_ENABLED` | `true` enables the private `error_404_v1` emergency post fallback after eligible pipeline failures |
-| `PIPELINE_TERMINAL_RESCUE_RUN` | `true` only on the dedicated 2:00 PM IST rescue schedule that converts terminal WHOOP-missing days into emergency fallback posts |
+| `PIPELINE_TERMINAL_RESCUE_RUN` | `true` forces terminal rescue behavior on the dedicated 2:00 PM IST run; the pipeline also infers rescue mode automatically once the configured local deadline has passed |
 | `VPS_SSH_HOST` | Host IP or domain for SCP/SSH uploading final assets to VPS |
 | `VPS_SSH_USER` | Target user for the VPS connection |
 | `VPS_SSH_PATH` | Server directory path for uploaded assets |
@@ -165,8 +165,9 @@ Important:
 
 - `validate.py` requires VPS vars when `PIPELINE_POST_TO_INSTAGRAM=true`:
   - `VPS_PUBLIC_BASE_URL`, `VPS_SSH_HOST`, `VPS_SSH_USER`, `VPS_SSH_PATH`.
-- When `EMERGENCY_FALLBACK_ENABLED=true`, `validate.py` also checks the private fallback manifest, local fallback media integrity, and required prehosted fallback URLs before expensive generation starts.
-- `PIPELINE_TERMINAL_RESCUE_RUN=true` is only for the dedicated 2:00 PM IST rescue schedule. Do not enable it on the normal 7:00 AM-1:00 PM retry cadence.
+- When `EMERGENCY_FALLBACK_ENABLED=true`, `validate.py` always checks the private fallback manifest and local fallback media integrity.
+- Before the cutoff, validation enforces full pipeline readiness. At/after the cutoff, validation switches to fallback-only rescue readiness and no longer requires WHOOP, OpenRouter, Google, or Telegram inputs if the fallback can still be posted.
+- `PIPELINE_TERMINAL_RESCUE_RUN=true` is still supported for the dedicated 2:00 PM IST rescue schedule, but the pipeline also self-promotes into rescue mode once the configured local deadline has passed.
 - ngrok is for `local_test` only. Production emergency fallback manifests must use stable VPS-hosted public URLs, not ngrok URLs.
 - WHOOP mock data (`PIPELINE_MOCK_DATA`) is no longer supported — real WHOOP API data is always required.
 - Python 3.10+ is required; Python 3.9 is unsupported.
@@ -263,14 +264,14 @@ These allow the pipeline to continue waiting for valid files until the deadline.
 
 Notes:
 - `6:30 AM IST` healthcheck runs before the first `7:00 AM IST` pipeline attempt.
-- The `2:00 PM IST` rescue run is only for terminal WHOOP-missing days. It is not the normal emergency fallback drill path for generation failures.
+- The `2:00 PM IST` rescue run is the final decision point for any unresolved pre-post failure, not just WHOOP-missing days.
 - Keep the normal live pipeline in `PIPELINE_MODE=telegram`; the rescue schedule overrides to `PIPELINE_MODE=automatic` so it does not depend on the manual deadline already being expired.
-- Before `2:00 PM IST`, transient WHOOP/API/auth/timeout lookup failures are released as retryable instead of posting the emergency fallback early.
-- On the `2:00 PM IST` rescue run, those same retryable WHOOP-side failures escalate into the emergency fallback if they still have not recovered.
+- Before `2:00 PM IST`, any unresolved pre-post failure is released as retryable instead of posting the emergency fallback early.
+- On the `2:00 PM IST` rescue run, those same unresolved pre-post failures escalate into the emergency fallback if they still have not recovered.
 
 ## Manual Fallback Runbook
 
-If preflight/config/auth fails, the emergency fallback is intentionally **not** auto-posted. In that case:
+If the fallback package itself is broken or the fallback publish attempt fails, the emergency fallback cannot be auto-posted. In that case:
 
 1. Save the failure evidence:
    - daily state JSON
@@ -289,11 +290,12 @@ State Zero hit a pipeline fault today, so the emergency fallback card posted ins
 #statezero #dailyart #generativeart
 ```
 
-Examples of failures that stay operator-managed:
-- missing required env vars
-- invalid Instagram token preflight
-- broken private fallback manifest / private runtime mount
-- malformed `PIPELINE_DATE` / unknown `lookups.py` exit codes that indicate wiring or config issues
+**Failure classification:**
+- **Retryable before cutoff** — Any pre-post failure before `2:00 PM IST`, including WHOOP lookup issues, prompt/generation/render failures, VPS upload failures, and Instagram main-post failures. The pipeline releases these for cron retry.
+- **Terminal rescue / auto-fallback** — Any of those same pre-post failures that still exist once the final rescue trigger runs. These route into the emergency fallback automatically.
+- **Fatal no-post** — The fallback package is unavailable/invalid, or the emergency fallback publish attempt itself fails.
+
+Daily state files now include `failure_classification` values such as `validation`, `lookup_not_ready`, `generation`, `upload`, `instagram_main_post`, `fallback_unavailable`, and `fallback_publish_failed`.
 
 Important:
 - `interpretation.txt` is still generated by the prompt stack, but it is not a posting-critical dependency. A missing `interpretation.txt` should not trigger the emergency fallback on an otherwise healthy run.
@@ -848,6 +850,8 @@ See `src/prompts/json_builder.md` for full details.
 
 **Note:** The LLM selects which blend option (A/B/C) to use based on the full scene concept, with art keywords as the primary influence.
 
+**Creature fragment phrase:** After creature selection, a single-sentence geological distillation of the creature's essence is extracted as `creature_fragment_phrase` and passed into the json_builder template. It is woven into the midground description as something a viewer might infer through pareidolia — never a literal creature form.
+
 **CRITICAL - Also extract and save blend_option:**
 
 After the LLM returns the complete JSON, extract the blend option selection and save it separately for use in STEP 8 (video prompt) and STEP 15 (database):
@@ -962,11 +966,13 @@ If both files are NOT received before `PIPELINE_MANUAL_DEADLINE_LOCAL`:
 
 Template: `src/prompts/video.md`
 
-Fill with: environment, depth level, recovery zone, matrix body keywords, matrix art keywords, one-liner, moon count, blend option, energy zone.
+Fill with: environment, depth level, recovery zone, matrix body keywords, matrix art keywords, one-liner, blend option, energy zone.
 
 Call LLM or use templating logic. Save to `output/video_prompt.txt`.
 
 See `src/prompts/video.md` for the full template structure with art keyword mappings for camera movement and motion quality.
+
+**Materiality guardrails:** After the LLM generates the video prompt, `prompts.py` validates that environment motion is physics-correct for the material class (solid environments fracture/shed debris; atmospheric environments fail through pressure/compression; fluid environments surge/billow). If violated, the LLM is given a correction prompt and retried up to 3 times.
 
 ---
 
@@ -1103,7 +1109,7 @@ Strain 14.56 • Recovery 51% • Sleep 7.08h
 #### 14a — Create media container
 
 ```bash
-curl -X POST "https://graph.facebook.com/v21.0/${INSTAGRAM_USER_ID}/media" \
+curl -X POST "https://graph.facebook.com/v22.0/${INSTAGRAM_USER_ID}/media" \
   -d "media_type=REELS" \
   -d "video_url=${VIDEO_URL}" \
   -d "cover_url=${THUMB_URL}" \
@@ -1119,7 +1125,7 @@ Save returned `id` to `output/instagram_creation_id.txt`.
 ```bash
 CREATION_ID=$(cat output/instagram_creation_id.txt)
 for i in $(seq 1 30); do
-  STATUS=$(curl -s "https://graph.facebook.com/v21.0/${CREATION_ID}?fields=status_code&access_token=${INSTAGRAM_ACCESS_TOKEN}" \
+  STATUS=$(curl -s "https://graph.facebook.com/v22.0/${CREATION_ID}?fields=status_code,status&access_token=${INSTAGRAM_ACCESS_TOKEN}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('status_code','UNKNOWN'))")
   echo "Poll ${i}: ${STATUS}"
   if [ "$STATUS" = "FINISHED" ]; then break; fi
@@ -1133,7 +1139,7 @@ Polls every 10 seconds, max 5 minutes. Stop and report if FINISHED never reached
 #### 14c — Publish
 
 ```bash
-PUBLISH_RESPONSE=$(curl -s -X POST "https://graph.facebook.com/v21.0/${INSTAGRAM_USER_ID}/media_publish" \
+PUBLISH_RESPONSE=$(curl -s -X POST "https://graph.facebook.com/v22.0/${INSTAGRAM_USER_ID}/media_publish" \
   -d "creation_id=${CREATION_ID}" \
   -d "access_token=${INSTAGRAM_ACCESS_TOKEN}")
 
@@ -1155,6 +1161,11 @@ echo "$(date): [SUCCESS] ${TITLE} posted" >> pipeline.log
 #### Card Database (SQLite)
 
 **Schema:** `database/cards.db`
+
+Two tables are maintained:
+
+- **`cards`** — one row per day, full card payload including Instagram post ID
+- **`environment_history`** — one row per day, tracks environment selection with a `selection_stage` field (`environment_selected`, `cards_archive`, or `cards_backfill`). Used to prevent environment repeats within a 5-day window. The window is enforced regardless of whether the Instagram post succeeded — as long as an environment was selected for a date, it is excluded from the next 5 days.
 
 ```sql
 CREATE TABLE IF NOT EXISTS cards (
