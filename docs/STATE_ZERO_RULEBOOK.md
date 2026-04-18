@@ -424,9 +424,9 @@ Critical: Pick based on theme, not creature
 - Surface: moons can sit openly in the sky
 - Mid-Depth: moons may be partially framed by shelter or overhangs
 - Deep: moonlight may enter from a shaft or distant opening, but direct moon visibility is optional
-- Abyss: moons appear only as a thin crescent or distant point through a fracture, or may be absent entirely
+- Abyss: omit entirely — no celestial presence
 - Color tinted by environment atmosphere
-- In video, moon treatment follows the same depth rule — no free-hanging moon in ABYSS
+- Moon count does not appear in video prompts
 
 ---
 

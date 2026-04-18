@@ -19,6 +19,7 @@ from utils import (
     ensure_path,
     get_live_vps_config_error,
     load_project_dotenv,
+    is_terminal_rescue_run,
 )
 
 # Load .env as fallback only; real process env wins in production.
@@ -39,6 +40,7 @@ def print_success(msg):
 
 def print_info(msg):
     print(f"{Fore.CYAN}ℹ️  {msg}{Style.RESET_ALL}")
+
 
 def _load_yaml(path, label: str):
     try:
@@ -93,10 +95,13 @@ def validate_deprecated_vars():
         sys.exit(1)
 
 
-def validate_environment():
+def validate_environment(rescue_only: bool | None = None):
     """Verify required environment variables based on execution mode."""
     # Validate deprecated vars first
     validate_deprecated_vars()
+
+    if rescue_only is None:
+        rescue_only = is_terminal_rescue_run()
     
     # Get new configuration values
     mode = (os.getenv("PIPELINE_MODE") or "automatic").strip().lower()
@@ -112,6 +117,7 @@ def validate_environment():
     print(f"   Pipeline mode: {mode}")
     print(f"   Post to Instagram: {post_to_instagram}")
     print(f"   Media mode: {media_mode}")
+    print(f"   Validation mode: {'fallback-only rescue' if rescue_only else 'full pipeline readiness'}")
 
     configured_run_date = (os.getenv("PIPELINE_DATE") or "").strip()
     if configured_run_date:
@@ -128,37 +134,37 @@ def validate_environment():
         )
         sys.exit(1)
 
-    required_env_vars = [
-        'OPENROUTER_API_KEY',
-        'GOOGLE_API_KEY_PRIMARY',
-    ]
+    required_env_vars = []
 
     # Check if Google API fallback is enabled
     fallback_enabled = env_bool("GOOGLE_API_FALLBACK_ENABLED", default=False)
     print(f"   Google API fallback: {'enabled' if fallback_enabled else 'disabled'}")
-    
-    # Only require fallback key if fallback is enabled
-    if fallback_enabled:
-        required_env_vars.append('GOOGLE_API_KEY_FALLBACK')
-        # Validate: if fallback is enabled, the key must not be empty
-        if not os.getenv('GOOGLE_API_KEY_FALLBACK'):
-            print_error("GOOGLE_API_FALLBACK_ENABLED is true but GOOGLE_API_KEY_FALLBACK is not set")
-            sys.exit(1)
 
-    # WHOOP credentials are ALWAYS required (no mock data path)
-    required_env_vars.extend([
-        'WHOOP_CLIENT_ID',
-        'WHOOP_CLIENT_SECRET',
-    ])
+    if not rescue_only:
+        required_env_vars.extend([
+            'OPENROUTER_API_KEY',
+            'GOOGLE_API_KEY_PRIMARY',
+            'WHOOP_CLIENT_ID',
+            'WHOOP_CLIENT_SECRET',
+        ])
+
+        # Only require fallback key if fallback is enabled
+        if fallback_enabled:
+            required_env_vars.append('GOOGLE_API_KEY_FALLBACK')
+            # Validate: if fallback is enabled, the key must not be empty
+            if not os.getenv('GOOGLE_API_KEY_FALLBACK'):
+                print_error("GOOGLE_API_FALLBACK_ENABLED is true but GOOGLE_API_KEY_FALLBACK is not set")
+                sys.exit(1)
 
     # Instagram and VPS credentials only required when posting is enabled
     if post_to_instagram:
         required_env_vars.extend([
             'INSTAGRAM_ACCESS_TOKEN',
             'INSTAGRAM_USER_ID',
-            'VPS_PUBLIC_BASE_URL',
         ])
-        if media_mode == 'live_vps':
+        if not rescue_only:
+            required_env_vars.append('VPS_PUBLIC_BASE_URL')
+        if media_mode == 'live_vps' and not rescue_only:
             required_env_vars.extend([
                 'VPS_SSH_HOST',
                 'VPS_SSH_USER',
@@ -184,10 +190,11 @@ def validate_environment():
         print_info("Tip: If running dry-run, set PIPELINE_POST_TO_INSTAGRAM=false")
         sys.exit(1)
 
-    live_vps_config_error = get_live_vps_config_error()
-    if live_vps_config_error:
-        print_error(live_vps_config_error)
-        sys.exit(1)
+    if not rescue_only:
+        live_vps_config_error = get_live_vps_config_error()
+        if live_vps_config_error:
+            print_error(live_vps_config_error)
+            sys.exit(1)
 
     if post_to_instagram and env_bool("EMERGENCY_FALLBACK_ENABLED", default=False):
         validate_emergency_fallback_readiness()
@@ -197,26 +204,35 @@ def validate_emergency_fallback_readiness():
     """Validate the private emergency fallback manifest and local assets."""
     print_info("Emergency fallback: validating private manifest and local assets")
     try:
-        from emergency_fallback_manager import EmergencyFallbackManager
+        from emergency_fallback_manager import EmergencyFallbackManager, FallbackUnavailableError
 
         manager = EmergencyFallbackManager()
         manager.load_and_validate_manifest()
         manager.verify_integrity()
+    except FallbackUnavailableError as e:
+        print_error(f"Emergency fallback validation failed: {e}")
+        print(f"EMERGENCY_FALLBACK_UNAVAILABLE: {e}")
+        sys.exit(1)
     except Exception as e:
         print_error(f"Emergency fallback validation failed: {e}")
         sys.exit(1)
     print_success("Emergency fallback readiness validated")
 
-def validate_file_structure():
+def validate_file_structure(rescue_only: bool | None = None):
     """Verify required files and directories exist."""
+    if rescue_only is None:
+        rescue_only = is_terminal_rescue_run()
+
     project_root = get_project_root()
     astrology_root = get_astrology_root()
     runtime_root = get_runtime_root()
 
-    required_files = [
-        astrology_root / 'natal.yaml',
-        astrology_root / 'dasha_periods.yaml',
-    ]
+    required_files = []
+    if not rescue_only:
+        required_files = [
+            astrology_root / 'natal.yaml',
+            astrology_root / 'dasha_periods.yaml',
+        ]
 
     # Safe/public dirs in the repo.
     for dir_path in ('src/assets/', 'src/prompts/'):
@@ -245,8 +261,13 @@ def validate_file_structure():
     if get_media_mode() == 'local_test':
         ensure_path(get_local_vps_root())
 
-def validate_data_schemas():
+def validate_data_schemas(rescue_only: bool | None = None):
     """Validate structure of required YAML data files."""
+    if rescue_only is None:
+        rescue_only = is_terminal_rescue_run()
+    if rescue_only:
+        return
+
     astrology_root = get_astrology_root()
 
     # Validate natal.yaml
@@ -284,12 +305,13 @@ def validate_data_schemas():
 def main():
     """Run all validation checks."""
     print("▶ Running pre-flight checks...")
-    
+
+    rescue_only = is_terminal_rescue_run()
     validate_python_version()
-    validate_environment()
-    validate_file_structure()
-    validate_data_schemas()
-    
+    validate_environment(rescue_only=rescue_only)
+    validate_file_structure(rescue_only=rescue_only)
+    validate_data_schemas(rescue_only=rescue_only)
+
     print_success("All validations passed")
 
 if __name__ == '__main__':

@@ -9,7 +9,7 @@ import traceback
 import uuid
 import shlex
 import threading
-from datetime import date as date_cls, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,6 +28,8 @@ from utils import (
     get_pipeline_run_date_str,
     get_live_vps_config_error,
     load_project_dotenv,
+    get_pipeline_deadline,
+    is_terminal_rescue_run as infer_terminal_rescue_run,
 )
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
@@ -120,12 +122,14 @@ class PipelineStageError(Exception):
         details: str | None = None,
         details_obj: object | None = None,
         fallback_eligible: bool = False,
+        failure_classification: str | None = None,
     ):
         self.stage = stage
         self.message = message
         self.details = details
         self.details_obj = details_obj
         self.fallback_eligible = fallback_eligible
+        self.failure_classification = failure_classification
         super().__init__(message)
 
 
@@ -194,33 +198,7 @@ class WHOOPPipeline:
         return raw_mode
 
     def _build_deadline_dt(self) -> tuple[datetime, str]:
-        try:
-            run_day = date_cls.fromisoformat(self.run_date)
-        except ValueError:
-            run_day = date_cls.fromisoformat(get_pipeline_run_date_str())
-
-        if self.manual_deadline_mode == 'from_now':
-            now = self._now()
-            minutes = max(1, self.manual_window_minutes)
-            return now + timedelta(minutes=minutes), f'from_now(+{minutes}m)'
-
-        if self.manual_deadline_mode != 'run_date':
-            print(
-                f"{Fore.YELLOW}⚠ Invalid PIPELINE_MANUAL_DEADLINE_MODE={self.manual_deadline_mode}. "
-                f"Using run_date mode.{Style.RESET_ALL}"
-            )
-            self.manual_deadline_mode = 'run_date'
-
-        try:
-            hour_str, minute_str = self.manual_deadline_local.split(':', 1)
-            hour = int(hour_str)
-            minute = int(minute_str)
-        except Exception:
-            hour = 14
-            minute = 0
-
-        deadline = datetime(run_day.year, run_day.month, run_day.day, hour, minute, tzinfo=self.tz)
-        return deadline, f'run_date({self.manual_deadline_local})'
+        return get_pipeline_deadline(now=self._now())
 
     def _now(self) -> datetime:
         return datetime.now(self.tz)
@@ -247,6 +225,43 @@ class WHOOPPipeline:
 
     def _current_generation_status(self) -> str:
         return 'AUTO_FALLBACK_RUNNING' if self.in_auto_fallback else 'STARTING'
+
+    def _is_terminal_rescue_run(self) -> bool:
+        deadline = getattr(self, 'deadline_dt', None)
+        try:
+            current_time = self._now()
+        except Exception:
+            current_time = None
+        try:
+            return infer_terminal_rescue_run(current_time, deadline=deadline)
+        except Exception:
+            return False
+
+    def _failure_classification_for_stage(self, stage: str) -> str:
+        normalized = (stage or '').strip().lower()
+        if normalized == 'validation':
+            return 'validation'
+        if normalized in {'whoop data unavailable', 'lookup retry exhausted'}:
+            return 'lookup_not_ready'
+        if normalized == 'data retrieve & dasha lookups':
+            return 'lookup_failure'
+        if normalized in {'llm prompts (interpretation -> video)', 'prompt output loading', 'image generation', 'video generation'}:
+            return 'generation'
+        if normalized in {'render static card', 'render animated card'}:
+            return 'render'
+        if normalized == 'vps upload':
+            return 'upload'
+        if normalized in {'instagram token preflight', 'instagram token', 'instagram media preflight', 'instagram posting'}:
+            return 'instagram_main_post'
+        if normalized == 'emergency post fallback':
+            return 'fallback_publish_failed'
+        return 'pre_post_failure'
+
+    def _emergency_failure_classification(self) -> str:
+        classification = (self._last_emergency_fallback_classification or '').strip().lower()
+        if classification in {'manifest_invalid', 'asset_integrity_failed'}:
+            return 'fallback_unavailable'
+        return 'fallback_publish_failed'
 
     def _set_heartbeat_context(self, *, status: str | None = None, note: str | None = None, pulse: bool = False):
         if self.daily_run.is_owner():
@@ -449,14 +464,16 @@ class WHOOPPipeline:
         notifier_step: str,
         notifier_message: str,
         details_tail: str | None = None,
+        failure_classification: str = 'lookup_not_ready',
     ):
         self._stop_heartbeat_thread()
-        if env_bool('PIPELINE_TERMINAL_RESCUE_RUN', default=False):
+        if self._is_terminal_rescue_run():
             raise PipelineStageError(
                 stage=rescue_stage,
                 message=rescue_message,
                 details=details_tail,
                 fallback_eligible=True,
+                failure_classification=failure_classification,
             )
 
         retry_cleanup_notes: list[str] = []
@@ -465,6 +482,7 @@ class WHOOPPipeline:
                 step='Data Retrieve & Dasha Lookups',
                 message=retry_message,
                 details_tail=details_tail,
+                failure_classification=failure_classification,
             )
         except Exception as e:
             retry_cleanup_notes.append(f'Failed to record FAILED_RETRYABLE state: {e}')
@@ -499,6 +517,7 @@ class WHOOPPipeline:
             notifier_step='WHOOPRecoveryNotReady',
             notifier_message='WHOOP daily data not ready yet. This run was released for the next cron retry.',
             details_tail=details_tail,
+            failure_classification='lookup_not_ready',
         )
 
     def _handle_retryable_lookup_external_failure(self, details_tail: str | None = None):
@@ -509,15 +528,71 @@ class WHOOPPipeline:
             notifier_step='LookupRetryableFailure',
             notifier_message='Transient WHOOP or lookup failure. This run was released for the next cron retry.',
             details_tail=details_tail,
+            failure_classification='lookup_not_ready',
         )
 
-    def log_error(self, step_name: str, error_msg: str, details_tail: str = None):
+    def _release_retryable_stage_failure(self, exc: PipelineStageError):
+        self._stop_heartbeat_thread()
+        classification = exc.failure_classification or self._failure_classification_for_stage(exc.stage)
+        retry_message = f'{exc.message} Releasing claim for next cron retry.'
+
+        retry_cleanup_notes: list[str] = []
+        try:
+            self.daily_run.mark_retryable_failure(
+                step=exc.stage,
+                message=retry_message,
+                details_tail=exc.details,
+                failure_classification=classification,
+            )
+        except Exception as e:
+            retry_cleanup_notes.append(f'Failed to record FAILED_RETRYABLE state: {e}')
+        finally:
+            try:
+                self.daily_run.release_claim()
+            except Exception as e:
+                retry_cleanup_notes.append(f'Failed to release claim: {e}')
+
+        warning_details = exc.details
+        if retry_cleanup_notes:
+            cleanup_tail = '\n'.join(retry_cleanup_notes)
+            warning_details = f"{exc.details}\n\n{cleanup_tail}" if exc.details else cleanup_tail
+
+        notifier = get_notifier()
+        notifier.notify_warning(
+            run_date=self.run_date,
+            step=exc.stage,
+            message=f'{exc.message} This run was released for the next cron retry.',
+            details_tail=warning_details,
+        )
+        if retry_cleanup_notes:
+            print(f"{Fore.YELLOW}⚠ {' | '.join(retry_cleanup_notes)}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}⚠ {retry_message}{Style.RESET_ALL}")
+        raise SystemExit(0)
+
+    def _extract_validation_fatal_error(self, result: subprocess.CompletedProcess) -> tuple[str, str] | None:
+        marker = 'EMERGENCY_FALLBACK_UNAVAILABLE:'
+        combined_output = '\n'.join(part for part in (result.stdout, result.stderr) if part)
+        for line in combined_output.splitlines():
+            if marker not in line:
+                continue
+            message = line.split(marker, 1)[1].strip() or 'Emergency fallback package is unavailable.'
+            return message, combined_output.strip() or message
+        return None
+
+    def log_error(
+        self,
+        step_name: str,
+        error_msg: str,
+        details_tail: str = None,
+        failure_classification: str | None = None,
+    ):
         if self.post_to_instagram and self.daily_run.is_owner():
             try:
                 self.daily_run.mark_fatal_failure(
                     step=step_name,
                     message=error_msg,
                     details_tail=details_tail,
+                    failure_classification=failure_classification or self._failure_classification_for_stage(step_name),
                 )
             except OwnershipLostError:
                 pass
@@ -686,28 +761,38 @@ class WHOOPPipeline:
             self.log_error(step_name, str(e), str(e))
 
     def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
-        if (
-            exc.fallback_eligible
-            and self.post_to_instagram
-            and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False)
-            and not self.in_emergency_fallback
-        ):
-            notifier = get_notifier()
-            notifier.notify_warning(
-                run_date=self.run_date,
-                step=exc.stage,
-                message=f"{exc.message} Emergency fallback will be attempted.",
-                details_tail=exc.details,
-            )
-            if self._run_emergency_fallback(exc.stage, exc.message):
-                print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
-                return True
+        if exc.fallback_eligible and self.post_to_instagram and not self.in_emergency_fallback:
+            if self._is_terminal_rescue_run():
+                if env_bool('EMERGENCY_FALLBACK_ENABLED', default=False):
+                    notifier = get_notifier()
+                    notifier.notify_warning(
+                        run_date=self.run_date,
+                        step=exc.stage,
+                        message=f"{exc.message} Emergency fallback will be attempted.",
+                        details_tail=exc.details,
+                    )
+                    if self._run_emergency_fallback(exc.stage, exc.message):
+                        print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
+                        return True
 
-            fatal_message = self._last_emergency_fallback_error or exc.message
-            fatal_details = self._merge_details(exc.details, self._last_emergency_fallback_details)
-            self.log_error('Emergency Post Fallback', fatal_message, fatal_details)
+                    fatal_message = self._last_emergency_fallback_error or exc.message
+                    fatal_details = self._merge_details(exc.details, self._last_emergency_fallback_details)
+                    self.log_error(
+                        'Emergency Post Fallback',
+                        fatal_message,
+                        fatal_details,
+                        failure_classification=self._emergency_failure_classification(),
+                    )
+                    return False
+            else:
+                self._release_retryable_stage_failure(exc)
 
-        self.log_error(exc.stage, exc.message, exc.details)
+        self.log_error(
+            exc.stage,
+            exc.message,
+            exc.details,
+            failure_classification=exc.failure_classification,
+        )
         return False
 
     def _build_caption_or_raise(self, metadata: dict, daily_data: dict) -> str:
@@ -740,6 +825,7 @@ class WHOOPPipeline:
             message='Unexpected runtime failure before Instagram post completion.',
             details=details,
             fallback_eligible=True,
+            failure_classification='pre_post_failure',
         )
 
     def run(self):
@@ -757,15 +843,15 @@ class WHOOPPipeline:
                 f"Media mode: {self.media_mode} | Run token: {self.run_token}{Style.RESET_ALL}"
             )
 
-            self.step_1_validate()
-
-            # Only validate Instagram token when posting is enabled
-            if self.post_to_instagram:
-                self.step_1b_validate_instagram_token()
-            else:
-                print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram token validation.{Style.RESET_ALL}")
-
             try:
+                self.step_1_validate()
+
+                # Only validate Instagram token when posting is enabled
+                if self.post_to_instagram:
+                    self.step_1b_validate_instagram_token()
+                else:
+                    print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram token validation.{Style.RESET_ALL}")
+
                 daily_data = self.step_2_3_lookups()
                 self.step_4_6_prompts()
 
@@ -1563,7 +1649,42 @@ class WHOOPPipeline:
         return art_path, video_path
 
     def step_1_validate(self):
-        self.safe_step('Validation', 'src/scripts/validate.py')
+        print(f"{Fore.CYAN}▶ Running Validation...{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Running Validation.', pulse=True)
+        cmd = [sys.executable, str(self.base_dir / 'src/scripts/validate.py')]
+        env = os.environ.copy()
+        deadline = getattr(self, 'deadline_dt', None)
+        if deadline is not None:
+            env['PIPELINE_EFFECTIVE_DEADLINE_ISO'] = deadline.isoformat()
+        deadline_reason = getattr(self, 'deadline_reason', '')
+        if deadline_reason:
+            env['PIPELINE_EFFECTIVE_DEADLINE_REASON'] = deadline_reason
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        if result.stdout:
+            print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
+        if result.returncode != 0:
+            print(f"{Fore.RED}Script Error STDOUT:\n{result.stdout}{Style.RESET_ALL}")
+            print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
+            fatal_validation = self._extract_validation_fatal_error(result)
+            if fatal_validation:
+                message, details_tail = fatal_validation
+                raise PipelineStageError(
+                    stage='Validation',
+                    message=message,
+                    details=details_tail,
+                    fallback_eligible=False,
+                    failure_classification='fallback_unavailable',
+                )
+            details_tail = self._build_subprocess_details_tail(result)
+            raise PipelineStageError(
+                stage='Validation',
+                message=f'Script exited with code {result.returncode}',
+                details=details_tail,
+                fallback_eligible=True,
+                failure_classification='validation',
+            )
+        print(f"{Fore.GREEN}✅ Validation completed{Style.RESET_ALL}")
+        self._set_heartbeat_context(status='STARTING', note='Completed Validation.', pulse=True)
 
     def step_1b_validate_instagram_token(self):
         """
@@ -1584,7 +1705,13 @@ class WHOOPPipeline:
             print(f"{Fore.GREEN}✅ Instagram token validation passed{Style.RESET_ALL}")
             self._set_heartbeat_context(status='STARTING', note='Instagram token preflight passed.', pulse=True)
         except Exception as e:
-            self.log_error('Instagram Token Preflight', str(e))
+            raise PipelineStageError(
+                stage='Instagram Token Preflight',
+                message=str(e),
+                details=str(e),
+                fallback_eligible=True,
+                failure_classification='instagram_main_post',
+            ) from e
 
     def step_2_3_lookups(self) -> dict:
         # No more --test flag or mock data - always fetch real WHOOP data
@@ -2200,7 +2327,13 @@ class WHOOPPipeline:
                     message=f'Failed to fetch Instagram token during emergency fallback: {e}',
                     details=str(e),
                 ) from e
-            self.log_error('Instagram Token', str(e))
+            raise PipelineStageError(
+                stage='Instagram Token',
+                message=f'Failed to fetch Instagram token: {e}',
+                details=str(e),
+                fallback_eligible=True,
+                failure_classification='instagram_main_post',
+            ) from e
 
         if not self.post_to_instagram or not access_token or access_token == 'mock':
             print(f"{Fore.YELLOW}⚠ Running in MOCK/DRY mode. Skipping actual Instagram post.{Style.RESET_ALL}")
