@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -2006,43 +2007,189 @@ class WHOOPPipeline:
         self._set_heartbeat_context(status='STARTING', note='VPS media upload completed.', pulse=True)
         return video_url, thumb_url
 
-    def _ensure_public_urls_reachable(self, media_urls: tuple[tuple[str, str, str], ...]):
-        for media_kind, label, url in media_urls:
-            reachable = False
-            last_err = None
-            for attempt in range(3):
-                response = None
-                try:
-                    response = requests.get(url, timeout=20, stream=True, allow_redirects=True)
-                    content_type = response.headers.get("Content-Type", "")
-                    if response.status_code != 200:
-                        last_err = f"HTTP {response.status_code}"
-                    else:
-                        first_chunk = next(response.iter_content(chunk_size=1), b"")
-                        if not first_chunk:
-                            last_err = "empty body"
-                        elif not self._is_media_like_content_type(content_type, media_kind):
-                            last_err = f"unexpected content-type {content_type or 'missing'}"
-                        else:
-                            reachable = True
-                            break
-                except Exception as e:
-                    last_err = str(e)
-                finally:
-                    if response is not None:
-                        response.close()
+    def _probe_public_media_url(self, media_kind: str, label: str, url: str) -> dict:
+        snapshot = {
+            "media_kind": media_kind,
+            "label": label,
+            "url": url,
+            "reachable": False,
+        }
+        response = None
+        try:
+            response = requests.get(url, timeout=20, stream=True, allow_redirects=True)
+            headers = {}
+            for key in (
+                "Content-Type",
+                "Content-Length",
+                "Cache-Control",
+                "ETag",
+                "Last-Modified",
+                "Accept-Ranges",
+                "Server",
+            ):
+                value = response.headers.get(key)
+                if value:
+                    headers[key.lower().replace("-", "_")] = value
+            snapshot["http_status"] = response.status_code
+            snapshot["final_url"] = response.url
+            snapshot["headers"] = headers
 
-                if last_err == "empty body":
+            if response.status_code != 200:
+                snapshot["failure_reason"] = f"HTTP {response.status_code}"
+                return snapshot
+
+            first_chunk = next(response.iter_content(chunk_size=1), b"")
+            snapshot["has_body"] = bool(first_chunk)
+            content_type = response.headers.get("Content-Type", "")
+            snapshot["content_type_ok"] = self._is_media_like_content_type(content_type, media_kind)
+
+            if not first_chunk:
+                snapshot["failure_reason"] = "empty body"
+                return snapshot
+            if not snapshot["content_type_ok"]:
+                snapshot["failure_reason"] = f"unexpected content-type {content_type or 'missing'}"
+                return snapshot
+
+            snapshot["reachable"] = True
+            return snapshot
+        except Exception as e:
+            snapshot["error"] = str(e)
+            snapshot["failure_reason"] = str(e)
+            return snapshot
+        finally:
+            if response is not None:
+                response.close()
+
+    def _ensure_public_urls_reachable(self, media_urls: tuple[tuple[str, str, str], ...], capture_snapshots: bool = False):
+        snapshots = []
+        for media_kind, label, url in media_urls:
+            probe = None
+            for attempt in range(3):
+                probe = self._probe_public_media_url(media_kind, label, url)
+                if probe.get("reachable"):
+                    break
+                if attempt < 2:
+                    time.sleep(2)
+            assert probe is not None
+            snapshots.append(probe)
+            if not probe.get("reachable"):
+                failure_reason = probe.get("failure_reason") or "unknown"
+                if failure_reason == "empty body":
                     reason_code = f"empty_public_{label}_body"
-                elif last_err and last_err.startswith("unexpected content-type"):
+                elif failure_reason.startswith("unexpected content-type"):
                     reason_code = f"invalid_public_{label}_content_type"
                 else:
                     reason_code = f"unreachable_public_{label}_url"
+                raise RuntimeError(f'{reason_code}: Public {label} URL is not reachable: {url} ({failure_reason})')
+        if capture_snapshots:
+            return snapshots
 
-                if attempt < 2:
-                    time.sleep(2)
-            if not reachable:
-                raise RuntimeError(f'{reason_code}: Public {label} URL is not reachable: {url} ({last_err})')
+    def _sha256_file(self, path: Path) -> str | None:
+        if not path.is_file():
+            return None
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while True:
+                chunk = handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def _probe_local_media_file(self, path: Path, media_kind: str) -> dict:
+        snapshot = {
+            "path": str(path),
+            "exists": path.is_file(),
+        }
+        if not path.is_file():
+            return snapshot
+
+        stat = path.stat()
+        snapshot["size_bytes"] = stat.st_size
+        snapshot["sha256"] = self._sha256_file(path)
+        snapshot["mtime_utc"] = datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z"
+
+        if media_kind == "video":
+            ffprobe_path = shutil.which("ffprobe")
+            if not ffprobe_path:
+                snapshot["ffprobe"] = {
+                    "available": False,
+                    "error": "ffprobe not available on PATH",
+                }
+                return snapshot
+
+            cmd = [
+                ffprobe_path,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration,size:stream=index,codec_name,codec_type,width,height,r_frame_rate,avg_frame_rate,pix_fmt,profile,bit_rate,level",
+                "-of",
+                "json",
+                str(path),
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                snapshot["ffprobe"] = {
+                    "available": False,
+                    "returncode": result.returncode,
+                    "error": (result.stderr or "").strip(),
+                }
+                return snapshot
+            try:
+                snapshot["ffprobe"] = {
+                    "available": True,
+                    "data": json.loads(result.stdout or "{}"),
+                }
+            except Exception as e:
+                snapshot["ffprobe"] = {
+                    "available": False,
+                    "error": f"ffprobe JSON parse failed: {e}",
+                    "stdout_tail": (result.stdout or "")[-1000:],
+                }
+            return snapshot
+
+        try:
+            with Image.open(path) as img:
+                snapshot["image"] = {
+                    "format": img.format,
+                    "mode": img.mode,
+                    "width": img.width,
+                    "height": img.height,
+                }
+        except Exception as e:
+            snapshot["image_error"] = str(e)
+        return snapshot
+
+    def _build_instagram_publish_context(self, video_url: str, thumb_url: str, caption: str) -> dict:
+        return {
+            "asset_source": self.asset_source,
+            "media_mode": self.media_mode,
+            "output_dir": str(self.output_dir),
+            "caption_tail": (caption or "")[-500:],
+            "local_media": {
+                "card_final_mp4": self._probe_local_media_file(self.output_dir / "card_final.mp4", "video"),
+                "card_final_png": self._probe_local_media_file(self.output_dir / "card_final.png", "image"),
+            },
+            "public_url_checks": self._ensure_public_urls_reachable(
+                (("video", "video", video_url), ("image", "thumb", thumb_url)),
+                capture_snapshots=True,
+            ),
+        }
+
+    def _cache_bust_media_url(self, url: str, attempt: int) -> str:
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}ig_retry={self.run_date}-{self.run_token}-{attempt}"
+
+    @staticmethod
+    def _is_retryable_instagram_processing_error(error) -> bool:
+        diagnostics = getattr(error, "diagnostics", None)
+        if not isinstance(diagnostics, dict):
+            return False
+        return (
+            getattr(error, "phase", None) == "poll_processing"
+            and diagnostics.get("terminal_status_code") == "ERROR"
+        )
 
     def _run_emergency_fallback(self, trigger_stage: str, reason: str) -> bool:
         self._last_emergency_fallback_error = None
@@ -2350,75 +2497,107 @@ class WHOOPPipeline:
         self._set_heartbeat_context(status='POSTING', note='Posting media to Instagram.', pulse=True)
         from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError
 
-        try:
-            self._ensure_public_urls_reachable(
-                (('video', 'video', video_url), ('image', 'thumb', thumb_url)),
-            )
-        except Exception as e:
-            if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
-                raise PipelineStageError(
-                    stage='Instagram Media Preflight',
-                    message=str(e),
-                    details=str(e),
-                    fallback_eligible=True,
-                ) from e
-            raise PipelineStageError(
-                stage='Instagram Media Preflight',
-                message=str(e),
-                details=str(e),
-                fallback_eligible=False,
-            ) from e
+        processing_max_attempts = max(1, int(os.getenv("INSTAGRAM_PROCESSING_MAX_ATTEMPTS", "2") or "2"))
+        processing_retry_delay = max(0, int(os.getenv("INSTAGRAM_PROCESSING_RETRY_DELAY_SECONDS", "30") or "30"))
 
         try:
-            poster = InstagramPoster(access_token, user_id)
-            poster.diagnostics_output_dir = self.output_dir
-            poster.run_date = self.run_date
+            for processing_attempt in range(1, processing_max_attempts + 1):
+                attempt_video_url = video_url
+                attempt_thumb_url = thumb_url
+                if processing_attempt > 1:
+                    attempt_video_url = self._cache_bust_media_url(video_url, processing_attempt)
+                    attempt_thumb_url = self._cache_bust_media_url(thumb_url, processing_attempt)
 
-            creation_id = poster.create_media_container(video_url, thumb_url, caption)
-            if not poster.poll_processing_status(creation_id):
-                raise poster.build_processing_timeout_error(creation_id)
+                try:
+                    publish_context = self._build_instagram_publish_context(
+                        attempt_video_url,
+                        attempt_thumb_url,
+                        caption,
+                    )
+                except Exception as e:
+                    if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
+                        raise PipelineStageError(
+                            stage='Instagram Media Preflight',
+                            message=str(e),
+                            details=str(e),
+                            fallback_eligible=True,
+                        ) from e
+                    raise PipelineStageError(
+                        stage='Instagram Media Preflight',
+                        message=str(e),
+                        details=str(e),
+                        fallback_eligible=False,
+                    ) from e
 
-            post_id = poster.publish_media(creation_id)
+                publish_context["processing_attempt"] = processing_attempt
+                publish_context["processing_max_attempts"] = processing_max_attempts
 
-            # Get permalink
-            permalink = poster.get_permalink(post_id)
+                poster = InstagramPoster(access_token, user_id)
+                poster.diagnostics_output_dir = self.output_dir
+                poster.run_date = self.run_date
+                if hasattr(poster, "set_publish_context"):
+                    poster.set_publish_context(publish_context)
 
-            print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
-            success_note = (
-                'Emergency fallback Instagram publish succeeded.'
-                if success_notification_mode == 'fallback'
-                else 'Instagram publish succeeded.'
-            )
-            self._mark_posted_terminal_success(
-                post_id=post_id,
-                permalink=permalink,
-                note=success_note,
-            )
+                try:
+                    creation_id = poster.create_media_container(attempt_video_url, attempt_thumb_url, caption)
+                    if not poster.poll_processing_status(creation_id):
+                        raise poster.build_processing_timeout_error(creation_id)
+                except InstagramPublishDiagnosticsError as e:
+                    if (
+                        self._is_retryable_instagram_processing_error(e)
+                        and processing_attempt < processing_max_attempts
+                    ):
+                        print(
+                            f"{Fore.YELLOW}⚠ Instagram processing failed for creation_id. "
+                            f"Retrying with cache-busted media URL "
+                            f"({processing_attempt + 1}/{processing_max_attempts}).{Style.RESET_ALL}"
+                        )
+                        if processing_retry_delay > 0:
+                            time.sleep(processing_retry_delay)
+                        continue
+                    raise
 
-            # Send success notification with MP4 and permalink
-            final_mp4 = self.output_dir / 'card_final.mp4'
-            notifier = get_notifier()
-            if success_notification_mode == 'fallback':
-                notifier.notify_emergency_fallback_posted(
-                    run_date=self.run_date,
-                    final_mp4_path=final_mp4,
-                    instagram_permalink=permalink or 'Permalink unavailable',
-                    fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
+                post_id = poster.publish_media(creation_id)
+
+                # Get permalink
+                permalink = poster.get_permalink(post_id)
+
+                print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
+                success_note = (
+                    'Emergency fallback Instagram publish succeeded.'
+                    if success_notification_mode == 'fallback'
+                    else 'Instagram publish succeeded.'
                 )
-            else:
-                notifier.notify_success_posted(
-                    run_date=self.run_date,
-                    final_mp4_path=final_mp4,
-                    instagram_permalink=permalink or 'Permalink unavailable'
+                self._mark_posted_terminal_success(
+                    post_id=post_id,
+                    permalink=permalink,
+                    note=success_note,
                 )
 
-            # Return both post_id and permalink as dict for archive step
-            return {
-                'already_posted': False,
-                'post_id': post_id,
-                'permalink': permalink,
-                'mock': False,
-            }
+                # Send success notification with MP4 and permalink
+                final_mp4 = self.output_dir / 'card_final.mp4'
+                notifier = get_notifier()
+                if success_notification_mode == 'fallback':
+                    notifier.notify_emergency_fallback_posted(
+                        run_date=self.run_date,
+                        final_mp4_path=final_mp4,
+                        instagram_permalink=permalink or 'Permalink unavailable',
+                        fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
+                    )
+                else:
+                    notifier.notify_success_posted(
+                        run_date=self.run_date,
+                        final_mp4_path=final_mp4,
+                        instagram_permalink=permalink or 'Permalink unavailable'
+                    )
+
+                # Return both post_id and permalink as dict for archive step
+                return {
+                    'already_posted': False,
+                    'post_id': post_id,
+                    'permalink': permalink,
+                    'mock': False,
+                }
         except InstagramPublishDiagnosticsError as e:
             if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
                 raise PipelineStageError(

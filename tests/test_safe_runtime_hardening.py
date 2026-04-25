@@ -112,6 +112,48 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/create")
         self.assertEqual(payload["create_container_response"]["http_status"], 400)
 
+    def test_publish_context_is_included_in_diagnostics(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+        poster.publish_context = {
+            "asset_source": "auto_api",
+            "public_url_checks": [{"label": "video", "reachable": True}],
+        }
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        response = Mock()
+        response.status_code = 400
+        response.headers = {"debug-link": "https://debug.example/create"}
+        response.json.return_value = {
+            "error": {
+                "message": "bad request",
+                "code": 400,
+            }
+        }
+
+        with patch("instagram_poster.requests.post", return_value=response):
+            with self.assertRaises(InstagramPublishDiagnosticsError):
+                poster.create_media_container(
+                    "https://example.com/video.mp4",
+                    "https://example.com/cover.png",
+                    "caption",
+                )
+
+        artifact_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["publish_context"]["asset_source"], "auto_api")
+        self.assertEqual(payload["publish_context"]["public_url_checks"][0]["label"], "video")
+
     def test_poll_processing_status_retries_transient_network_then_succeeds(self):
         poster = InstagramPoster.__new__(InstagramPoster)
         poster.user_id = "123"
