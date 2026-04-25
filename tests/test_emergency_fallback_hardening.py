@@ -1124,7 +1124,10 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline.run_date = "2026-03-08"
         pipeline._active_emergency_fallback_version = "error_404_v1"
         pipeline._set_heartbeat_context = lambda **kwargs: None
-        pipeline._ensure_public_urls_reachable = lambda media_urls: True
+        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption: {
+            "asset_source": "emergency_fallback",
+            "public_url_checks": [{"label": "video", "reachable": True}, {"label": "thumb", "reachable": True}],
+        }
         pipeline._mark_posted_terminal_success = lambda **kwargs: self.fail("should not mark posted on publish failure")
 
         with patch.dict(
@@ -1203,7 +1206,10 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
         pipeline.run_date = "2026-03-08"
         pipeline._set_heartbeat_context = lambda **kwargs: None
-        pipeline._ensure_public_urls_reachable = lambda media_urls: True
+        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption: {
+            "asset_source": "auto_api",
+            "public_url_checks": [{"label": "video", "reachable": True}, {"label": "thumb", "reachable": True}],
+        }
         pipeline._mark_posted_terminal_success = lambda **kwargs: self.fail("should not mark posted on timeout")
 
         with patch.dict(
@@ -1223,6 +1229,110 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.stage, "Instagram Posting")
         self.assertEqual(ctx.exception.details_obj["terminal_status_code"], "TIMEOUT")
+
+    def test_step_14_retries_processing_error_with_cache_busted_urls(self):
+        fake_token_module = types.ModuleType("instagram_token_manager")
+
+        class _HealthyTokenManager:
+            def get_valid_token(self):
+                return "token"
+
+            def get_user_id(self):
+                return "123"
+
+        fake_token_module.get_instagram_token_manager = lambda: _HealthyTokenManager()
+
+        fake_poster_module = types.ModuleType("instagram_poster")
+        seen_urls = []
+        attempts = {"count": 0}
+
+        class _FakeDiagnosticsError(RuntimeError):
+            def __init__(self, phase, message, diagnostics):
+                self.phase = phase
+                self.diagnostics = diagnostics
+                super().__init__(message)
+
+            def details_tail(self, limit=4000):
+                return json.dumps(self.diagnostics)
+
+        class _Poster:
+            def __init__(self, access_token, user_id):
+                self.access_token = access_token
+                self.user_id = user_id
+                self.diagnostics_output_dir = None
+                self.run_date = None
+                self.publish_context = None
+
+            def set_publish_context(self, context):
+                self.publish_context = context
+
+            def create_media_container(self, video_url, thumb_url, caption):
+                seen_urls.append((video_url, thumb_url))
+                attempts["count"] += 1
+                return f"creation-{attempts['count']}"
+
+            def poll_processing_status(self, creation_id):
+                if creation_id == "creation-1":
+                    raise _FakeDiagnosticsError(
+                        "poll_processing",
+                        "Instagram processing returned terminal status_code=ERROR",
+                        {
+                            "phase": "poll_processing",
+                            "creation_id": creation_id,
+                            "terminal_status_code": "ERROR",
+                        },
+                    )
+                return True
+
+            def publish_media(self, creation_id):
+                return "post-1"
+
+            def get_permalink(self, post_id):
+                return "https://instagram.com/p/post-1"
+
+        fake_poster_module.InstagramPoster = _Poster
+        fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
+
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.daily_run = _FakeDailyRun()
+        pipeline.post_to_instagram = True
+        pipeline.in_emergency_fallback = False
+        pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
+        pipeline.run_date = "2026-03-08"
+        pipeline.run_token = "token123"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption: {
+            "public_url_checks": [{"label": "video", "url": video_url, "reachable": True}],
+        }
+        pipeline._mark_posted_terminal_success = lambda **kwargs: None
+
+        with patch.dict(
+            os.environ,
+            {
+                "INSTAGRAM_PROCESSING_MAX_ATTEMPTS": "2",
+                "INSTAGRAM_PROCESSING_RETRY_DELAY_SECONDS": "0",
+            },
+            clear=False,
+        ):
+            with patch.dict(
+                sys.modules,
+                {
+                    "instagram_token_manager": fake_token_module,
+                    "instagram_poster": fake_poster_module,
+                },
+            ):
+                result = WHOOPPipeline.step_14_post_instagram(
+                    pipeline,
+                    "https://example.com/video.mp4",
+                    "https://example.com/thumb.png",
+                    "caption",
+                )
+
+        self.assertEqual(result["post_id"], "post-1")
+        self.assertEqual(len(seen_urls), 2)
+        self.assertEqual(seen_urls[0][0], "https://example.com/video.mp4")
+        self.assertIn("ig_retry=2026-03-08-token123-2", seen_urls[1][0])
+        self.assertIn("ig_retry=2026-03-08-token123-2", seen_urls[1][1])
 
     def test_post_failure_during_run_does_not_archive_as_dry_run(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)

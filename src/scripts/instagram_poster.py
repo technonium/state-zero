@@ -68,10 +68,15 @@ class InstagramPoster:
         else:
             self.user_id = self.token_manager.get_user_id()
             
-        self.base_url = "https://graph.facebook.com/v22.0"
+        graph_api_version = (os.getenv("INSTAGRAM_GRAPH_API_VERSION") or "v25.0").strip() or "v25.0"
+        self.base_url = f"https://graph.facebook.com/{graph_api_version}"
         self.mock_mode = not self.access_token or self.access_token == 'mock'
         self.diagnostics_output_dir: Path | None = None
         self.run_date: str | None = None
+        self.publish_context: dict | None = None
+
+    def set_publish_context(self, context: dict | None):
+        self.publish_context = context or None
 
     def _diagnostics_path(self) -> Path | None:
         if self.diagnostics_output_dir is None:
@@ -151,6 +156,9 @@ class InstagramPoster:
             "user_id": self.user_id,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
+        publish_context = getattr(self, "publish_context", None)
+        if publish_context:
+            payload["publish_context"] = publish_context
         payload.update(context)
         return payload
 

@@ -92,6 +92,9 @@ PIPELINE_MODE=telegram    # Mode 2
 | `GOOGLE_VIDEO_POLL_SECONDS` | Polling interval while waiting for video rendering |
 | `INSTAGRAM_ACCESS_TOKEN` | Long-lived Instagram Graph API token (60-day expiry) |
 | `INSTAGRAM_USER_ID` | Instagram Business or Creator account numeric user ID |
+| `INSTAGRAM_GRAPH_API_VERSION` | Graph API version for Instagram publishing (default: `v25.0`) |
+| `INSTAGRAM_PROCESSING_MAX_ATTEMPTS` | Max media-container processing attempts after terminal processing errors (default: `2`) |
+| `INSTAGRAM_PROCESSING_RETRY_DELAY_SECONDS` | Delay before retrying a failed media-container processing attempt (default: `30`) |
 | `INSTAGRAM_AUTO_REFRESH_MODE` | `off` (validate-only), `legacy_ig` (legacy endpoint), or `hybrid` (fail-fast + proactive refresh with cooldown) |
 | `INSTAGRAM_REFRESH_THRESHOLD_DAYS` | In `hybrid`, refresh when days-to-expiry <= threshold (default: 14) |
 | `INSTAGRAM_REFRESH_COOLDOWN_HOURS` | Minimum hours between auto-refresh attempts (default: 12) |
@@ -1109,7 +1112,7 @@ Strain 14.56 • Recovery 51% • Sleep 7.08h
 #### 14a — Create media container
 
 ```bash
-curl -X POST "https://graph.facebook.com/v22.0/${INSTAGRAM_USER_ID}/media" \
+curl -X POST "https://graph.facebook.com/${INSTAGRAM_GRAPH_API_VERSION:-v25.0}/${INSTAGRAM_USER_ID}/media" \
   -d "media_type=REELS" \
   -d "video_url=${VIDEO_URL}" \
   -d "cover_url=${THUMB_URL}" \
@@ -1125,7 +1128,7 @@ Save returned `id` to `output/instagram_creation_id.txt`.
 ```bash
 CREATION_ID=$(cat output/instagram_creation_id.txt)
 for i in $(seq 1 30); do
-  STATUS=$(curl -s "https://graph.facebook.com/v22.0/${CREATION_ID}?fields=status_code,status&access_token=${INSTAGRAM_ACCESS_TOKEN}" \
+  STATUS=$(curl -s "https://graph.facebook.com/${INSTAGRAM_GRAPH_API_VERSION:-v25.0}/${CREATION_ID}?fields=status_code,status&access_token=${INSTAGRAM_ACCESS_TOKEN}" \
     | python3 -c "import sys,json; print(json.load(sys.stdin).get('status_code','UNKNOWN'))")
   echo "Poll ${i}: ${STATUS}"
   if [ "$STATUS" = "FINISHED" ]; then break; fi
@@ -1139,7 +1142,7 @@ Polls every 10 seconds, max 5 minutes. Stop and report if FINISHED never reached
 #### 14c — Publish
 
 ```bash
-PUBLISH_RESPONSE=$(curl -s -X POST "https://graph.facebook.com/v22.0/${INSTAGRAM_USER_ID}/media_publish" \
+PUBLISH_RESPONSE=$(curl -s -X POST "https://graph.facebook.com/${INSTAGRAM_GRAPH_API_VERSION:-v25.0}/${INSTAGRAM_USER_ID}/media_publish" \
   -d "creation_id=${CREATION_ID}" \
   -d "access_token=${INSTAGRAM_ACCESS_TOKEN}")
 
