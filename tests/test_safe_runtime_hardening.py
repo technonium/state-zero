@@ -154,6 +154,45 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(payload["publish_context"]["asset_source"], "auto_api")
         self.assertEqual(payload["publish_context"]["public_url_checks"][0]["label"], "video")
 
+    def test_diagnostics_history_preserves_multiple_publish_failures(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        def make_response(creation_id):
+            response = Mock()
+            response.status_code = 200
+            response.headers = {"x-fb-request-id": f"req-{creation_id}"}
+            response.json.return_value = {
+                "status_code": "ERROR",
+                "status": "Error: Media upload has failed with error code 2207076",
+                "id": creation_id,
+            }
+            return response
+
+        with patch("instagram_poster.requests.get", side_effect=[make_response("creation-1"), make_response("creation-2")]):
+            with self.assertRaises(InstagramPublishDiagnosticsError):
+                poster.poll_processing_status("creation-1", max_polls=1)
+            with self.assertRaises(InstagramPublishDiagnosticsError):
+                poster.poll_processing_status("creation-2", max_polls=1)
+
+        history_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics_history.json"
+        self.assertTrue(history_path.is_file())
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(history["events"]), 2)
+        self.assertEqual(history["events"][0]["creation_id"], "creation-1")
+        self.assertEqual(history["events"][1]["creation_id"], "creation-2")
+
     def test_poll_processing_status_retries_transient_network_then_succeeds(self):
         poster = InstagramPoster.__new__(InstagramPoster)
         poster.user_id = "123"
@@ -266,6 +305,94 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(payload["terminal_status_code"], "ERROR")
         self.assertEqual(payload["error_object"]["code"], 2207076)
         self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/poll")
+
+    def test_poll_processing_status_continues_after_soft_2207076_error(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        soft_error = Mock()
+        soft_error.status_code = 200
+        soft_error.headers = {"x-fb-request-id": "req-soft"}
+        soft_error.json.return_value = {
+            "status_code": "ERROR",
+            "status": "Error: Media upload has failed with error code 2207076",
+            "id": "creation-id",
+        }
+
+        in_progress = Mock()
+        in_progress.status_code = 200
+        in_progress.headers = {}
+        in_progress.json.return_value = {"status_code": "IN_PROGRESS"}
+
+        finished = Mock()
+        finished.status_code = 200
+        finished.headers = {}
+        finished.json.return_value = {"status_code": "FINISHED"}
+
+        with patch("instagram_poster.requests.get", side_effect=[soft_error, in_progress, finished]) as get_mock:
+            with patch("instagram_poster.time.sleep", return_value=None):
+                ok = poster.poll_processing_status("creation-id", max_polls=5)
+
+        self.assertTrue(ok)
+        self.assertEqual(get_mock.call_count, 3)
+        history_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics_history.json"
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(history["events"][0]["phase"], "poll_processing_soft_error")
+        self.assertEqual(history["events"][0]["soft_processing_error_count"], 1)
+
+    def test_poll_processing_status_fails_after_soft_2207076_limit(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v21.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-09"
+        poster.run_date = "2026-04-09"
+
+        def make_soft_error():
+            response = Mock()
+            response.status_code = 200
+            response.headers = {"x-fb-request-id": "req-soft"}
+            response.json.return_value = {
+                "status_code": "ERROR",
+                "status": "Error: Media upload has failed with error code 2207076",
+                "id": "creation-id",
+            }
+            return response
+
+        with patch.dict(os.environ, {"INSTAGRAM_SOFT_PROCESSING_ERROR_POLLS": "2"}, clear=False):
+            with patch("instagram_poster.requests.get", side_effect=[make_soft_error(), make_soft_error(), make_soft_error()]):
+                with patch("instagram_poster.time.sleep", return_value=None):
+                    with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                        poster.poll_processing_status("creation-id", max_polls=5)
+
+        self.assertEqual(ctx.exception.phase, "poll_processing")
+        self.assertEqual(ctx.exception.diagnostics["soft_processing_error_count"], 2)
+        self.assertEqual(ctx.exception.diagnostics["soft_processing_error_poll_limit"], 2)
+
+        history_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics_history.json"
+        history = json.loads(history_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(history["events"]), 3)
+        self.assertEqual(history["events"][0]["phase"], "poll_processing_soft_error")
+        self.assertEqual(history["events"][1]["phase"], "poll_processing_soft_error")
+        self.assertEqual(history["events"][2]["phase"], "poll_processing")
 
     def test_publish_media_terminal_error_writes_diagnostics_artifact(self):
         poster = InstagramPoster.__new__(InstagramPoster)

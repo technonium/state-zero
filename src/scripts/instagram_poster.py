@@ -50,6 +50,7 @@ class InstagramPoster:
     REQUEST_TIMEOUT = (10, 60)
     POLL_INTERVAL_SECONDS = 10
     POLL_MAX_BACKOFF_SECONDS = 60
+    DEFAULT_SOFT_PROCESSING_ERROR_CODES = frozenset({"2207076"})
     
     def __init__(self, access_token: str = None, user_id: str = None):
         # Use token manager to get valid token (handles refresh automatically)
@@ -84,6 +85,12 @@ class InstagramPoster:
                 return get_output_root() / self.run_date / "instagram_publish_diagnostics.json"
             return None
         return self.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+
+    def _diagnostics_history_path(self) -> Path | None:
+        path = self._diagnostics_path()
+        if path is None:
+            return None
+        return path.with_name("instagram_publish_diagnostics_history.json")
 
     def _response_snapshot(self, response: requests.Response) -> dict:
         headers = {}
@@ -127,6 +134,7 @@ class InstagramPoster:
         payload.update(updates)
         payload.setdefault("run_date", self.run_date)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self._append_diagnostics_history(payload)
 
         tmp_path = None
         try:
@@ -149,6 +157,58 @@ class InstagramPoster:
                     pass
         return path
 
+    def _append_diagnostics_history(self, event: dict):
+        path = self._diagnostics_history_path()
+        if path is None:
+            return
+
+        ensure_path(path.parent)
+        history = []
+        if path.exists():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    history = payload.get("events", [])
+                elif isinstance(payload, list):
+                    history = payload
+            except Exception:
+                history = []
+        if not isinstance(history, list):
+            history = []
+
+        try:
+            limit = max(1, int(os.getenv("INSTAGRAM_DIAGNOSTICS_HISTORY_LIMIT", "20") or "20"))
+        except ValueError:
+            limit = 20
+
+        history.append(event)
+        history = history[-limit:]
+        payload = {
+            "run_date": self.run_date,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "events": history,
+        }
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                delete=False,
+            ) as handle:
+                json.dump(payload, handle, indent=2, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+                tmp_path = handle.name
+            os.replace(tmp_path, path)
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
     def _base_diagnostics(self, phase: str, **context) -> dict:
         payload = {
             "phase": phase,
@@ -161,6 +221,27 @@ class InstagramPoster:
             payload["publish_context"] = publish_context
         payload.update(context)
         return payload
+
+    def _soft_processing_error_codes(self) -> set[str]:
+        raw = os.getenv("INSTAGRAM_SOFT_PROCESSING_ERROR_CODES", "2207076")
+        codes = {part.strip() for part in raw.split(",") if part.strip()}
+        return codes or set(self.DEFAULT_SOFT_PROCESSING_ERROR_CODES)
+
+    def _soft_processing_error_poll_limit(self) -> int:
+        try:
+            return max(0, int(os.getenv("INSTAGRAM_SOFT_PROCESSING_ERROR_POLLS", "6") or "6"))
+        except ValueError:
+            return 6
+
+    def _is_soft_processing_error(self, data: dict) -> bool:
+        codes = self._soft_processing_error_codes()
+        error_data = data.get("error") or {}
+        candidates = {
+            str(error_data.get("code") or "").strip(),
+            str(error_data.get("error_subcode") or "").strip(),
+        }
+        status_text = str(data.get("status") or "")
+        return any(candidate in codes for candidate in candidates) or any(code in status_text for code in codes)
 
     def _raise_diagnostics_error(
         self,
@@ -403,6 +484,8 @@ class InstagramPoster:
         deadline = time.monotonic() + max_duration_seconds
         polls = 0
         transient_errors = 0
+        soft_processing_errors = 0
+        soft_processing_error_poll_limit = self._soft_processing_error_poll_limit()
 
         while polls < max_polls and time.monotonic() < deadline:
             print(f"▶ Polling status (Attempt {polls+1}/{max_polls})...")
@@ -486,6 +569,33 @@ class InstagramPoster:
                     print(f"❌ Processing ERROR for {creation_id}: Code={error_code}, Message={error_message}")
                 else:
                     print(f"❌ Processing ERROR for {creation_id} (status={status_field})")
+                remaining = deadline - time.monotonic()
+                if (
+                    self._is_soft_processing_error(data)
+                    and soft_processing_errors < soft_processing_error_poll_limit
+                    and polls < max_polls
+                    and remaining > 0
+                ):
+                    soft_processing_errors += 1
+                    self._append_diagnostics_history(
+                        self._base_diagnostics(
+                            "poll_processing_soft_error",
+                            creation_id=creation_id,
+                            terminal_status_code=status,
+                            poll_attempt=polls,
+                            soft_processing_error_count=soft_processing_errors,
+                            soft_processing_error_poll_limit=soft_processing_error_poll_limit,
+                            poll_response=self._response_snapshot(response),
+                            error_object=error_data or None,
+                            status=status_field or None,
+                        )
+                    )
+                    print(
+                        "⚠ Treating Instagram processing ERROR as soft/transient "
+                        f"for {creation_id} ({soft_processing_errors}/{soft_processing_error_poll_limit})."
+                    )
+                    time.sleep(min(self.POLL_INTERVAL_SECONDS, remaining))
+                    continue
                 raise self._raise_diagnostics_error(
                     phase="poll_processing",
                     message=f"Instagram processing returned terminal status_code=ERROR for creation_id={creation_id}",
@@ -496,6 +606,8 @@ class InstagramPoster:
                         "poll_response": self._response_snapshot(response),
                         "error_object": error_data or None,
                         "status": status_field or None,
+                        "soft_processing_error_count": soft_processing_errors,
+                        "soft_processing_error_poll_limit": soft_processing_error_poll_limit,
                     },
                 )
 

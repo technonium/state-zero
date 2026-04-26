@@ -95,6 +95,9 @@ PIPELINE_MODE=telegram    # Mode 2
 | `INSTAGRAM_GRAPH_API_VERSION` | Graph API version for Instagram publishing (default: `v25.0`) |
 | `INSTAGRAM_PROCESSING_MAX_ATTEMPTS` | Max media-container processing attempts after terminal processing errors (default: `2`) |
 | `INSTAGRAM_PROCESSING_RETRY_DELAY_SECONDS` | Delay before retrying a failed media-container processing attempt (default: `30`) |
+| `INSTAGRAM_SOFT_PROCESSING_ERROR_CODES` | Comma-separated processing error codes to keep polling through before treating as terminal (default: `2207076`) |
+| `INSTAGRAM_SOFT_PROCESSING_ERROR_POLLS` | Number of soft processing error polls tolerated before terminal failure (default: `6`) |
+| `INSTAGRAM_DIAGNOSTICS_HISTORY_LIMIT` | Number of Instagram diagnostics events preserved in `instagram_publish_diagnostics_history.json` (default: `20`) |
 | `INSTAGRAM_AUTO_REFRESH_MODE` | `off` (validate-only), `legacy_ig` (legacy endpoint), or `hybrid` (fail-fast + proactive refresh with cooldown) |
 | `INSTAGRAM_REFRESH_THRESHOLD_DAYS` | In `hybrid`, refresh when days-to-expiry <= threshold (default: 14) |
 | `INSTAGRAM_REFRESH_COOLDOWN_HOURS` | Minimum hours between auto-refresh attempts (default: 12) |
