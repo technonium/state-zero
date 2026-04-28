@@ -18,7 +18,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from database_manager import CardDatabase
-from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError
+from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError, InstagramPublishResult
 
 
 class SafeRuntimeHardeningTests(unittest.TestCase):
@@ -111,6 +111,212 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(payload["response"]["http_status"], 400)
         self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/create")
         self.assertEqual(payload["create_container_response"]["http_status"], 400)
+
+    def test_resumable_publish_uploads_local_video_bytes_and_returns_permalink(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v25.0"
+        poster.graph_api_version = "v25.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+        poster.publish_context = None
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-28"
+        poster.run_date = "2026-04-28"
+        video_path = Path(tmpdir.name) / "card_final.mp4"
+        video_path.write_bytes(b"fake mp4 bytes")
+
+        create_response = Mock()
+        create_response.status_code = 200
+        create_response.headers = {"x-fb-request-id": "req-create"}
+        create_response.json.return_value = {
+            "id": "creation-id",
+            "uri": "https://rupload.facebook.com/ig-api-upload/v25.0/creation-id",
+        }
+
+        upload_response = Mock()
+        upload_response.status_code = 200
+        upload_response.headers = {"x-fb-request-id": "req-upload"}
+        upload_response.json.return_value = {"success": True, "message": "Upload Successful."}
+
+        publish_response = Mock()
+        publish_response.status_code = 200
+        publish_response.headers = {"x-fb-request-id": "req-publish"}
+        publish_response.json.return_value = {"id": "post-id"}
+
+        poll_response = Mock()
+        poll_response.status_code = 200
+        poll_response.headers = {}
+        poll_response.json.return_value = {"status_code": "FINISHED"}
+
+        permalink_response = Mock()
+        permalink_response.status_code = 200
+        permalink_response.headers = {}
+        permalink_response.json.return_value = {"permalink": "https://instagram.example/reel/post-id/"}
+
+        with patch.object(poster, "validate_local_video_for_reels", return_value={"path": str(video_path)}):
+            with patch.object(poster, "check_content_publishing_limit", return_value={"data": []}):
+                with patch(
+                    "instagram_poster.requests.post",
+                    side_effect=[create_response, upload_response, publish_response],
+                ) as post_mock:
+                    with patch("instagram_poster.requests.get", side_effect=[poll_response, permalink_response]):
+                        result = poster.publish_resumable_binary_and_get_result(video_path, "caption")
+
+        self.assertEqual(result.post_id, "post-id")
+        self.assertEqual(result.permalink, "https://instagram.example/reel/post-id/")
+        create_payload = post_mock.call_args_list[0].kwargs["data"]
+        self.assertEqual(create_payload["upload_type"], "resumable")
+        self.assertEqual(create_payload["media_type"], "REELS")
+        self.assertNotIn("cover_url", create_payload)
+        upload_headers = post_mock.call_args_list[1].kwargs["headers"]
+        self.assertEqual(upload_headers["Authorization"], "OAuth token")
+        self.assertEqual(upload_headers["offset"], "0")
+        self.assertEqual(upload_headers["file_size"], str(len(b"fake mp4 bytes")))
+        self.assertEqual(upload_headers["Content-Type"], "video/mp4")
+
+    def test_resumable_upload_failure_writes_diagnostics_without_posting(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.access_token = "token"
+        poster.base_url = "https://graph.facebook.com/v25.0"
+        poster.graph_api_version = "v25.0"
+        poster.mock_mode = False
+        poster.REQUEST_TIMEOUT = (10, 60)
+        poster.POLL_INTERVAL_SECONDS = 10
+        poster.POLL_MAX_BACKOFF_SECONDS = 60
+        poster.publish_context = None
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        poster.diagnostics_output_dir = Path(tmpdir.name) / "runtime" / "output" / "2026-04-28"
+        poster.run_date = "2026-04-28"
+        video_path = Path(tmpdir.name) / "card_final.mp4"
+        video_path.write_bytes(b"fake mp4 bytes")
+
+        response = Mock()
+        response.status_code = 500
+        response.headers = {"x-fb-request-id": "req-upload"}
+        response.json.return_value = {"error": {"message": "ProcessingFailedError"}}
+
+        with patch("instagram_poster.requests.post", return_value=response):
+            with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                poster.upload_resumable_video("https://rupload.facebook.com/ig-api-upload/v25.0/creation-id", video_path)
+
+        self.assertEqual(ctx.exception.phase, "upload_resumable_video")
+        artifact_path = poster.diagnostics_output_dir / "instagram_publish_diagnostics.json"
+        payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["phase"], "upload_resumable_video")
+        self.assertEqual(payload["publish_strategy"], "resumable_binary")
+
+    def test_resumable_preflight_allows_silent_video_with_warning(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        video_path = Path(tempfile.gettempdir()) / "card_final.mp4"
+        snapshot = {
+            "path": str(video_path),
+            "exists": True,
+            "ffprobe": {
+                "data": {
+                    "streams": [
+                        {
+                            "codec_type": "video",
+                            "codec_name": "h264",
+                            "pix_fmt": "yuv420p",
+                            "width": 1080,
+                            "height": 1920,
+                        }
+                    ],
+                    "format": {"duration": "8.0"},
+                }
+            },
+        }
+
+        with patch.object(poster, "_local_video_snapshot", return_value=snapshot):
+            result = poster.validate_local_video_for_reels(video_path)
+
+        self.assertEqual(result["preflight_warnings"], ["missing audio stream"])
+
+    def test_auto_strategy_binary_success_does_not_require_public_urls(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        video_path = Path(tempfile.gettempdir()) / "card_final.mp4"
+
+        with patch.object(
+            poster,
+            "publish_resumable_binary_and_get_result",
+            return_value=InstagramPublishResult("post-id", "https://instagram.example/reel/post-id/"),
+        ) as binary_mock:
+            with patch.object(poster, "publish_and_get_result") as url_mock:
+                result = poster.publish_with_strategy(
+                    video_url=None,
+                    cover_url=None,
+                    caption="caption",
+                    local_video_path=video_path,
+                    strategy="auto",
+                )
+
+        self.assertEqual(result.post_id, "post-id")
+        binary_mock.assert_called_once_with(video_path, "caption")
+        url_mock.assert_not_called()
+
+    def test_auto_strategy_binary_failure_without_urls_does_not_fall_back_to_video_url(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.diagnostics_output_dir = None
+        poster.run_date = None
+        video_path = Path(tempfile.gettempdir()) / "card_final.mp4"
+        error = InstagramPublishDiagnosticsError(
+            "upload_resumable_video",
+            "binary failed",
+            {"phase": "upload_resumable_video"},
+        )
+
+        with patch.object(poster, "publish_resumable_binary_and_get_result", side_effect=error):
+            with patch.object(poster, "publish_and_get_result") as url_mock:
+                with self.assertRaises(InstagramPublishDiagnosticsError) as ctx:
+                    poster.publish_with_strategy(
+                        video_url=None,
+                        cover_url=None,
+                        caption="caption",
+                        local_video_path=video_path,
+                        strategy="auto",
+                    )
+
+        self.assertIs(ctx.exception, error)
+        url_mock.assert_not_called()
+
+    def test_auto_strategy_binary_failure_falls_back_only_when_urls_exist(self):
+        poster = InstagramPoster.__new__(InstagramPoster)
+        poster.user_id = "123"
+        poster.diagnostics_output_dir = None
+        poster.run_date = None
+        video_path = Path(tempfile.gettempdir()) / "card_final.mp4"
+        error = InstagramPublishDiagnosticsError(
+            "upload_resumable_video",
+            "binary failed",
+            {"phase": "upload_resumable_video"},
+        )
+
+        with patch.object(poster, "publish_resumable_binary_and_get_result", side_effect=error):
+            with patch.object(
+                poster,
+                "publish_and_get_result",
+                return_value=InstagramPublishResult("post-id", "https://instagram.example/reel/post-id/"),
+            ) as url_mock:
+                result = poster.publish_with_strategy(
+                    video_url="https://example.com/video.mp4",
+                    cover_url="https://example.com/thumb.png",
+                    caption="caption",
+                    local_video_path=video_path,
+                    strategy="auto",
+                )
+
+        self.assertEqual(result.post_id, "post-id")
+        url_mock.assert_called_once_with("https://example.com/video.mp4", "https://example.com/thumb.png", "caption")
 
     def test_publish_context_is_included_in_diagnostics(self):
         poster = InstagramPoster.__new__(InstagramPoster)
@@ -304,6 +510,7 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(payload["creation_id"], "creation-id")
         self.assertEqual(payload["terminal_status_code"], "ERROR")
         self.assertEqual(payload["error_object"]["code"], 2207076)
+        self.assertEqual(payload["failure_classification"], "instagram_media_ingest_failure")
         self.assertEqual(payload["response"]["headers"]["debug-link"], "https://debug.example/poll")
 
     def test_poll_processing_status_continues_after_soft_2207076_error(self):

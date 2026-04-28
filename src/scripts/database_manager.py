@@ -344,6 +344,27 @@ class CardDatabase:
         finally:
             conn.close()
 
+    def has_archived_environment_history_for_date(self, run_date: str) -> bool:
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            row = cursor.execute(
+                """
+                SELECT 1
+                FROM environment_history
+                WHERE date = ?
+                  AND selection_stage IN ('cards_archive', 'cards_backfill')
+                LIMIT 1
+                """,
+                (run_date,),
+            ).fetchone()
+            return row is not None
+        finally:
+            conn.close()
+
+    def has_complete_archive_for_date(self, run_date: str) -> bool:
+        return self.has_card_for_date(run_date) and self.has_archived_environment_history_for_date(run_date)
+
     def get_recent_creature_names(self, before_date: str, limit: int = 10) -> list[str]:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -459,8 +480,6 @@ def main():
     parser.add_argument('--file', help='Path to the JSON payload file')
     args = parser.parse_args()
 
-    db = CardDatabase()
-
     if args.insert:
         if args.file:
             payload_path = Path(args.file)
@@ -469,6 +488,7 @@ def main():
             
         if payload_path.exists():
             try:
+                db = CardDatabase()
                 with open(payload_path, 'r', encoding='utf-8') as f:
                     card_data = json.load(f)
                 db.insert_card(card_data)
@@ -487,6 +507,7 @@ def main():
 
         if payload_path.exists():
             try:
+                db = CardDatabase()
                 with open(payload_path, 'r', encoding='utf-8') as f:
                     fallback_data = json.load(f)
                 db.insert_fallback_post(fallback_data)
