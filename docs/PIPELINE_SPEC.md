@@ -171,6 +171,9 @@ Important:
 
 - `validate.py` requires VPS vars when `PIPELINE_POST_TO_INSTAGRAM=true`:
   - `VPS_PUBLIC_BASE_URL`, `VPS_SSH_HOST`, `VPS_SSH_USER`, `VPS_SSH_PATH`.
+- Optional Dokploy/Docker Swarm users can run the deployment safety guard before a rebuild:
+  `python3 ops/check_dokploy_deployment_safety.py --ssh-host <vps-host> --ssh-user root --identity-file <identity-file> --service <docker-service-name>`.
+  The guard is only for deployments that intentionally use the documented VPS layout. It checks `STATE_ZERO_PRIVATE_ROOT=/opt/state-zero-private`, `PIPELINE_MEDIA_MODE=live_vps`, `VPS_SSH_PATH=/srv/state-zero-media`, and writable bind mounts for `/opt/state-zero-private` and `/srv/state-zero-media`.
 - When `EMERGENCY_FALLBACK_ENABLED=true`, `validate.py` always checks the private fallback manifest and local fallback media integrity.
 - Before the cutoff, validation enforces full pipeline readiness. At/after the cutoff, validation switches to fallback-only rescue readiness and no longer requires WHOOP, OpenRouter, Google, or Telegram inputs if the fallback can still be posted.
 - `PIPELINE_TERMINAL_RESCUE_RUN=true` is still supported for the dedicated 2:00 PM IST rescue schedule, but the pipeline also self-promotes into rescue mode once the configured local deadline has passed.

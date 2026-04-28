@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 
 VALID_MEDIA_MODES = ("local_test", "live_vps")
+SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES = frozenset({"resumable_binary", "video_url", "auto"})
 PROJECT_ROOT_SENTINELS = (".git", "requirements.txt", "Dockerfile")
 DEFAULT_PIPELINE_TIMEZONE = "Asia/Kolkata"
 LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -33,6 +34,14 @@ def env_bool(name: str, default: bool = False) -> bool:
     if val is None:
         return default
     return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def resolve_instagram_publish_strategy(strategy: str | None = None) -> str:
+    """Resolve Instagram publish strategy with a safe production default."""
+    resolved = (strategy or os.getenv("INSTAGRAM_PUBLISH_STRATEGY") or "resumable_binary").strip().lower()
+    if resolved not in SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES:
+        return "resumable_binary"
+    return resolved
 
 
 def get_project_root() -> Path:
@@ -67,23 +76,25 @@ def get_private_root() -> Path:
 
     Resolution order:
     1. STATE_ZERO_PRIVATE_ROOT env var
-    2. Sibling folder named "<project> Private" if it exists
-    3. Default sibling folder path (preferred local layout)
+    2. Existing sibling folder named "<project>-private"
+    3. Existing sibling folder named "<project> Private"
+    4. Default sibling folder path using the current hyphenated layout
     """
     configured = os.getenv("STATE_ZERO_PRIVATE_ROOT", "").strip()
     if configured:
         return Path(configured).expanduser()
 
     project_root = get_project_root()
-    sibling_private = project_root.parent / f"{project_root.name} Private"
+    sibling_candidates = (
+        project_root.parent / f"{project_root.name}-private",
+        project_root.parent / f"{project_root.name} Private",
+    )
 
-    if sibling_private.exists() and (
-        (sibling_private / "astrology").exists()
-        or (sibling_private / "runtime").exists()
-    ):
-        return sibling_private
+    for candidate in sibling_candidates:
+        if candidate.is_dir():
+            return candidate
 
-    return sibling_private
+    return sibling_candidates[0]
 
 
 def get_runtime_root() -> Path:

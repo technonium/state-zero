@@ -175,6 +175,49 @@ class EnvironmentSelectionTests(unittest.TestCase):
 
         self.assertEqual(history_row, ("cards_archive",))
 
+    def test_complete_archive_requires_card_and_archived_environment_history(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                db = CardDatabase()
+                db.upsert_environment_history(
+                    run_date="2026-03-09",
+                    energy_zone="LOW",
+                    environment_name="Frozen/Ice",
+                    environment_text="Frozen/Ice — selected only",
+                    selection_stage="environment_selected",
+                )
+
+                self.assertFalse(db.has_archived_environment_history_for_date("2026-03-09"))
+                self.assertFalse(db.has_complete_archive_for_date("2026-03-09"))
+
+                db.insert_card(
+                    {
+                        "date": "2026-03-09",
+                        "title": "Title",
+                        "scene_description": "scene",
+                        "environment": "Frozen/Ice — archived reason",
+                        "environment_name": "Frozen/Ice",
+                        "environment_reason": "archived reason",
+                        "creature": "Moth — quiet drift",
+                        "blend_option": "Option A",
+                        "energy_zone": "LOW",
+                        "image_path": "/tmp/image.png",
+                        "video_path": "/tmp/video.mp4",
+                        "image_prompt_json": "{}",
+                        "instagram_post_id": "ig_2026-03-09",
+                    }
+                )
+
+                self.assertTrue(db.has_archived_environment_history_for_date("2026-03-09"))
+                self.assertTrue(db.has_complete_archive_for_date("2026-03-09"))
+
     def test_environment_history_backfills_missing_real_rows_without_restoring_mock_rows(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(

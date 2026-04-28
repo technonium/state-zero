@@ -4,6 +4,9 @@ import time
 import argparse
 import json
 import tempfile
+import hashlib
+import subprocess
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from pathlib import Path
 import requests
@@ -12,10 +15,10 @@ from typing import Optional, Tuple
 # Import token manager - works both as script and module
 try:
     from .instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
-    from .utils import ensure_path, get_output_root
+    from .utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy
 except ImportError:
     from instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
-    from utils import ensure_path, get_output_root
+    from utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy
 
 
 class InstagramPublishDiagnosticsError(RuntimeError):
@@ -51,6 +54,7 @@ class InstagramPoster:
     POLL_INTERVAL_SECONDS = 10
     POLL_MAX_BACKOFF_SECONDS = 60
     DEFAULT_SOFT_PROCESSING_ERROR_CODES = frozenset({"2207076"})
+    SUPPORTED_PUBLISH_STRATEGIES = SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES
     
     def __init__(self, access_token: str = None, user_id: str = None):
         # Use token manager to get valid token (handles refresh automatically)
@@ -71,6 +75,7 @@ class InstagramPoster:
             
         graph_api_version = (os.getenv("INSTAGRAM_GRAPH_API_VERSION") or "v25.0").strip() or "v25.0"
         self.base_url = f"https://graph.facebook.com/{graph_api_version}"
+        self.graph_api_version = graph_api_version
         self.mock_mode = not self.access_token or self.access_token == 'mock'
         self.diagnostics_output_dir: Path | None = None
         self.run_date: str | None = None
@@ -214,6 +219,7 @@ class InstagramPoster:
             "phase": phase,
             "run_date": self.run_date,
             "user_id": self.user_id,
+            "graph_api_version": getattr(self, "graph_api_version", None),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         publish_context = getattr(self, "publish_context", None)
@@ -242,6 +248,11 @@ class InstagramPoster:
         }
         status_text = str(data.get("status") or "")
         return any(candidate in codes for candidate in candidates) or any(code in status_text for code in codes)
+
+    def _classify_processing_error(self, data: dict) -> str | None:
+        if self._is_soft_processing_error(data):
+            return "instagram_media_ingest_failure"
+        return None
 
     def _raise_diagnostics_error(
         self,
@@ -362,6 +373,153 @@ class InstagramPoster:
         
         return False, f"HTTP {status_code}: Non-transient"
 
+    def _publish_strategy(self) -> str:
+        return resolve_instagram_publish_strategy()
+
+    def _share_to_feed(self) -> str:
+        share_to_feed = (os.getenv("INSTAGRAM_SHARE_TO_FEED", "false") or "false").strip().lower()
+        return share_to_feed if share_to_feed in {"true", "false"} else "false"
+
+    def _thumb_offset(self) -> str:
+        raw = (os.getenv("INSTAGRAM_THUMB_OFFSET_MS") or "1000").strip()
+        try:
+            return str(max(0, int(raw)))
+        except ValueError:
+            return "1000"
+
+    def _local_video_snapshot(self, video_path: Path) -> dict:
+        snapshot = {
+            "path": str(video_path),
+            "exists": video_path.exists(),
+        }
+        if not video_path.exists():
+            return snapshot
+        try:
+            stat = video_path.stat()
+            snapshot["size_bytes"] = stat.st_size
+            snapshot["mtime_utc"] = datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
+            digest = hashlib.sha256()
+            with video_path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            snapshot["sha256"] = digest.hexdigest()
+        except Exception as e:
+            snapshot["stat_error"] = str(e)
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-hide_banner",
+                    "-v",
+                    "error",
+                    "-show_format",
+                    "-show_streams",
+                    "-of",
+                    "json",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            snapshot["ffprobe"] = {
+                "returncode": result.returncode,
+                "stdout_tail": result.stdout[-4000:],
+                "stderr_tail": result.stderr[-1000:],
+            }
+            if result.returncode == 0 and result.stdout:
+                data = json.loads(result.stdout)
+                snapshot["ffprobe"]["data"] = data
+        except Exception as e:
+            snapshot["ffprobe"] = {"error": str(e)}
+        return snapshot
+
+    def validate_local_video_for_reels(self, video_path: Path) -> dict:
+        snapshot = self._local_video_snapshot(video_path)
+        if not snapshot.get("exists"):
+            raise self._raise_diagnostics_error(
+                phase="media_preflight",
+                message=f"Local Instagram video is missing: {video_path}",
+                extra={"publish_strategy": "resumable_binary", "local_video": snapshot},
+            )
+
+        data = ((snapshot.get("ffprobe") or {}).get("data") or {})
+        streams = data.get("streams") or []
+        video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
+        audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+        fmt = data.get("format") or {}
+        problems = []
+        warnings = []
+        if not video_stream:
+            problems.append("missing video stream")
+        else:
+            if video_stream.get("codec_name") not in {"h264", "hevc"}:
+                problems.append(f"unsupported video codec: {video_stream.get('codec_name')}")
+            if video_stream.get("pix_fmt") != "yuv420p":
+                problems.append(f"unexpected pixel format: {video_stream.get('pix_fmt')}")
+            if int(video_stream.get("width") or 0) < 1 or int(video_stream.get("height") or 0) < 1:
+                problems.append("invalid video dimensions")
+        if not audio_stream:
+            warnings.append("missing audio stream")
+        elif audio_stream.get("codec_name") != "aac":
+            problems.append(f"unsupported audio codec: {audio_stream.get('codec_name')}")
+        try:
+            duration = float(fmt.get("duration") or 0)
+            if duration < 3:
+                problems.append(f"duration too short: {duration}")
+        except ValueError:
+            problems.append("unparseable duration")
+
+        if problems:
+            raise self._raise_diagnostics_error(
+                phase="media_preflight",
+                message="Local Instagram video failed Reels preflight: " + "; ".join(problems),
+                extra={
+                    "publish_strategy": "resumable_binary",
+                    "local_video": snapshot,
+                    "preflight_problems": problems,
+                },
+            )
+        if warnings:
+            snapshot["preflight_warnings"] = warnings
+        return snapshot
+
+    def check_content_publishing_limit(self) -> dict:
+        if self.mock_mode:
+            return {"mock": True}
+        response = requests.get(
+            f"{self.base_url}/{self.user_id}/content_publishing_limit",
+            params={
+                "fields": "config,quota_usage",
+                "access_token": self.access_token,
+            },
+            timeout=self.REQUEST_TIMEOUT,
+        )
+        try:
+            data = response.json()
+        except Exception:
+            data = self._response_snapshot(response).get("body", {})
+        if response.status_code >= 400:
+            raise self._raise_diagnostics_error(
+                phase="content_publishing_limit",
+                message=f"Failed to check Instagram content publishing limit: {data}",
+                response=response,
+            )
+        rows = data.get("data") or []
+        if rows:
+            config = rows[0].get("config") or {}
+            quota_total = config.get("quota_total")
+            quota_usage = rows[0].get("quota_usage")
+            if quota_total is not None and quota_usage is not None and int(quota_usage) >= int(quota_total):
+                raise self._raise_diagnostics_error(
+                    phase="content_publishing_limit",
+                    message=f"Instagram content publishing quota exhausted: {quota_usage}/{quota_total}",
+                    response=response,
+                    extra={"content_publishing_limit": data},
+                )
+        return data
+
     def _get_retry_after_seconds(self, response: requests.Response) -> Optional[int]:
         """Return Retry-After delay when present and parseable."""
         retry_after = response.headers.get("Retry-After")
@@ -471,6 +629,107 @@ class InstagramPoster:
                 if artifact_path is not None:
                     diagnostics["artifact_path"] = str(artifact_path)
                 raise InstagramPublishDiagnosticsError("create_container", message, diagnostics) from e
+
+    def create_resumable_media_container(self, caption: str) -> tuple[str, str]:
+        """Create a Reels container that accepts a binary rupload transfer."""
+        if self.mock_mode:
+            return "mock_creation_id_123", "mock://rupload"
+
+        payload = {
+            "media_type": "REELS",
+            "upload_type": "resumable",
+            "caption": caption,
+            "share_to_feed": self._share_to_feed(),
+            "thumb_offset": self._thumb_offset(),
+            "access_token": self.access_token,
+        }
+        response = requests.post(
+            f"{self.base_url}/{self.user_id}/media",
+            data=payload,
+            timeout=self.REQUEST_TIMEOUT,
+        )
+        try:
+            response_data = response.json()
+        except Exception:
+            response_data = self._response_snapshot(response).get("body", {})
+
+        creation_id = response_data.get("id")
+        upload_uri = response_data.get("uri")
+        if creation_id and upload_uri:
+            self._persist_diagnostics(
+                self._base_diagnostics(
+                    "create_resumable_container",
+                    publish_strategy="resumable_binary",
+                    creation_id=creation_id,
+                    upload_uri_host=urlparse(upload_uri).netloc,
+                    response=self._response_snapshot(response),
+                )
+            )
+            print(f"✅ Resumable container created with ID: {creation_id}")
+            return creation_id, upload_uri
+
+        message = f"Failed to create resumable container: {response_data}"
+        raise self._raise_diagnostics_error(
+            phase="create_resumable_container",
+            message=message,
+            response=response,
+            extra={
+                "publish_strategy": "resumable_binary",
+                "create_container_response": self._response_snapshot(response),
+            },
+        )
+
+    def upload_resumable_video(self, upload_uri: str, video_path: Path) -> dict:
+        """Upload the local MP4 bytes to Meta's rupload endpoint."""
+        if self.mock_mode:
+            return {"mock": True, "success": True}
+
+        file_size = video_path.stat().st_size
+        started = time.monotonic()
+        with video_path.open("rb") as handle:
+            response = requests.post(
+                upload_uri,
+                headers={
+                    "Authorization": f"OAuth {self.access_token}",
+                    "offset": "0",
+                    "file_size": str(file_size),
+                    "Content-Type": "video/mp4",
+                    "Content-Length": str(file_size),
+                },
+                data=handle,
+                timeout=(self.REQUEST_TIMEOUT[0], 300),
+            )
+        elapsed = round(time.monotonic() - started, 3)
+        try:
+            response_data = response.json()
+        except Exception:
+            response_data = self._response_snapshot(response).get("body", {})
+
+        snapshot = self._response_snapshot(response)
+        if response.status_code < 400 and response_data.get("success"):
+            self._persist_diagnostics(
+                self._base_diagnostics(
+                    "upload_resumable_video",
+                    publish_strategy="resumable_binary",
+                    upload_uri_host=urlparse(upload_uri).netloc,
+                    upload_elapsed_seconds=elapsed,
+                    upload_response=snapshot,
+                )
+            )
+            print("✅ Resumable video upload completed")
+            return response_data
+
+        raise self._raise_diagnostics_error(
+            phase="upload_resumable_video",
+            message=f"Failed to upload resumable video: {response_data}",
+            response=response,
+            extra={
+                "publish_strategy": "resumable_binary",
+                "upload_uri_host": urlparse(upload_uri).netloc,
+                "upload_elapsed_seconds": elapsed,
+                "upload_response": snapshot,
+            },
+        )
 
     def poll_processing_status(self, creation_id: str, max_polls=30) -> bool:
         """Step 14b: Poll for processing completion"""
@@ -606,6 +865,7 @@ class InstagramPoster:
                         "poll_response": self._response_snapshot(response),
                         "error_object": error_data or None,
                         "status": status_field or None,
+                        "failure_classification": self._classify_processing_error(data),
                         "soft_processing_error_count": soft_processing_errors,
                         "soft_processing_error_poll_limit": soft_processing_error_poll_limit,
                     },
@@ -766,6 +1026,74 @@ class InstagramPoster:
         permalink = self.get_permalink(post_id)
         
         return InstagramPublishResult(post_id=post_id, permalink=permalink)
+
+    def publish_resumable_binary_and_get_result(self, video_path: Path, caption: str) -> InstagramPublishResult:
+        """Publish a Reel by uploading the local MP4 bytes directly to Meta."""
+        if self.mock_mode:
+            return InstagramPublishResult(post_id="mock_ig_post_456", permalink="https://instagram.com/p/mock_permalink")
+
+        local_video = self.validate_local_video_for_reels(video_path)
+        limit_report = self.check_content_publishing_limit()
+        creation_id, upload_uri = self.create_resumable_media_container(caption)
+        self.upload_resumable_video(upload_uri, video_path)
+        if not self.poll_processing_status(creation_id):
+            raise self.build_processing_timeout_error(creation_id)
+        post_id = self.publish_media(creation_id)
+        permalink = self.get_permalink(post_id)
+        self._persist_diagnostics(
+            self._base_diagnostics(
+                "publish_complete",
+                publish_strategy="resumable_binary",
+                creation_id=creation_id,
+                post_id=post_id,
+                permalink=permalink,
+                local_video=local_video,
+                content_publishing_limit=limit_report,
+            )
+        )
+        return InstagramPublishResult(post_id=post_id, permalink=permalink)
+
+    def publish_with_strategy(
+        self,
+        *,
+        video_url: str | None,
+        cover_url: str | None,
+        caption: str,
+        local_video_path: Path | None = None,
+        strategy: str | None = None,
+    ) -> InstagramPublishResult:
+        resolved_strategy = resolve_instagram_publish_strategy(strategy or self._publish_strategy())
+
+        if resolved_strategy == "video_url":
+            if not (video_url and cover_url):
+                raise ValueError("video_url and cover_url are required for video_url Instagram publishing")
+            return self.publish_and_get_result(video_url, cover_url, caption)
+
+        if resolved_strategy == "resumable_binary":
+            if local_video_path is None:
+                raise ValueError("local_video_path is required for resumable_binary Instagram publishing")
+            return self.publish_resumable_binary_and_get_result(local_video_path, caption)
+
+        # auto: prefer binary upload, then keep the legacy URL path as a diagnostic fallback.
+        binary_error = None
+        if local_video_path is not None:
+            try:
+                return self.publish_resumable_binary_and_get_result(local_video_path, caption)
+            except InstagramPublishDiagnosticsError as error:
+                binary_error = error
+                self._append_diagnostics_history(
+                    self._base_diagnostics(
+                        "resumable_binary_auto_fallback",
+                        publish_strategy="auto",
+                        binary_failure_phase=error.phase,
+                        binary_failure=error.diagnostics,
+                    )
+                )
+        if video_url and cover_url:
+            return self.publish_and_get_result(video_url, cover_url, caption)
+        if binary_error is not None:
+            raise binary_error
+        raise ValueError("auto Instagram publishing requires local_video_path or verified video_url/cover_url")
 
 def main():
     parser = argparse.ArgumentParser()

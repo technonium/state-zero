@@ -25,7 +25,7 @@ from daily_run_state import DailyRunStateManager
 from instagram_token_manager import InstagramTokenManager
 from database_manager import CardDatabase
 from ops.instagram_token_healthcheck import _format_expiry_window, _load_state, _save_state
-from pipeline import WHOOPPipeline
+from pipeline import PipelineStageError, WHOOPPipeline
 
 
 class _FakeRefreshResponse:
@@ -496,6 +496,272 @@ class ReliabilityHardeningTests(unittest.TestCase):
             self.assertEqual(payload["environment"], "Glacial Valley — Resolved selection")
             self.assertEqual(payload["environment_name"], "Glacial Valley")
             self.assertEqual(payload["environment_reason"], "Resolved selection")
+
+    def test_finalize_posted_run_writes_card_and_archived_environment_history(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                pipeline = self._build_manual_session_pipeline(tmpdir)
+                pipeline.base_dir = PROJECT_ROOT
+                pipeline.post_to_instagram = True
+                pipeline.run_date = "2026-03-08"
+                pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-08"
+                pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+                pipeline._set_heartbeat_context = lambda **kwargs: None
+                pipeline._notify_post_success_cleanup_warning = lambda *args, **kwargs: self.fail("finalize should verify cleanly")
+
+                final_png = pipeline.output_dir / "card_final.png"
+                final_mp4 = pipeline.output_dir / "card_final.mp4"
+                final_png.write_bytes(b"png")
+                final_mp4.write_bytes(b"mp4")
+
+                ok = WHOOPPipeline.finalize_posted_run(
+                    pipeline,
+                    daily_data={
+                        "date": "2026-03-08",
+                        "energy_zone": "LOW",
+                        "recovery_pct": 67,
+                        "sleep_score_pct": 84,
+                        "strain": 5.9,
+                        "sleep_hours": 7.7,
+                        "depth_level": "SURFACE",
+                        "dasha": {
+                            "maha": "Venus",
+                            "antar": "Venus",
+                            "pratyantar": "Venus",
+                            "sookshma": "Saturn",
+                            "prana": "Saturn",
+                        },
+                    },
+                    metadata={"title": "Title", "scene_description": "scene"},
+                    final_png=final_png,
+                    final_mp4=final_mp4,
+                    image_json={"prompt": "x"},
+                    post_id="ig_real_123",
+                    instagram_permalink="https://instagram.example/reel/ig_real_123",
+                    blend_option="Option A",
+                    creature="Crab — reason",
+                    environment="Frozen/Ice — selected reason",
+                )
+
+                db = CardDatabase()
+                conn = sqlite3.connect(db.db_path)
+                card_row = conn.execute(
+                    "SELECT title, instagram_post_id FROM cards WHERE date = ?",
+                    ("2026-03-08",),
+                ).fetchone()
+                history_row = conn.execute(
+                    "SELECT environment_name, selection_stage FROM environment_history WHERE date = ?",
+                    ("2026-03-08",),
+                ).fetchone()
+                conn.close()
+
+        self.assertTrue(ok)
+        self.assertEqual(card_row, ("Title", "ig_real_123"))
+        self.assertEqual(history_row, ("Frozen/Ice", "cards_archive"))
+
+    def test_recover_posted_archive_does_not_claim_success_when_finalize_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                pipeline = self._build_manual_session_pipeline(tmpdir)
+                pipeline.post_to_instagram = True
+                pipeline.run_date = "2026-03-08"
+                pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-08"
+                pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+                pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
+                pipeline.finalize_posted_run = lambda *args: False
+                pipeline._merge_details = WHOOPPipeline._merge_details.__get__(pipeline, WHOOPPipeline)
+                pipeline._notify_post_success_cleanup_warning = lambda *args, **kwargs: None
+
+                (pipeline.output_dir / "daily_data.json").write_text(
+                    json.dumps({"date": "2026-03-08", "dasha": {}}),
+                    encoding="utf-8",
+                )
+                (pipeline.output_dir / "card_metadata.json").write_text(
+                    json.dumps({"title": "Title", "scene_description": "scene"}),
+                    encoding="utf-8",
+                )
+                (pipeline.output_dir / "image_prompt.json").write_text(json.dumps({"prompt": "x"}), encoding="utf-8")
+                (pipeline.output_dir / "card_final.png").write_bytes(b"png")
+                (pipeline.output_dir / "card_final.mp4").write_bytes(b"mp4")
+
+                with patch("builtins.print") as print_mock:
+                    WHOOPPipeline._recover_posted_archive_if_needed(
+                        pipeline,
+                        {"instagram_post_id": "ig_real_123", "instagram_permalink": "https://instagram.example/reel/ig_real_123"},
+                    )
+
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertNotIn("Recovered archive/database artifacts", printed)
+
+    def test_run_does_not_print_success_when_finalize_verification_incomplete(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.mode = "automatic"
+            pipeline.media_mode = "live_vps"
+            pipeline.post_to_instagram = True
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-08"
+            pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+            pipeline.run_date = "2026-03-08"
+            pipeline.run_token = "owner-token"
+            pipeline._claim_daily_run_or_exit = lambda: None
+            pipeline._ensure_owner_runtime_dirs = lambda: None
+            pipeline._stop_heartbeat_thread = lambda: None
+            pipeline._cleanup_non_authoritative_daily_state = lambda: None
+            pipeline.step_1_validate = lambda: None
+            pipeline.step_1b_validate_instagram_token = lambda: None
+            pipeline.step_2_3_lookups = lambda: {"date": "2026-03-08", "dasha": {}}
+            pipeline.step_4_6_prompts = lambda: None
+            pipeline._load_required_json = lambda path, label: {"title": "Title", "scene_description": "scene"} if label == "card_metadata.json" else {"prompt": "x"}
+            pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
+            pipeline.step_7_generate_image = lambda image_json: Path(tmpdir) / "art.png"
+            pipeline.step_9_generate_video = lambda art_path, prompt_path: Path(tmpdir) / "video.mp4"
+            pipeline.step_10a_render_image = lambda art_path, daily_data, metadata: Path(tmpdir) / "card_final.png"
+            pipeline.step_10b_render_video = lambda video_path, daily_data, metadata: Path(tmpdir) / "card_final.mp4"
+            pipeline.step_12_upload_vps = lambda final_mp4, final_png: ("https://example.com/video.mp4", "https://example.com/thumb.png")
+            pipeline._build_caption_or_raise = lambda metadata, daily_data: "caption"
+            pipeline.step_14_post_instagram = lambda video_url, thumb_url, caption: {
+                "already_posted": False,
+                "post_id": "ig_real_123",
+                "permalink": "https://instagram.example/reel/ig_real_123",
+            }
+            pipeline.finalize_posted_run = lambda *args: False
+            pipeline._handle_runtime_stage_error = lambda exc: self.fail("posted cleanup failure should not enter pre-post fallback")
+            warnings = []
+            pipeline._notify_post_success_cleanup_warning = lambda *args, **kwargs: warnings.append(args)
+            pipeline.daily_run = types.SimpleNamespace(
+                load_state=lambda: {"run_token": "owner-token"},
+                current_status=lambda: "POSTED",
+            )
+
+            with patch("builtins.print") as print_mock:
+                WHOOPPipeline.run(pipeline)
+
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
+        self.assertNotIn("Pipeline completed successfully", printed)
+        self.assertEqual(warnings[0][0], "Post Success Cleanup")
+
+    def test_resumable_prepare_media_urls_treats_vps_upload_as_best_effort(self):
+        pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
+        pipeline.post_to_instagram = True
+        warnings = []
+        pipeline._notify_nonfatal_runtime_warning = lambda *args, **kwargs: warnings.append(args)
+        pipeline.step_12_upload_vps = lambda *args: (_ for _ in ()).throw(
+            PipelineStageError(stage="VPS Upload", message="vps down", fallback_eligible=True)
+        )
+
+        video_url, thumb_url = WHOOPPipeline._prepare_instagram_media_urls(
+            pipeline,
+            Path("/tmp/card_final.mp4"),
+            Path("/tmp/card_final.png"),
+            "resumable_binary",
+        )
+
+        self.assertIsNone(video_url)
+        self.assertIsNone(thumb_url)
+        self.assertEqual(warnings[0][0], "VPS Artifact Upload")
+
+    def test_video_url_prepare_media_urls_keeps_vps_upload_strict(self):
+        pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
+        pipeline.post_to_instagram = True
+        pipeline._notify_nonfatal_runtime_warning = lambda *args, **kwargs: self.fail("video_url should not downgrade VPS failures")
+        pipeline.step_12_upload_vps = lambda *args: (_ for _ in ()).throw(
+            PipelineStageError(stage="VPS Upload", message="vps down", fallback_eligible=True)
+        )
+
+        with self.assertRaises(PipelineStageError):
+            WHOOPPipeline._prepare_instagram_media_urls(
+                pipeline,
+                Path("/tmp/card_final.mp4"),
+                Path("/tmp/card_final.png"),
+                "video_url",
+            )
+
+    def test_publish_context_binary_records_public_url_failure_without_raising(self):
+        pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
+        pipeline.asset_source = "auto_api"
+        pipeline.media_mode = "live_vps"
+        pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+        pipeline._probe_local_media_file = lambda path, media_kind: {"path": str(path), "exists": True}
+        pipeline._ensure_public_urls_reachable = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("public down"))
+
+        context = WHOOPPipeline._build_instagram_publish_context(
+            pipeline,
+            "https://example.com/video.mp4",
+            "https://example.com/thumb.png",
+            "caption",
+            "resumable_binary",
+        )
+
+        self.assertEqual(context["publish_strategy"], "resumable_binary")
+        self.assertEqual(context["public_url_checks"], [])
+        self.assertIn("public down", context["public_url_check_error"])
+
+    def test_publish_context_video_url_keeps_public_url_failure_fatal(self):
+        pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
+        pipeline.asset_source = "auto_api"
+        pipeline.media_mode = "live_vps"
+        pipeline._probe_local_media_file = lambda path, media_kind: {"path": str(path), "exists": True}
+        pipeline._ensure_public_urls_reachable = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("public down"))
+
+        with self.assertRaises(RuntimeError):
+            WHOOPPipeline._build_instagram_publish_context(
+                pipeline,
+                "https://example.com/video.mp4",
+                "https://example.com/thumb.png",
+                "caption",
+                "video_url",
+            )
+
+    def test_run_resumable_publishes_even_when_vps_upload_fails(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.mode = "automatic"
+            pipeline.media_mode = "live_vps"
+            pipeline.post_to_instagram = True
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-08"
+            pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+            pipeline.run_date = "2026-03-08"
+            pipeline.run_token = "owner-token"
+            pipeline._claim_daily_run_or_exit = lambda: None
+            pipeline._ensure_owner_runtime_dirs = lambda: None
+            pipeline._stop_heartbeat_thread = lambda: None
+            pipeline._cleanup_non_authoritative_daily_state = lambda: None
+            pipeline.step_1_validate = lambda: None
+            pipeline.step_1b_validate_instagram_token = lambda: None
+            pipeline.step_2_3_lookups = lambda: {"date": "2026-03-08", "dasha": {}}
+            pipeline.step_4_6_prompts = lambda: None
+            pipeline._load_required_json = lambda path, label: {"title": "Title", "scene_description": "scene"} if label == "card_metadata.json" else {"prompt": "x"}
+            pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
+            pipeline.step_7_generate_image = lambda image_json: Path(tmpdir) / "art.png"
+            pipeline.step_9_generate_video = lambda art_path, prompt_path: Path(tmpdir) / "video.mp4"
+            pipeline.step_10a_render_image = lambda art_path, daily_data, metadata: Path(tmpdir) / "card_final.png"
+            pipeline.step_10b_render_video = lambda video_path, daily_data, metadata: Path(tmpdir) / "card_final.mp4"
+            pipeline.step_12_upload_vps = lambda final_mp4, final_png: (_ for _ in ()).throw(
+                PipelineStageError(stage="VPS Upload", message="vps down", fallback_eligible=True)
+            )
+            pipeline._notify_nonfatal_runtime_warning = lambda *args, **kwargs: None
+            pipeline._build_caption_or_raise = lambda metadata, daily_data: "caption"
+            captured_publish = []
+            pipeline.step_14_post_instagram = lambda video_url, thumb_url, caption, **kwargs: captured_publish.append(
+                (video_url, thumb_url, kwargs.get("publish_strategy"))
+            ) or {
+                "already_posted": False,
+                "post_id": "ig_real_123",
+                "permalink": "https://instagram.example/reel/ig_real_123",
+            }
+            pipeline.finalize_posted_run = lambda *args: True
+            pipeline.daily_run = types.SimpleNamespace(
+                load_state=lambda: {"run_token": "owner-token"},
+                current_status=lambda: "POSTED",
+            )
+
+            with patch.dict(os.environ, {"INSTAGRAM_PUBLISH_STRATEGY": "resumable_binary"}, clear=False):
+                with patch("builtins.print"):
+                    WHOOPPipeline.run(pipeline)
+
+        self.assertEqual(captured_publish, [(None, None, "resumable_binary")])
 
     def test_step_4_6_prompts_enables_history_persist_only_for_real_runs(self):
         pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")

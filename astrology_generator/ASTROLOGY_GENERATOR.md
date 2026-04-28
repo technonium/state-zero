@@ -147,13 +147,13 @@ Reference docs for the official vendor API:
 ### Interactive
 
 ```bash
-cd "$HOME/State Zero"
+cd /path/to/state-zero
 python3 astrology_generator/generate_astrology_yaml.py
 ```
 
 ### One-line shell command
 
 ```bash
-cd "$HOME/State Zero"
-python3 astrology_generator/generate_astrology_yaml.py --non-interactive --birth-date 2000-01-15 --birth-time 09:30 --timezone 5.5 --latitude 19.0760 --longitude 72.8777 --dasha-start-date 2026-01-01 --dasha-end-date 2026-12-31 --output-dir "$HOME/State Zero Private/astrology" --overwrite-existing
+cd /path/to/state-zero
+python3 astrology_generator/generate_astrology_yaml.py --non-interactive --birth-date 2000-01-15 --birth-time 09:30 --timezone 5.5 --latitude 19.0760 --longitude 72.8777 --dasha-start-date 2026-01-01 --dasha-end-date 2026-12-31 --output-dir "/path/to/state-zero-private/astrology" --overwrite-existing
 ```

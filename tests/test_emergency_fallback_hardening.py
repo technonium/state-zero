@@ -1107,7 +1107,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                 self.access_token = access_token
                 self.user_id = user_id
 
-            def create_media_container(self, video_url, thumb_url, caption):
+            def publish_with_strategy(self, **kwargs):
                 raise RuntimeError("publish broke")
 
         class _FakeDiagnosticsError(RuntimeError):
@@ -1124,7 +1124,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline.run_date = "2026-03-08"
         pipeline._active_emergency_fallback_version = "error_404_v1"
         pipeline._set_heartbeat_context = lambda **kwargs: None
-        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption: {
+        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption, publish_strategy="resumable_binary": {
             "asset_source": "emergency_fallback",
             "public_url_checks": [{"label": "video", "reachable": True}, {"label": "thumb", "reachable": True}],
         }
@@ -1179,14 +1179,9 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                 self.diagnostics_output_dir = None
                 self.run_date = None
 
-            def create_media_container(self, video_url, thumb_url, caption):
-                return "creation-1"
-
-            def poll_processing_status(self, creation_id):
-                return False
-
-            def build_processing_timeout_error(self, creation_id):
-                return _FakeDiagnosticsError(
+            def publish_with_strategy(self, **kwargs):
+                creation_id = "creation-1"
+                raise _FakeDiagnosticsError(
                     "poll_processing",
                     f"Instagram processing timed out before FINISHED for creation_id={creation_id}",
                     {
@@ -1206,7 +1201,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline.output_dir = PROJECT_ROOT / "tmp-test-output"
         pipeline.run_date = "2026-03-08"
         pipeline._set_heartbeat_context = lambda **kwargs: None
-        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption: {
+        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption, publish_strategy="resumable_binary": {
             "asset_source": "auto_api",
             "public_url_checks": [{"label": "video", "reachable": True}, {"label": "thumb", "reachable": True}],
         }
@@ -1266,12 +1261,12 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
             def set_publish_context(self, context):
                 self.publish_context = context
 
-            def create_media_container(self, video_url, thumb_url, caption):
+            def publish_with_strategy(self, **kwargs):
+                video_url = kwargs["video_url"]
+                thumb_url = kwargs["cover_url"]
                 seen_urls.append((video_url, thumb_url))
                 attempts["count"] += 1
-                return f"creation-{attempts['count']}"
-
-            def poll_processing_status(self, creation_id):
+                creation_id = f"creation-{attempts['count']}"
                 if creation_id == "creation-1":
                     raise _FakeDiagnosticsError(
                         "poll_processing",
@@ -1282,13 +1277,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                             "terminal_status_code": "ERROR",
                         },
                     )
-                return True
-
-            def publish_media(self, creation_id):
-                return "post-1"
-
-            def get_permalink(self, post_id):
-                return "https://instagram.com/p/post-1"
+                return types.SimpleNamespace(post_id="post-1", permalink="https://instagram.com/p/post-1")
 
         fake_poster_module.InstagramPoster = _Poster
         fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
@@ -1301,7 +1290,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         pipeline.run_date = "2026-03-08"
         pipeline.run_token = "token123"
         pipeline._set_heartbeat_context = lambda **kwargs: None
-        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption: {
+        pipeline._build_instagram_publish_context = lambda video_url, thumb_url, caption, publish_strategy="resumable_binary": {
             "public_url_checks": [{"label": "video", "url": video_url, "reachable": True}],
         }
         pipeline._mark_posted_terminal_success = lambda **kwargs: None
@@ -1465,7 +1454,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         fake_db_module = types.ModuleType("database_manager")
 
         class _FakeCardDatabase:
-            def has_card_for_date(self, run_date):
+            def has_complete_archive_for_date(self, run_date):
                 return False
 
         fake_db_module.CardDatabase = _FakeCardDatabase
@@ -1479,7 +1468,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
             pipeline._load_required_text_outputs = lambda: ("blend", "creature", "environment")
             pipeline._merge_details = WHOOPPipeline._merge_details.__get__(pipeline, WHOOPPipeline)
             pipeline._notify_post_success_cleanup_warning = lambda *args, **kwargs: self.fail("recovery should succeed")
-            pipeline.step_15_archive = lambda *args: archived.append(args)
+            pipeline.finalize_posted_run = lambda *args: archived.append(args)
 
             (output_dir / "daily_data.json").write_text(json.dumps({"date": "2026-03-08", "dasha": {}}), encoding="utf-8")
             (output_dir / "card_metadata.json").write_text(

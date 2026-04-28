@@ -31,6 +31,7 @@ from utils import (
     load_project_dotenv,
     get_pipeline_deadline,
     is_terminal_rescue_run as infer_terminal_rescue_run,
+    resolve_instagram_publish_strategy,
 )
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
@@ -353,17 +354,17 @@ class WHOOPPipeline:
             return
 
         payload_path = self.output_dir / 'last_archived_payload.json'
-        has_card = False
+        has_complete_archive = False
         card_check_error = None
 
         try:
             from database_manager import CardDatabase
 
-            has_card = CardDatabase().has_card_for_date(self.run_date)
+            has_complete_archive = CardDatabase().has_complete_archive_for_date(self.run_date)
         except Exception as e:
             card_check_error = str(e)
 
-        if payload_path.exists() and has_card:
+        if payload_path.exists() and has_complete_archive:
             return
 
         try:
@@ -380,7 +381,7 @@ class WHOOPPipeline:
 
             post_id = state.get('instagram_post_id') or 'unknown'
             instagram_permalink = state.get('instagram_permalink')
-            self.step_15_archive(
+            finalized = self.finalize_posted_run(
                 daily_data,
                 metadata,
                 final_png,
@@ -392,6 +393,8 @@ class WHOOPPipeline:
                 creature,
                 environment,
             )
+            if not finalized:
+                return
             print(
                 f"{Fore.GREEN}✅ Recovered archive/database artifacts for already-posted day {self.run_date}{Style.RESET_ALL}"
             )
@@ -405,6 +408,48 @@ class WHOOPPipeline:
                 'Daily run was already POSTED, but archive/database recovery could not be completed.',
                 details,
             )
+
+    def _archive_is_complete(self) -> bool:
+        try:
+            from database_manager import CardDatabase
+
+            return CardDatabase().has_complete_archive_for_date(self.run_date)
+        except Exception:
+            return False
+
+    def finalize_posted_run(
+        self,
+        daily_data: dict,
+        metadata: dict,
+        final_png: Path,
+        final_mp4: Path,
+        image_json: dict,
+        post_id: str,
+        instagram_permalink: str = None,
+        blend_option: str = None,
+        creature: str = None,
+        environment: str = None,
+    ) -> bool:
+        self.step_15_archive(
+            daily_data,
+            metadata,
+            final_png,
+            final_mp4,
+            image_json,
+            post_id,
+            instagram_permalink,
+            blend_option,
+            creature,
+            environment,
+        )
+        if self.post_to_instagram and not self._archive_is_complete():
+            self._notify_post_success_cleanup_warning(
+                'Archive Verification',
+                'Instagram post succeeded, but archive/database verification is incomplete. A rerun will retry finalization without reposting.',
+                f'Missing card or archived environment history for {self.run_date}.',
+            )
+            return False
+        return True
 
     def _recover_posted_state_after_publish(
         self,
@@ -819,6 +864,35 @@ class WHOOPPipeline:
             details_tail=details_tail,
         )
 
+    def _notify_nonfatal_runtime_warning(self, step: str, message: str, details_tail: str | None = None):
+        print(f"{Fore.YELLOW}⚠ {message}{Style.RESET_ALL}")
+        notifier = get_notifier()
+        notifier.notify_warning(
+            run_date=self.run_date,
+            step=step,
+            message=message,
+            details_tail=details_tail,
+        )
+
+    @staticmethod
+    def _publish_strategy_requires_public_urls(strategy: str) -> bool:
+        return resolve_instagram_publish_strategy(strategy) == 'video_url'
+
+    def _prepare_instagram_media_urls(self, final_mp4: Path, final_png: Path, publish_strategy: str) -> tuple[str | None, str | None]:
+        strategy = resolve_instagram_publish_strategy(publish_strategy)
+        if self._publish_strategy_requires_public_urls(strategy):
+            return self.step_12_upload_vps(final_mp4, final_png)
+
+        try:
+            return self.step_12_upload_vps(final_mp4, final_png)
+        except Exception as e:
+            self._notify_nonfatal_runtime_warning(
+                'VPS Artifact Upload',
+                'VPS/public media upload failed, but Instagram binary publishing does not require public media URLs. Continuing with local MP4 upload.',
+                ''.join(traceback.format_exception(type(e), e, e.__traceback__))[-2000:],
+            )
+            return None, None
+
     def _coerce_unexpected_runtime_error(self, exc: Exception) -> PipelineStageError:
         details = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))[-2000:]
         return PipelineStageError(
@@ -873,23 +947,24 @@ class WHOOPPipeline:
 
                 # Only upload to VPS and post to Instagram when enabled
                 if self.post_to_instagram:
-                    video_url, thumb_url = self.step_12_upload_vps(final_mp4, final_png)
+                    publish_strategy = resolve_instagram_publish_strategy()
+                    video_url, thumb_url = self._prepare_instagram_media_urls(final_mp4, final_png, publish_strategy)
                 else:
                     print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping VPS upload.{Style.RESET_ALL}")
+                    publish_strategy = resolve_instagram_publish_strategy()
                     video_url, thumb_url = None, None
 
                 caption = self._build_caption_or_raise(metadata, daily_data)
 
                 # Only post to Instagram when enabled
                 if self.post_to_instagram:
-                    post_result = self.step_14_post_instagram(video_url, thumb_url, caption)
+                    post_result = self.step_14_post_instagram(video_url, thumb_url, caption, publish_strategy=publish_strategy)
                 else:
                     print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")
                     post_result = None
 
                 if isinstance(post_result, dict) and post_result.get('already_posted'):
-                    print(f"{Fore.YELLOW}⚠ State already marked POSTED. Skipping archive/database work.{Style.RESET_ALL}")
-                    return
+                    print(f"{Fore.YELLOW}⚠ State already marked POSTED. Repairing archive/database work if needed.{Style.RESET_ALL}")
 
                 if isinstance(post_result, dict):
                     post_id = post_result.get('post_id', 'unknown')
@@ -899,7 +974,7 @@ class WHOOPPipeline:
                     instagram_permalink = None
 
                 print(f"{Fore.CYAN}▶ Archiving Data and Updating Database...{Style.RESET_ALL}")
-                self.step_15_archive(
+                finalized = self.finalize_posted_run(
                     daily_data,
                     metadata,
                     final_png,
@@ -911,6 +986,8 @@ class WHOOPPipeline:
                     creature,
                     environment,
                 )
+                if not finalized:
+                    raise RuntimeError(f'Archive/database verification incomplete for {self.run_date}.')
 
                 # Send dry-run completion notification if not posting
                 if not self.post_to_instagram:
@@ -2161,21 +2238,43 @@ class WHOOPPipeline:
             snapshot["image_error"] = str(e)
         return snapshot
 
-    def _build_instagram_publish_context(self, video_url: str, thumb_url: str, caption: str) -> dict:
-        return {
+    def _build_instagram_publish_context(
+        self,
+        video_url: str | None,
+        thumb_url: str | None,
+        caption: str,
+        publish_strategy: str = 'resumable_binary',
+    ) -> dict:
+        strategy = resolve_instagram_publish_strategy(publish_strategy)
+        context = {
             "asset_source": self.asset_source,
             "media_mode": self.media_mode,
+            "publish_strategy": strategy,
             "output_dir": str(self.output_dir),
             "caption_tail": (caption or "")[-500:],
             "local_media": {
                 "card_final_mp4": self._probe_local_media_file(self.output_dir / "card_final.mp4", "video"),
                 "card_final_png": self._probe_local_media_file(self.output_dir / "card_final.png", "image"),
             },
-            "public_url_checks": self._ensure_public_urls_reachable(
+        }
+        if not (video_url and thumb_url):
+            if self._publish_strategy_requires_public_urls(strategy):
+                raise RuntimeError('video_url_publish_requires_public_media_urls: Public video and thumbnail URLs are required.')
+            context["public_url_checks"] = []
+            context["public_url_check_error"] = "public media URLs unavailable; binary upload will use local media"
+            return context
+
+        try:
+            context["public_url_checks"] = self._ensure_public_urls_reachable(
                 (("video", "video", video_url), ("image", "thumb", thumb_url)),
                 capture_snapshots=True,
-            ),
-        }
+            )
+        except Exception as e:
+            if self._publish_strategy_requires_public_urls(strategy):
+                raise
+            context["public_url_checks"] = []
+            context["public_url_check_error"] = str(e)
+        return context
 
     def _cache_bust_media_url(self, url: str, attempt: int) -> str:
         separator = "&" if "?" in url else "?"
@@ -2314,6 +2413,7 @@ class WHOOPPipeline:
                     caption,
                     success_notification_mode='fallback',
                     fallback_eligible_on_publish_failure=False,
+                    publish_strategy='video_url',
                 )
             except PipelineStageError as e:
                 classification = 'instagram_token_failed' if e.stage == 'Instagram Token' else 'instagram_publish_failed'
@@ -2445,6 +2545,7 @@ class WHOOPPipeline:
         *,
         success_notification_mode: str = 'normal',
         fallback_eligible_on_publish_failure: bool = True,
+        publish_strategy: str | None = None,
     ):
         state = self.daily_run.load_state() or {}
         if (state.get('status') or '').strip().upper() == 'POSTED':
@@ -2499,20 +2600,22 @@ class WHOOPPipeline:
 
         processing_max_attempts = max(1, int(os.getenv("INSTAGRAM_PROCESSING_MAX_ATTEMPTS", "2") or "2"))
         processing_retry_delay = max(0, int(os.getenv("INSTAGRAM_PROCESSING_RETRY_DELAY_SECONDS", "30") or "30"))
+        resolved_publish_strategy = resolve_instagram_publish_strategy(publish_strategy)
 
         try:
             for processing_attempt in range(1, processing_max_attempts + 1):
                 attempt_video_url = video_url
                 attempt_thumb_url = thumb_url
                 if processing_attempt > 1:
-                    attempt_video_url = self._cache_bust_media_url(video_url, processing_attempt)
-                    attempt_thumb_url = self._cache_bust_media_url(thumb_url, processing_attempt)
+                    attempt_video_url = self._cache_bust_media_url(video_url, processing_attempt) if video_url else None
+                    attempt_thumb_url = self._cache_bust_media_url(thumb_url, processing_attempt) if thumb_url else None
 
                 try:
                     publish_context = self._build_instagram_publish_context(
                         attempt_video_url,
                         attempt_thumb_url,
                         caption,
+                        resolved_publish_strategy,
                     )
                 except Exception as e:
                     if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
@@ -2539,9 +2642,13 @@ class WHOOPPipeline:
                     poster.set_publish_context(publish_context)
 
                 try:
-                    creation_id = poster.create_media_container(attempt_video_url, attempt_thumb_url, caption)
-                    if not poster.poll_processing_status(creation_id):
-                        raise poster.build_processing_timeout_error(creation_id)
+                    publish_result = poster.publish_with_strategy(
+                        video_url=attempt_video_url,
+                        cover_url=attempt_thumb_url,
+                        caption=caption,
+                        local_video_path=self.output_dir / 'card_final.mp4',
+                        strategy=resolved_publish_strategy,
+                    )
                 except InstagramPublishDiagnosticsError as e:
                     if (
                         self._is_retryable_instagram_processing_error(e)
@@ -2557,10 +2664,8 @@ class WHOOPPipeline:
                         continue
                     raise
 
-                post_id = poster.publish_media(creation_id)
-
-                # Get permalink
-                permalink = poster.get_permalink(post_id)
+                post_id = publish_result.post_id
+                permalink = publish_result.permalink
 
                 print(f"{Fore.GREEN}✅ Post published! ID: {post_id}{Style.RESET_ALL}")
                 success_note = (
