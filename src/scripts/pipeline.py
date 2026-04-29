@@ -417,6 +417,53 @@ class WHOOPPipeline:
         except Exception:
             return False
 
+    def _ensure_environment_selection_persisted(self, daily_data: dict):
+        selected_path = self.output_dir / 'environment_selected.txt'
+        if not selected_path.exists():
+            return
+
+        run_date = daily_data.get('date') or self.run_date
+        energy_zone = daily_data.get('energy_zone')
+        if not run_date or not energy_zone:
+            raise PipelineStageError(
+                stage='Environment Selection',
+                message='Cannot persist selected environment without run metadata.',
+                details='environment_selected.txt exists but run_date or energy_zone is missing.',
+                fallback_eligible=False,
+            )
+
+        if self._archive_is_complete():
+            return
+
+        # Repair selection history only while the day is still unarchived.
+        environment_text = selected_path.read_text(encoding='utf-8').strip()
+        environment_name, _parsed_reason = split_environment_output(environment_text or "")
+        if not environment_name or not environment_text:
+            raise PipelineStageError(
+                stage='Environment Selection',
+                message='environment_selected.txt exists but could not be parsed for persistence.',
+                details=f'File: {selected_path}',
+                fallback_eligible=False,
+            )
+
+        try:
+            from database_manager import CardDatabase
+
+            CardDatabase().upsert_environment_history(
+                run_date=run_date,
+                energy_zone=energy_zone,
+                environment_name=environment_name,
+                environment_text=environment_text,
+                selection_stage='environment_selected',
+            )
+        except Exception as e:
+            raise PipelineStageError(
+                stage='Environment Selection',
+                message='Failed to persist selected environment before downstream steps.',
+                details=str(e),
+                fallback_eligible=False,
+            ) from e
+
     def finalize_posted_run(
         self,
         daily_data: dict,
@@ -929,6 +976,7 @@ class WHOOPPipeline:
 
                 daily_data = self.step_2_3_lookups()
                 self.step_4_6_prompts()
+                self._ensure_environment_selection_persisted(daily_data)
 
                 image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
                 metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')

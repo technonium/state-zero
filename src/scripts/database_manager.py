@@ -319,13 +319,14 @@ class CardDatabase:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
+            # Repeat avoidance should see selected-but-not-yet-archived environments too.
             rows = cursor.execute(
                 """
                 SELECT environment_name, environment_text
                 FROM environment_history
                 WHERE energy_zone = ?
                   AND date < ?
-                  AND selection_stage IN ('cards_archive', 'cards_backfill')
+                  AND selection_stage IN ('environment_selected', 'cards_archive', 'cards_backfill')
                 ORDER BY date DESC
                 LIMIT ?
                 """,
@@ -364,6 +365,63 @@ class CardDatabase:
 
     def has_complete_archive_for_date(self, run_date: str) -> bool:
         return self.has_card_for_date(run_date) and self.has_archived_environment_history_for_date(run_date)
+
+    def repair_selected_environment_history_from_output(self, run_dates: list[str]) -> int:
+        if not run_dates:
+            raise ValueError("repair_selected_environment_history_from_output requires explicit run_dates")
+
+        output_root = get_output_root()
+
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            rows = []
+            for run_date in sorted(set(run_dates)):
+                existing = cursor.execute(
+                    """
+                    SELECT 1
+                    FROM environment_history
+                    WHERE date = ?
+                    LIMIT 1
+                    """,
+                    (run_date,),
+                ).fetchone()
+                if existing:
+                    continue
+
+                output_dir = output_root / run_date
+                environment_path = output_dir / 'environment_selected.txt'
+                daily_data_path = output_dir / 'daily_data.json'
+                if not environment_path.exists() or not daily_data_path.exists():
+                    continue
+
+                try:
+                    environment_text = environment_path.read_text(encoding='utf-8').strip()
+                    daily_data = json.loads(daily_data_path.read_text(encoding='utf-8'))
+                except Exception:
+                    continue
+
+                environment_name, _parsed_reason = split_environment_output(environment_text or "")
+                energy_zone = daily_data.get('energy_zone')
+                if not (run_date and energy_zone and environment_name and environment_text):
+                    continue
+
+                rows.append(
+                    (
+                        run_date,
+                        energy_zone,
+                        environment_name,
+                        environment_text,
+                        'environment_selected',
+                    )
+                )
+
+            if rows:
+                self._insert_missing_environment_history_many(cursor, rows)
+                conn.commit()
+            return len(rows)
+        finally:
+            conn.close()
 
     def get_recent_creature_names(self, before_date: str, limit: int = 10) -> list[str]:
         conn = sqlite3.connect(self.db_path)
@@ -477,6 +535,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--insert', action='store_true', help='Insert a new record')
     parser.add_argument('--insert-fallback', action='store_true', help='Insert a new fallback record')
+    parser.add_argument('--repair-selected-history', action='store_true', help='Repair selected environment history from authoritative output dirs')
+    parser.add_argument('--dates', nargs='*', help='Optional run dates for repair-selected-history')
     parser.add_argument('--file', help='Path to the JSON payload file')
     args = parser.parse_args()
 
@@ -516,6 +576,17 @@ def main():
                 sys.exit(1)
         else:
             print(f"❌ Could not find {payload_path}")
+            sys.exit(1)
+
+    if args.repair_selected_history:
+        if not args.dates:
+            print("❌ --repair-selected-history requires one or more explicit --dates")
+            sys.exit(1)
+        try:
+            repaired = CardDatabase().repair_selected_environment_history_from_output(args.dates)
+            print(f"✅ Repaired {repaired} selected environment history rows")
+        except Exception as e:
+            print(f"❌ Failed to repair selected environment history: {e}")
             sys.exit(1)
 
 if __name__ == '__main__':

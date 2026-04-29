@@ -54,7 +54,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
                 }
             )
 
-    def test_generate_environment_persists_history_without_affecting_recency_until_archive(self):
+    def test_generate_environment_persists_history_and_counts_for_recency(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -90,7 +90,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
                 )
 
         self.assertEqual(result, "Frozen/Ice — ancient carved silence")
-        self.assertEqual(recent_names, [])
+        self.assertEqual(recent_names, ["Frozen/Ice"])
         self.assertEqual(history_row, ("Frozen/Ice", "environment_selected"))
         self.assertEqual(debug_payload["history_persist_status"], "ok")
 
@@ -364,7 +364,7 @@ class EnvironmentSelectionTests(unittest.TestCase):
         self.assertEqual(debug_payload["final_selection_source"], "repaired")
         self.assertEqual(debug_payload["final_name"], "Glacial Valley")
 
-    def test_recent_environment_names_use_environment_history_not_publish_state(self):
+    def test_recent_environment_names_include_selected_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -399,7 +399,60 @@ class EnvironmentSelectionTests(unittest.TestCase):
 
                 names = db.get_recent_environment_names("LOW", "2026-03-09", limit=5)
 
-        self.assertEqual(names, ["Frozen/Ice", "Crystal Caves"])
+        self.assertEqual(names, ["Frozen/Ice", "Crystal Caves", "Stone Monuments"])
+
+    def test_repair_selected_environment_history_from_output_uses_authoritative_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-09"
+                output_dir.mkdir(parents=True, exist_ok=True)
+                (output_dir / "environment_selected.txt").write_text(
+                    "Frozen/Ice — ancient carved silence",
+                    encoding="utf-8",
+                )
+                (output_dir / "daily_data.json").write_text(
+                    json.dumps({"date": "2026-03-09", "energy_zone": "LOW"}),
+                    encoding="utf-8",
+                )
+
+                db = CardDatabase()
+                repaired = db.repair_selected_environment_history_from_output(["2026-03-09"])
+
+                conn = sqlite3.connect(db.db_path)
+                row = conn.execute(
+                    """
+                    SELECT environment_name, selection_stage
+                    FROM environment_history
+                    WHERE date = ?
+                    """,
+                    ("2026-03-09",),
+                ).fetchone()
+                conn.close()
+
+        self.assertEqual(repaired, 1)
+        self.assertEqual(row, ("Frozen/Ice", "environment_selected"))
+
+    def test_repair_selected_environment_history_from_output_requires_explicit_dates(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                db = CardDatabase()
+
+                with self.assertRaises(ValueError):
+                    db.repair_selected_environment_history_from_output([])
 
     def test_extract_valid_environment_name_prefers_explicit_choice_cue(self):
         repaired_name, status = extract_valid_environment_name(
