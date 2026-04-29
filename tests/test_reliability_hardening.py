@@ -786,6 +786,72 @@ class ReliabilityHardeningTests(unittest.TestCase):
             "false",
         )
 
+    def test_environment_selection_guard_restores_missing_selection_row(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                pipeline = self._build_manual_session_pipeline(tmpdir)
+                pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-09"
+                pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+                pipeline.run_date = "2026-03-09"
+                pipeline.post_to_instagram = True
+
+                (pipeline.output_dir / "environment_selected.txt").write_text(
+                    "Frozen/Ice — ancient carved silence",
+                    encoding="utf-8",
+                )
+
+                WHOOPPipeline._ensure_environment_selection_persisted(
+                    pipeline,
+                    {"date": "2026-03-09", "energy_zone": "LOW"},
+                )
+
+                db = CardDatabase()
+                conn = sqlite3.connect(db.db_path)
+                row = conn.execute(
+                    """
+                    SELECT environment_name, selection_stage
+                    FROM environment_history
+                    WHERE date = ?
+                    """,
+                    ("2026-03-09",),
+                ).fetchone()
+                conn.close()
+
+        self.assertEqual(row, ("Frozen/Ice", "environment_selected"))
+
+    def test_environment_selection_guard_restores_missing_selection_row_for_local_runs(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                pipeline = self._build_manual_session_pipeline(tmpdir)
+                pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-09"
+                pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+                pipeline.run_date = "2026-03-09"
+                pipeline.post_to_instagram = False
+
+                (pipeline.output_dir / "environment_selected.txt").write_text(
+                    "Frozen/Ice — ancient carved silence",
+                    encoding="utf-8",
+                )
+
+                WHOOPPipeline._ensure_environment_selection_persisted(
+                    pipeline,
+                    {"date": "2026-03-09", "energy_zone": "LOW"},
+                )
+
+                db = CardDatabase()
+                conn = sqlite3.connect(db.db_path)
+                row = conn.execute(
+                    """
+                    SELECT environment_name, selection_stage
+                    FROM environment_history
+                    WHERE date = ?
+                    """,
+                    ("2026-03-09",),
+                ).fetchone()
+                conn.close()
+
+        self.assertEqual(row, ("Frozen/Ice", "environment_selected"))
+
     def test_lookups_write_json_atomic_fsyncs_and_round_trips_payload(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "runtime" / "output" / "2026-03-09" / "daily_data.json"
