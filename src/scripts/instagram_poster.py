@@ -630,7 +630,7 @@ class InstagramPoster:
                     diagnostics["artifact_path"] = str(artifact_path)
                 raise InstagramPublishDiagnosticsError("create_container", message, diagnostics) from e
 
-    def create_resumable_media_container(self, caption: str) -> tuple[str, str]:
+    def create_resumable_media_container(self, caption: str, cover_url: str | None = None) -> tuple[str, str]:
         """Create a Reels container that accepts a binary rupload transfer."""
         if self.mock_mode:
             return "mock_creation_id_123", "mock://rupload"
@@ -640,9 +640,12 @@ class InstagramPoster:
             "upload_type": "resumable",
             "caption": caption,
             "share_to_feed": self._share_to_feed(),
-            "thumb_offset": self._thumb_offset(),
             "access_token": self.access_token,
         }
+        if cover_url:
+            payload["cover_url"] = cover_url
+        else:
+            payload["thumb_offset"] = self._thumb_offset()
         response = requests.post(
             f"{self.base_url}/{self.user_id}/media",
             data=payload,
@@ -661,6 +664,7 @@ class InstagramPoster:
                     "create_resumable_container",
                     publish_strategy="resumable_binary",
                     creation_id=creation_id,
+                    cover_url_supplied=bool(cover_url),
                     upload_uri_host=urlparse(upload_uri).netloc,
                     response=self._response_snapshot(response),
                 )
@@ -675,6 +679,7 @@ class InstagramPoster:
             response=response,
             extra={
                 "publish_strategy": "resumable_binary",
+                "cover_url_supplied": bool(cover_url),
                 "create_container_response": self._response_snapshot(response),
             },
         )
@@ -1027,14 +1032,19 @@ class InstagramPoster:
         
         return InstagramPublishResult(post_id=post_id, permalink=permalink)
 
-    def publish_resumable_binary_and_get_result(self, video_path: Path, caption: str) -> InstagramPublishResult:
+    def publish_resumable_binary_and_get_result(
+        self,
+        video_path: Path,
+        caption: str,
+        cover_url: str | None = None,
+    ) -> InstagramPublishResult:
         """Publish a Reel by uploading the local MP4 bytes directly to Meta."""
         if self.mock_mode:
             return InstagramPublishResult(post_id="mock_ig_post_456", permalink="https://instagram.com/p/mock_permalink")
 
         local_video = self.validate_local_video_for_reels(video_path)
         limit_report = self.check_content_publishing_limit()
-        creation_id, upload_uri = self.create_resumable_media_container(caption)
+        creation_id, upload_uri = self.create_resumable_media_container(caption, cover_url=cover_url)
         self.upload_resumable_video(upload_uri, video_path)
         if not self.poll_processing_status(creation_id):
             raise self.build_processing_timeout_error(creation_id)
@@ -1047,6 +1057,7 @@ class InstagramPoster:
                 creation_id=creation_id,
                 post_id=post_id,
                 permalink=permalink,
+                cover_url_supplied=bool(cover_url),
                 local_video=local_video,
                 content_publishing_limit=limit_report,
             )
@@ -1072,13 +1083,13 @@ class InstagramPoster:
         if resolved_strategy == "resumable_binary":
             if local_video_path is None:
                 raise ValueError("local_video_path is required for resumable_binary Instagram publishing")
-            return self.publish_resumable_binary_and_get_result(local_video_path, caption)
+            return self.publish_resumable_binary_and_get_result(local_video_path, caption, cover_url=cover_url)
 
         # auto: prefer binary upload, then keep the legacy URL path as a diagnostic fallback.
         binary_error = None
         if local_video_path is not None:
             try:
-                return self.publish_resumable_binary_and_get_result(local_video_path, caption)
+                return self.publish_resumable_binary_and_get_result(local_video_path, caption, cover_url=cover_url)
             except InstagramPublishDiagnosticsError as error:
                 binary_error = error
                 self._append_diagnostics_history(

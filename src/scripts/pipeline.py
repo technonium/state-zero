@@ -927,7 +927,7 @@ class WHOOPPipeline:
 
     def _prepare_instagram_media_urls(self, final_mp4: Path, final_png: Path, publish_strategy: str) -> tuple[str | None, str | None]:
         strategy = resolve_instagram_publish_strategy(publish_strategy)
-        if self._publish_strategy_requires_public_urls(strategy):
+        if self._publish_strategy_requires_public_urls(strategy) or strategy == 'resumable_binary':
             return self.step_12_upload_vps(final_mp4, final_png)
 
         try:
@@ -2305,11 +2305,26 @@ class WHOOPPipeline:
                 "card_final_png": self._probe_local_media_file(self.output_dir / "card_final.png", "image"),
             },
         }
-        if not (video_url and thumb_url):
+        if not thumb_url:
             if self._publish_strategy_requires_public_urls(strategy):
                 raise RuntimeError('video_url_publish_requires_public_media_urls: Public video and thumbnail URLs are required.')
-            context["public_url_checks"] = []
-            context["public_url_check_error"] = "public media URLs unavailable; binary upload will use local media"
+            raise RuntimeError('resumable_binary_requires_public_thumbnail_url: Public thumbnail URL is required for Instagram Reel cover.')
+
+        if not video_url:
+            if self._publish_strategy_requires_public_urls(strategy):
+                raise RuntimeError('video_url_publish_requires_public_media_urls: Public video and thumbnail URLs are required.')
+            try:
+                context["public_url_checks"] = self._ensure_public_urls_reachable(
+                    (("image", "thumb", thumb_url),),
+                    capture_snapshots=True,
+                )
+            except Exception:
+                if strategy == 'resumable_binary':
+                    raise
+                context["public_url_checks"] = []
+                context["public_url_check_error"] = "public thumbnail URL unavailable; binary upload will use local video"
+                return context
+            context["public_url_check_error"] = "public video URL unavailable; binary upload will use local video"
             return context
 
         try:
@@ -2318,7 +2333,7 @@ class WHOOPPipeline:
                 capture_snapshots=True,
             )
         except Exception as e:
-            if self._publish_strategy_requires_public_urls(strategy):
+            if self._publish_strategy_requires_public_urls(strategy) or strategy == 'resumable_binary':
                 raise
             context["public_url_checks"] = []
             context["public_url_check_error"] = str(e)

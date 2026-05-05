@@ -1320,6 +1320,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertEqual(result["post_id"], "post-1")
         self.assertEqual(len(seen_urls), 2)
         self.assertEqual(seen_urls[0][0], "https://example.com/video.mp4")
+        self.assertEqual(seen_urls[0][1], "https://example.com/thumb.png")
         self.assertIn("ig_retry=2026-03-08-token123-2", seen_urls[1][0])
         self.assertIn("ig_retry=2026-03-08-token123-2", seen_urls[1][1])
 
