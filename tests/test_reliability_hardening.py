@@ -641,25 +641,21 @@ class ReliabilityHardeningTests(unittest.TestCase):
         self.assertNotIn("Pipeline completed successfully", printed)
         self.assertEqual(warnings[0][0], "Post Success Cleanup")
 
-    def test_resumable_prepare_media_urls_treats_vps_upload_as_best_effort(self):
+    def test_resumable_prepare_media_urls_treats_vps_upload_failure_as_fatal_for_cover(self):
         pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
         pipeline.post_to_instagram = True
-        warnings = []
-        pipeline._notify_nonfatal_runtime_warning = lambda *args, **kwargs: warnings.append(args)
+        pipeline._notify_nonfatal_runtime_warning = lambda *args, **kwargs: self.fail("resumable cover upload should stay strict")
         pipeline.step_12_upload_vps = lambda *args: (_ for _ in ()).throw(
             PipelineStageError(stage="VPS Upload", message="vps down", fallback_eligible=True)
         )
 
-        video_url, thumb_url = WHOOPPipeline._prepare_instagram_media_urls(
-            pipeline,
-            Path("/tmp/card_final.mp4"),
-            Path("/tmp/card_final.png"),
-            "resumable_binary",
-        )
-
-        self.assertIsNone(video_url)
-        self.assertIsNone(thumb_url)
-        self.assertEqual(warnings[0][0], "VPS Artifact Upload")
+        with self.assertRaises(PipelineStageError):
+            WHOOPPipeline._prepare_instagram_media_urls(
+                pipeline,
+                Path("/tmp/card_final.mp4"),
+                Path("/tmp/card_final.png"),
+                "resumable_binary",
+            )
 
     def test_video_url_prepare_media_urls_keeps_vps_upload_strict(self):
         pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
@@ -677,7 +673,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 "video_url",
             )
 
-    def test_publish_context_binary_records_public_url_failure_without_raising(self):
+    def test_publish_context_binary_requires_reachable_public_thumbnail(self):
         pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
         pipeline.asset_source = "auto_api"
         pipeline.media_mode = "live_vps"
@@ -685,17 +681,37 @@ class ReliabilityHardeningTests(unittest.TestCase):
         pipeline._probe_local_media_file = lambda path, media_kind: {"path": str(path), "exists": True}
         pipeline._ensure_public_urls_reachable = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("public down"))
 
+        with self.assertRaises(RuntimeError) as ctx:
+            WHOOPPipeline._build_instagram_publish_context(
+                pipeline,
+                "https://example.com/video.mp4",
+                "https://example.com/thumb.png",
+                "caption",
+                "resumable_binary",
+            )
+
+        self.assertIn("public down", str(ctx.exception))
+
+    def test_publish_context_binary_allows_missing_public_video_when_thumbnail_exists(self):
+        pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
+        pipeline.asset_source = "auto_api"
+        pipeline.media_mode = "live_vps"
+        pipeline.output_dir.mkdir(parents=True, exist_ok=True)
+        pipeline._probe_local_media_file = lambda path, media_kind: {"path": str(path), "exists": True}
+        public_checks = [{"label": "thumb", "url": "https://example.com/thumb.png", "ok": True}]
+        pipeline._ensure_public_urls_reachable = lambda *args, **kwargs: public_checks
+
         context = WHOOPPipeline._build_instagram_publish_context(
             pipeline,
-            "https://example.com/video.mp4",
+            None,
             "https://example.com/thumb.png",
             "caption",
             "resumable_binary",
         )
 
         self.assertEqual(context["publish_strategy"], "resumable_binary")
-        self.assertEqual(context["public_url_checks"], [])
-        self.assertIn("public down", context["public_url_check_error"])
+        self.assertEqual(context["public_url_checks"], public_checks)
+        self.assertIn("public video URL unavailable", context["public_url_check_error"])
 
     def test_publish_context_video_url_keeps_public_url_failure_fatal(self):
         pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
@@ -713,7 +729,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 "video_url",
             )
 
-    def test_run_resumable_publishes_even_when_vps_upload_fails(self):
+    def test_run_resumable_stops_before_publish_when_vps_upload_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = self._build_manual_session_pipeline(tmpdir)
             pipeline.mode = "automatic"
@@ -756,12 +772,15 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 load_state=lambda: {"run_token": "owner-token"},
                 current_status=lambda: "POSTED",
             )
+            handled_errors = []
+            pipeline._handle_runtime_stage_error = lambda exc: handled_errors.append(exc) or True
 
             with patch.dict(os.environ, {"INSTAGRAM_PUBLISH_STRATEGY": "resumable_binary"}, clear=False):
                 with patch("builtins.print"):
                     WHOOPPipeline.run(pipeline)
 
-        self.assertEqual(captured_publish, [(None, None, "resumable_binary")])
+        self.assertEqual(captured_publish, [])
+        self.assertEqual(handled_errors[0].stage, "VPS Upload")
 
     def test_step_4_6_prompts_enables_history_persist_only_for_real_runs(self):
         pipeline = self._build_manual_session_pipeline("/tmp/state-zero-test")
