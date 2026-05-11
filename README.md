@@ -8,9 +8,14 @@ The condition my body returns to. Four forces converging to one point. Strain, s
 ---
 
 <p>
-  <a href="https://instagram.com/thestatezero"><img src="docs/instagram-logo.svg" width="16" alt="Instagram"> @thestatezero</a> |
-  <a href="https://www.linkedin.com/in/harshitchaudhari/"><img src="docs/linkedin-icon.png" width="16" alt="LinkedIn"> LinkedIn</a> |
-  <a href="https://join.whoop.com/9A53B336"><img src="docs/whoop-logo.svg#gh-light-mode-only" width="16" alt="WHOOP"><img src="docs/whoop-logo-white.svg#gh-dark-mode-only" width="16" alt="WHOOP"> Get first month of WHOOP free</a>
+  <a href="https://instagram.com/thestatezero"><img src="docs/instagram-logo.svg" width="13" height="13" alt="Instagram"></a>
+  <a href="https://instagram.com/thestatezero">@thestatezero</a>
+  ·
+  <a href="https://www.linkedin.com/in/harshitchaudhari/"><img src="docs/linkedin-icon.png" width="13" height="13" alt="LinkedIn"></a>
+  <a href="https://www.linkedin.com/in/harshitchaudhari/">@harshitchaudhari</a>
+  ·
+  <a href="https://join.whoop.com/9A53B336"><img src="docs/whoop-logo.svg" width="13" height="13" alt="WHOOP"></a>
+  <a href="https://join.whoop.com/9A53B336">Get first month of WHOOP free!</a>
 </p>
 
 ## The cards
