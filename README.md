@@ -138,4 +138,4 @@ Everything else is in the docs:
 
 ---
 
-If this made you want to track your own data, I use WHOOP daily. <a href="https://join.whoop.com/9A53B336"><img src="docs/whoop-logo.svg#gh-light-mode-only" width="16" alt="WHOOP"><img src="docs/whoop-logo-white.svg#gh-dark-mode-only" width="16" alt="WHOOP"> Get your first month of WHOOP free</a>.
+If this made you want to track your own data, I use WHOOP daily. <a href="https://join.whoop.com/9A53B336"><img src="docs/whoop-logo.svg" width="13" height="13" alt="WHOOP"></a> <a href="https://join.whoop.com/9A53B336">Get your first month of WHOOP free!</a>
