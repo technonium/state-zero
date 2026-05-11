@@ -27,3 +27,11 @@ database/
 *.log
 *.pid
 test_out_*
+
+# README/public-repo media is not needed inside the runtime image
+README.md
+LICENSE
+SECURITY.md
+docs/*.gif
+docs/*.png
+docs/*.svg
