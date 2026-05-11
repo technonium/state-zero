@@ -2,6 +2,7 @@ import json
 import os
 import logging
 import threading
+import tempfile
 from datetime import datetime, timedelta
 import httpx
 from utils import get_state_root, get_pipeline_run_date_str
@@ -170,6 +171,7 @@ class WHOOPTokenManager:
 
     def _save_token_state(self):
         """Save token state to JSON file in private runtime storage."""
+        tmp_path = None
         try:
             state = {
                 'access_token': self.access_token,
@@ -182,11 +184,28 @@ class WHOOPTokenManager:
                 'last_refresh_attempt_result': self.last_refresh_attempt_result,
             }
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.state_file, 'w') as f:
+            with tempfile.NamedTemporaryFile(
+                'w',
+                encoding='utf-8',
+                dir=self.state_file.parent,
+                delete=False,
+            ) as f:
+                os.chmod(f.name, 0o600)
                 json.dump(state, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+                tmp_path = f.name
+            os.replace(tmp_path, self.state_file)
+            os.chmod(self.state_file, 0o600)
             logger.info(f"WHOOP token state saved to {self.state_file}")
         except Exception as e:
             logger.error(f"Failed to save WHOOP token state: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     def _record_refresh_attempt(self, success: bool, note: str):
         now = datetime.now()

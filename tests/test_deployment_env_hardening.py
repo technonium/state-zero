@@ -1,10 +1,11 @@
 import os
+import stat
 import sys
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from zoneinfo import ZoneInfo
 
 
@@ -18,6 +19,8 @@ if str(SCRIPTS_ROOT) not in sys.path:
 import utils
 import validate
 from ops import check_dokploy_deployment_safety
+from ops import check_repo_hygiene
+from ops import auth_whoop
 from pipeline import PipelineStageError, WHOOPPipeline
 
 
@@ -217,6 +220,64 @@ class DeploymentEnvHardeningTests(unittest.TestCase):
         self.assertEqual(ctx.exception.stage, "VPS Upload")
         self.assertIn("VPS_SSH_PATH must be an absolute remote server path", ctx.exception.message)
         run_mock.assert_not_called()
+
+    def test_step_12_upload_vps_uses_host_key_checking_by_default(self):
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.run_date = "2026-04-10"
+        pipeline.post_to_instagram = True
+        pipeline.media_mode = "live_vps"
+        pipeline.local_vps_dir = Path(tempfile.gettempdir()) / "project-local-vps"
+        pipeline._set_heartbeat_context = lambda **kwargs: None
+        pipeline._ensure_public_urls_reachable = lambda *args, **kwargs: None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            video_path = Path(tmpdir) / "card_final.mp4"
+            thumb_path = Path(tmpdir) / "card_final.png"
+            video_path.write_bytes(b"video")
+            thumb_path.write_bytes(b"thumb")
+
+            env = self._base_live_vps_env()
+            env["VPS_SSH_PATH"] = "/srv/definitely-not-mounted-state-zero-test"
+
+            completed = Mock()
+            completed.returncode = 0
+            completed.stdout = ""
+            completed.stderr = ""
+
+            with patch.dict(os.environ, env, clear=True):
+                with patch("pipeline.subprocess.run", return_value=completed) as run_mock:
+                    WHOOPPipeline.step_12_upload_vps(pipeline, video_path, thumb_path)
+
+        first_cmd = run_mock.call_args_list[0].args[0]
+        self.assertIn("StrictHostKeyChecking=accept-new", first_cmd)
+        self.assertNotIn("UserKnownHostsFile=/dev/null", first_cmd)
+
+    def test_repo_hygiene_can_flag_ignored_private_files_for_release_archives(self):
+        with patch.object(check_repo_hygiene, "get_ignored_working_tree_paths", return_value=[".env", ".claude/settings.local.json"]):
+            findings = check_repo_hygiene.check_ignored_working_tree()
+
+        self.assertIn("tracked local/private file: .env", findings)
+        self.assertIn("tracked ignored/local directory content: .claude/settings.local.json", findings)
+
+    def test_whoop_oauth_state_is_random_and_verified(self):
+        previous = auth_whoop.expected_oauth_state
+        try:
+            auth_whoop.expected_oauth_state = "expected-state"
+            self.assertTrue(auth_whoop.is_valid_oauth_state("expected-state"))
+            self.assertFalse(auth_whoop.is_valid_oauth_state("wrong-state"))
+            self.assertFalse(auth_whoop.is_valid_oauth_state(""))
+        finally:
+            auth_whoop.expected_oauth_state = previous
+
+    def test_auth_whoop_seed_private_state_uses_owner_only_permissions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                auth_whoop.seed_private_token_state("access-token", "refresh-token", 3600)
+
+            state_path = Path(tmpdir) / "runtime" / "state" / "whoop_token_state.json"
+            mode = stat.S_IMODE(state_path.stat().st_mode)
+
+        self.assertEqual(mode, 0o600)
 
     def test_dockerignore_excludes_env_file(self):
         dockerignore = (PROJECT_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()

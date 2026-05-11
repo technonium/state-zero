@@ -3,7 +3,9 @@
 import json
 import os
 import re
+import secrets
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -16,7 +18,7 @@ SCRIPTS_ROOT = PROJECT_ROOT / "src" / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from utils import get_state_root
+from utils import get_state_root, load_project_dotenv
 
 
 ENV_FILE = PROJECT_ROOT / ".env"
@@ -26,9 +28,15 @@ TOKEN_URL = "https://api.prod.whoop.com/oauth/oauth2/token"
 SCOPES = "offline read:recovery read:cycles read:sleep read:profile read:workout read:body_measurement"
 
 auth_code = None
+expected_oauth_state = None
+
+load_project_dotenv()
 
 
 def get_env_var(var_name):
+    env_value = (os.getenv(var_name) or "").strip()
+    if env_value:
+        return env_value
     if not ENV_FILE.exists():
         return None
     content = ENV_FILE.read_text(encoding="utf-8")
@@ -49,7 +57,8 @@ class OAuthHandler(BaseHTTPRequestHandler):
 
         if parsed_path.path == "/callback":
             query = urllib.parse.parse_qs(parsed_path.query)
-            if "code" in query:
+            state = query.get("state", [""])[0]
+            if "code" in query and is_valid_oauth_state(state):
                 auth_code = query["code"][0]
                 self.send_response(200)
                 self.send_header("Content-type", "text/html")
@@ -61,7 +70,7 @@ class OAuthHandler(BaseHTTPRequestHandler):
                 self.send_response(400)
                 self.send_header("Content-type", "text/html")
                 self.end_headers()
-                self.wfile.write(b"<html><body><h1>Authentication failed. No code found.</h1></body></html>")
+                self.wfile.write(b"<html><body><h1>Authentication failed.</h1><p>Invalid OAuth response.</p></body></html>")
         else:
             self.send_response(404)
             self.end_headers()
@@ -85,23 +94,49 @@ def seed_private_token_state(access_token, refresh_token, expires_in):
         "access_token_prefix": access_token[:20] + "..." if access_token else None,
         "refresh_token_prefix": refresh_token[:20] + "..." if refresh_token else None,
     }
-    state_file.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=state_file.parent,
+            delete=False,
+        ) as handle:
+            os.chmod(handle.name, 0o600)
+            json.dump(state, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+            tmp_path = handle.name
+        os.replace(tmp_path, state_file)
+        os.chmod(state_file, 0o600)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     print(f"WHOOP token state seeded at {state_file}")
 
 
+def is_valid_oauth_state(state):
+    return bool(state and expected_oauth_state and secrets.compare_digest(state, expected_oauth_state))
+
+
 def main():
+    global expected_oauth_state
     if not CLIENT_ID or not CLIENT_SECRET:
         print("Could not find WHOOP_CLIENT_ID or WHOOP_CLIENT_SECRET in .env file.")
         return
 
     server = HTTPServer(("localhost", 8888), OAuthHandler)
+    expected_oauth_state = secrets.token_urlsafe(32)
 
     params = {
         "client_id": CLIENT_ID,
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
         "scope": SCOPES,
-        "state": "random_secure_string_123",
+        "state": expected_oauth_state,
     }
     url = f"{AUTH_URL}?{urllib.parse.urlencode(params)}"
 

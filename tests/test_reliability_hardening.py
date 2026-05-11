@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
@@ -23,8 +24,14 @@ if str(SCRIPTS_ROOT) not in sys.path:
 import lookups as lookups_module
 from daily_run_state import DailyRunStateManager
 from instagram_token_manager import InstagramTokenManager
+from whoop_token_manager import WHOOPTokenManager
 from database_manager import CardDatabase
-from ops.instagram_token_healthcheck import _format_expiry_window, _load_state, _save_state
+from ops.instagram_token_healthcheck import (
+    _format_expiry_window,
+    _load_state,
+    _refresh_failure_notice_reason,
+    _save_state,
+)
 from pipeline import PipelineStageError, WHOOPPipeline
 
 
@@ -192,9 +199,107 @@ class ReliabilityHardeningTests(unittest.TestCase):
             self.assertTrue(report["scope_validation_skipped"])
             self.assertEqual(report["hours_to_expiry"], None)
 
+    def test_instagram_token_state_is_owner_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = self._build_token_manager(tmpdir)
+            manager._save_token_state()
+
+            mode = stat.S_IMODE(manager.token_state_file.stat().st_mode)
+
+        self.assertEqual(mode, 0o600)
+
+    def test_whoop_token_state_is_owner_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                manager = WHOOPTokenManager()
+                manager.access_token = "access-token"
+                manager.refresh_token = "refresh-token"
+                manager._save_token_state()
+
+            mode = stat.S_IMODE(manager.state_file.stat().st_mode)
+
+        self.assertEqual(mode, 0o600)
+
     def test_healthcheck_formats_subday_expiry_in_hours(self):
         self.assertEqual(_format_expiry_window(0.25, 6.0), "6.0 hour(s)")
         self.assertEqual(_format_expiry_window(2.0, 48.0), "2 day(s)")
+
+    def test_healthcheck_dedupe_reason_ignores_expiry_countdown_drift(self):
+        self.assertEqual(
+            _refresh_failure_notice_reason("refresh failed: expiry threshold reached (4.18d <= 14d)"),
+            "refresh failed: expiry threshold reached",
+        )
+        self.assertEqual(
+            _refresh_failure_notice_reason("refresh failed: token invalid"),
+            "refresh failed: token invalid",
+        )
+
+    def test_healthcheck_suppresses_ok_notice_after_refresh_failure(self):
+        import ops.instagram_token_healthcheck as healthcheck
+
+        class FakeManager:
+            auto_refresh_mode = "hybrid"
+
+            def inspect_token_health(self):
+                return {
+                    "valid": True,
+                    "detail": "Token accepted by Graph API.",
+                    "checked_at": "2026-04-30T06:30:00",
+                    "expires_at": "2026-05-04T05:22:27+00:00",
+                    "days_to_expiry": 4.18,
+                    "hours_to_expiry": 100.32,
+                }
+
+            def maybe_auto_refresh(self, report=None, force_on_invalid=False):
+                return False, "refresh failed: expiry threshold reached (4.18d <= 14d)"
+
+        class FakeNotifier:
+            def __init__(self):
+                self.statuses = []
+                self.warnings = []
+                self.errors = []
+
+            def notify_status(self, **kwargs):
+                self.statuses.append(kwargs)
+
+            def notify_warning(self, **kwargs):
+                self.warnings.append(kwargs)
+
+            def notify_error(self, **kwargs):
+                self.errors.append(kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_dir = Path(tmpdir) / "runtime" / "state"
+            state_dir.mkdir(parents=True, exist_ok=True)
+            (state_dir / "instagram_token_health_state.json").write_text(
+                json.dumps(
+                    {
+                        "consecutive_refresh_failures": 10,
+                        "last_refresh_failure_notice_key": "3+:True:refresh failed: expiry threshold reached",
+                        "last_expiry_alert_key": "2026-05-04T05:22:27+00:00:14",
+                        "last_ok_notice_date": "2026-04-29",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            notifier = FakeNotifier()
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-04-30",
+                    "INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED": "true",
+                    "INSTAGRAM_TOKEN_ALERT_DAYS": "14,7,3,1",
+                },
+                clear=False,
+            ), patch.object(healthcheck, "get_instagram_token_manager", return_value=FakeManager()), patch.object(
+                healthcheck, "get_notifier", return_value=notifier
+            ):
+                healthcheck.main()
+
+            self.assertEqual(notifier.statuses, [])
+            self.assertEqual(notifier.warnings, [])
+            self.assertEqual(notifier.errors, [])
 
     def test_write_json_atomic_fsyncs_before_replace(self):
         with tempfile.TemporaryDirectory() as tmpdir:

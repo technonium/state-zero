@@ -98,9 +98,9 @@ PIPELINE_MODE=telegram    # Mode 2
 | `INSTAGRAM_SOFT_PROCESSING_ERROR_CODES` | Comma-separated processing error codes to keep polling through before treating as terminal (default: `2207076`) |
 | `INSTAGRAM_SOFT_PROCESSING_ERROR_POLLS` | Number of soft processing error polls tolerated before terminal failure (default: `6`) |
 | `INSTAGRAM_DIAGNOSTICS_HISTORY_LIMIT` | Number of Instagram diagnostics events preserved in `instagram_publish_diagnostics_history.json` (default: `20`) |
-| `INSTAGRAM_AUTO_REFRESH_MODE` | `off` (validate-only), `legacy_ig` (legacy endpoint), or `hybrid` (fail-fast + proactive refresh with cooldown) |
-| `INSTAGRAM_REFRESH_THRESHOLD_DAYS` | In `hybrid`, refresh when days-to-expiry <= threshold (default: 14) |
-| `INSTAGRAM_REFRESH_COOLDOWN_HOURS` | Minimum hours between auto-refresh attempts (default: 12) |
+| `INSTAGRAM_AUTO_REFRESH_MODE` | `off` recommended; retired values such as `legacy_ig`/`hybrid` are normalized to `off` |
+| `INSTAGRAM_REFRESH_THRESHOLD_DAYS` | Days before expiry to alert (default: 14) |
+| `INSTAGRAM_REFRESH_COOLDOWN_HOURS` | Deprecated; retained only so older env files do not break validation |
 | `FACEBOOK_APP_ID` | Optional Meta app id for token expiry introspection (`debug_token`) |
 | `FACEBOOK_APP_SECRET` | Optional Meta app secret for token expiry introspection (`debug_token`) |
 | `INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED` | Enable scheduled token health checker alerts (default: true) |
@@ -159,13 +159,14 @@ Notes:
 
 | `INSTAGRAM_AUTO_REFRESH_MODE` | Behavior |
 |---|---|
-| `off` | Validate only; fail fast if invalid/expired. |
-| `legacy_ig` | Validate; attempt legacy `graph.instagram.com` refresh on failure/age rules. |
-| `hybrid` | Validate + proactive refresh near expiry (`INSTAGRAM_REFRESH_THRESHOLD_DAYS`) with cooldown (`INSTAGRAM_REFRESH_COOLDOWN_HOURS`) + fail-fast guard. |
+| `off` | Recommended. Validate only; fail fast if invalid/expired; rely on Telegram expiry alerts and manual rotation. |
+| `legacy_ig` | Retired. The code treats this as `off`. |
+| `hybrid` | Retired. The code treats this as `off`. |
 
 Important:
 - Pipeline runs token preflight before expensive steps (WHOOP/LLM/image/video), unless `PIPELINE_POST_TO_INSTAGRAM=false` (dry-run).
 - Expiry countdown alerts require `FACEBOOK_APP_ID` + `FACEBOOK_APP_SECRET` for `debug_token`.
+- The supported production posture is `INSTAGRAM_AUTO_REFRESH_MODE=off` with `INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED=true` and `INSTAGRAM_TOKEN_ALERT_DAYS=14,7,3,1`. Replace `INSTAGRAM_ACCESS_TOKEN` manually before the expiry alerts reach zero.
 
 ### Validation gotchas (common confusion)
 
@@ -194,7 +195,7 @@ PIPELINE_MODE=telegram
 PIPELINE_POST_TO_INSTAGRAM=true
 PIPELINE_MANUAL_DEADLINE_MODE=run_date
 PIPELINE_MANUAL_MATCH_STRICT=false
-INSTAGRAM_AUTO_REFRESH_MODE=hybrid
+INSTAGRAM_AUTO_REFRESH_MODE=off
 EMERGENCY_FALLBACK_ENABLED=false
 PIPELINE_TERMINAL_RESCUE_RUN=false
 ```
@@ -211,7 +212,7 @@ PIPELINE_MANUAL_MATCH_STRICT=false
 ```bash
 PIPELINE_MODE=automatic
 PIPELINE_POST_TO_INSTAGRAM=true
-INSTAGRAM_AUTO_REFRESH_MODE=hybrid
+INSTAGRAM_AUTO_REFRESH_MODE=off
 ```
 
 4) **Production fully automatic (dry-run)**
@@ -480,7 +481,7 @@ python3 src/scripts/lookups.py --output output/daily_data.json
 
 #### ⏰ CRITICAL: Data Timing Logic
 
-**When the pipeline runs** (CRON time TBD, likely morning India time):
+**When the pipeline runs** (CRON time TBD, likely daily in India time):
 
 At the moment you wake up:
 - **TODAY's Strain** = 0 (you just woke up, no activity accumulated yet)
@@ -513,7 +514,7 @@ date_display = today.strftime("%d %b %Y").upper()  # "02 MAR 2026"
 
 **The card represents:** Yesterday's strain + Today's recovery/sleep + Today's dasha
 
-**Example:** CRON runs March 2 morning → Card shows: Strain from March 1 + Recovery/Sleep from March 2 + Dasha for March 2 + Date displays "02 MAR 2026"
+**Example:** CRON runs March 2 daily run → Card shows: Strain from March 1 + Recovery/Sleep from March 2 + Dasha for March 2 + Date displays "02 MAR 2026"
 
 ---
 
@@ -1273,17 +1274,21 @@ At every step: stop immediately on failure. Log to `output/error.log` with times
 
 ---
 
-## Instagram Access Token Refresh
+## Instagram Access Token Rotation
 
-Token expires every 60 days. Refresh at day 50:
+The supported production posture is validate-and-alert, not auto-refresh:
 
 ```bash
-curl -X GET "https://graph.facebook.com/refresh_access_token" \
-  -d "grant_type=ig_refresh_token" \
-  -d "access_token=${INSTAGRAM_ACCESS_TOKEN}"
+INSTAGRAM_AUTO_REFRESH_MODE=off
+INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED=true
+INSTAGRAM_TOKEN_ALERT_DAYS=14,7,3,1
 ```
 
-Update `INSTAGRAM_ACCESS_TOKEN` in `.env`. Set a recurring calendar reminder.
+Instagram publishing tokens still expire. The healthcheck uses Meta `debug_token`
+metadata when `FACEBOOK_APP_ID` and `FACEBOOK_APP_SECRET` are configured, sends
+Telegram expiry warnings, and operators manually replace `INSTAGRAM_ACCESS_TOKEN`
+before expiry. The old refresh endpoint is retired for this pipeline because it
+does not reliably renew the publishing token type.
 
 ---
 

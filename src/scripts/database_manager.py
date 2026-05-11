@@ -319,14 +319,14 @@ class CardDatabase:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         try:
-            # Repeat avoidance should see selected-but-not-yet-archived environments too.
+            # Repeat avoidance should see any environment that was logged for the day,
+            # regardless of how that row was created or whether the post completed.
             rows = cursor.execute(
                 """
                 SELECT environment_name, environment_text
                 FROM environment_history
                 WHERE energy_zone = ?
                   AND date < ?
-                  AND selection_stage IN ('environment_selected', 'cards_archive', 'cards_backfill')
                 ORDER BY date DESC
                 LIMIT ?
                 """,

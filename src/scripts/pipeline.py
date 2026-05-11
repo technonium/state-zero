@@ -2083,10 +2083,12 @@ class WHOOPPipeline:
                             ) from e
                     else:
                         target = f'{ssh_user}@{ssh_host}'
-                        ssh_opts = [
-                            '-o', 'StrictHostKeyChecking=no',
-                            '-o', 'UserKnownHostsFile=/dev/null',
-                        ]
+                        strict_host_key_checking = (
+                            os.getenv('STATE_ZERO_SSH_STRICT_HOST_KEY_CHECKING') or 'accept-new'
+                        ).strip()
+                        if strict_host_key_checking not in {'yes', 'accept-new'}:
+                            strict_host_key_checking = 'accept-new'
+                        ssh_opts = ['-o', f'StrictHostKeyChecking={strict_host_key_checking}']
                         mkdir_cmd = ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(ssh_path)}"]
                         mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
                         if mkdir_result.returncode != 0:
