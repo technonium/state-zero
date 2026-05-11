@@ -13,3 +13,17 @@ __pycache__/
 .playwright/
 .claude/
 .kilocode/
+
+# Private/runtime data should never enter Docker build context
+astrology/
+runtime/
+output/
+gallery/
+local_vps/
+database/
+*.db
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+test_out_*

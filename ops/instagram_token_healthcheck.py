@@ -76,6 +76,18 @@ def _format_expiry_window(days_left: float | None, hours_left: float | None) -> 
     return f"{days_left:.1f} day(s)"
 
 
+def _refresh_failure_notice_reason(refresh_msg: str) -> str:
+    """
+    Collapse dynamic refresh-failure details into a stable dedupe reason.
+
+    The expiry countdown changes on every run (for example, 4.18d -> 4.01d),
+    but that is still the same underlying failure mode.
+    """
+    if refresh_msg.startswith("refresh failed: expiry threshold reached"):
+        return "refresh failed: expiry threshold reached"
+    return refresh_msg
+
+
 def main():
     enabled = os.getenv("INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
     if not enabled:
@@ -95,6 +107,7 @@ def main():
     state["auto_refresh_mode"] = manager.auto_refresh_mode
 
     refresh_failed_on_invalid = False
+    refresh_failed_on_valid_token = False
     consecutive_refresh_failures = int(state.get("consecutive_refresh_failures") or 0)
     if manager.auto_refresh_mode == "hybrid":
         refreshed, refresh_msg = manager.maybe_auto_refresh(report=report, force_on_invalid=not report.get("valid"))
@@ -119,7 +132,8 @@ def main():
             state["last_refresh_failure_reason"] = refresh_msg
 
             failure_bucket = "3+" if consecutive_refresh_failures >= 3 else str(consecutive_refresh_failures)
-            notice_key = f"{failure_bucket}:{report.get('valid')}:{refresh_msg}"
+            notice_reason = _refresh_failure_notice_reason(refresh_msg)
+            notice_key = f"{failure_bucket}:{report.get('valid')}:{notice_reason}"
             if state.get("last_refresh_failure_notice_key") != notice_key:
                 if not report.get("valid") or consecutive_refresh_failures >= 3:
                     notifier.notify_error(
@@ -151,6 +165,8 @@ def main():
 
             if not report.get("valid"):
                 refresh_failed_on_invalid = True
+            else:
+                refresh_failed_on_valid_token = True
 
     if not report.get("valid"):
         detail = report.get("detail", "Instagram token invalid.")
@@ -208,7 +224,7 @@ def main():
             details_tail=f"expires_at={expires_at}",
         )
         state["last_expiry_alert_key"] = dedupe_key
-    elif state.get("last_ok_notice_date") != run_date:
+    elif not refresh_failed_on_valid_token and state.get("last_ok_notice_date") != run_date:
         notifier.notify_status(
             run_date=run_date,
             status="TOKEN_HEALTH_OK",

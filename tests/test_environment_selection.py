@@ -401,6 +401,36 @@ class EnvironmentSelectionTests(unittest.TestCase):
 
         self.assertEqual(names, ["Frozen/Ice", "Crystal Caves", "Stone Monuments"])
 
+    def test_recent_environment_names_include_any_logged_stage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STATE_ZERO_PRIVATE_ROOT": tmpdir,
+                    "PIPELINE_DATE": "2026-03-09",
+                },
+                clear=False,
+            ):
+                db = CardDatabase()
+                db.upsert_environment_history(
+                    run_date="2026-03-08",
+                    energy_zone="LOW",
+                    environment_name="Frozen/Ice",
+                    environment_text="Frozen/Ice — stored reason",
+                    selection_stage="manual_resumable_recovery",
+                )
+                db.upsert_environment_history(
+                    run_date="2026-03-07",
+                    energy_zone="LOW",
+                    environment_name="Crystal Caves",
+                    environment_text="Crystal Caves — stored reason",
+                    selection_stage="cards_archive",
+                )
+
+                names = db.get_recent_environment_names("LOW", "2026-03-09", limit=5)
+
+        self.assertEqual(names, ["Frozen/Ice", "Crystal Caves"])
+
     def test_repair_selected_environment_history_from_output_uses_authoritative_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(

@@ -1,0 +1,5 @@
+# Test runner
+pytest>=8.0.0
+
+# Optional local quality tools
+pip-audit>=2.7.0

@@ -1,14 +1,15 @@
 """
-Instagram Token Manager - Automated refresh for long-lived Instagram Graph API tokens.
+Instagram Token Manager - validation and expiry tracking for Instagram Graph API tokens.
 
 Instagram tokens work as follows:
 - Short-lived tokens: 1 hour expiry
 - Long-lived tokens: 60 days expiry (exchanged from short-lived)
-- Refresh: Can be done via /refresh_access_token endpoint if token is at least 24 hours old
+- Refresh: Not reliable for the publishing token type used by this pipeline.
+  The legacy refresh endpoint is kept only as an explicit compatibility opt-in.
 
 This manager:
 1. Tracks last refresh timestamp in a local JSON file (private runtime state)
-2. Automatically refreshes token near expiry using INSTAGRAM_REFRESH_THRESHOLD_DAYS
+2. Validates token health and exposes expiry metadata for operator alerts
 3. Persists tokens ONLY to private runtime state files, never to .env
 """
 
@@ -64,8 +65,16 @@ class InstagramTokenManager:
             self.access_token = env_token
 
         self.user_id = os.getenv('INSTAGRAM_USER_ID')
-        # legacy_ig = use graph.instagram.com refresh endpoint; off = validate-only strategy
-        self.auto_refresh_mode = (os.getenv('INSTAGRAM_AUTO_REFRESH_MODE', 'off') or 'off').strip().lower()
+        # Auto-refresh is retired for the publishing token type used here.
+        # Keep the env var readable for older deployments, but normalize to validate-only.
+        configured_refresh_mode = (os.getenv('INSTAGRAM_AUTO_REFRESH_MODE', 'off') or 'off').strip().lower()
+        self.configured_auto_refresh_mode = configured_refresh_mode
+        if configured_refresh_mode not in ('', 'off', 'false', '0', 'no'):
+            logger.warning(
+                "INSTAGRAM_AUTO_REFRESH_MODE=%s is deprecated for this pipeline; using validate-only mode.",
+                configured_refresh_mode,
+            )
+        self.auto_refresh_mode = 'off'
         self.app_id = (os.getenv('FACEBOOK_APP_ID') or os.getenv('META_APP_ID') or '').strip()
         self.app_secret = (os.getenv('FACEBOOK_APP_SECRET') or os.getenv('META_APP_SECRET') or '').strip()
         self.refresh_threshold_days = int((os.getenv('INSTAGRAM_REFRESH_THRESHOLD_DAYS', '14') or '14').strip())
@@ -147,11 +156,13 @@ class InstagramTokenManager:
                 dir=self.token_state_file.parent,
                 delete=False,
             ) as f:
+                os.chmod(f.name, 0o600)
                 json.dump(state, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
                 tmp_path = f.name
             os.replace(tmp_path, self.token_state_file)
+            os.chmod(self.token_state_file, 0o600)
             logger.info(f"Token state saved to {self.token_state_file}")
         except Exception as e:
             logger.error(f"Failed to save token state: {e}")
@@ -412,44 +423,15 @@ class InstagramTokenManager:
 
     def maybe_auto_refresh(self, report: dict = None, force_on_invalid: bool = False) -> tuple[bool, str]:
         """
-        Hybrid auto-refresh policy:
-        - force_on_invalid=True: attempt refresh if token invalid.
-        - otherwise refresh when days_to_expiry <= threshold.
+        Deprecated auto-refresh policy.
+
+        The publishing token used by this pipeline validates through Graph API
+        but does not reliably refresh through the legacy Instagram endpoint.
+        Keep this method as a no-op compatibility shim so older env settings
+        cannot trigger a broken refresh loop.
         Returns (attempted_and_succeeded, detail_message).
         """
-        if self.auto_refresh_mode not in ('hybrid', 'legacy_ig'):
-            return False, "auto-refresh disabled"
-
-        if not self._refresh_attempt_allowed():
-            return False, f"cooldown active ({self.refresh_cooldown_hours}h)"
-
-        if report is None:
-            report = self.inspect_token_health()
-
-        should_attempt = False
-        reason = ""
-        if force_on_invalid and not report.get("valid"):
-            should_attempt = True
-            reason = "token invalid"
-        elif self.auto_refresh_mode == 'legacy_ig':
-            should_attempt = self._needs_refresh()
-            reason = "legacy age-based refresh window"
-        else:
-            days_left = report.get("days_to_expiry")
-            if days_left is not None and days_left <= self.refresh_threshold_days:
-                should_attempt = True
-                reason = f"expiry threshold reached ({days_left}d <= {self.refresh_threshold_days}d)"
-
-        if not should_attempt:
-            return False, "refresh not needed"
-
-        ok = self._refresh_token(reason=reason)
-        if ok:
-            # keep fingerprint in sync after successful refresh/token update
-            self.token_fingerprint = self._fingerprint(self.access_token)
-            self._save_token_state()
-            return True, f"refresh succeeded: {reason}"
-        return False, f"refresh failed: {reason}"
+        return False, "auto-refresh disabled"
 
     def _validate_token(self) -> tuple[bool, str]:
         """
@@ -511,46 +493,9 @@ class InstagramTokenManager:
         if valid:
             logger.info("Instagram token validation passed.")
             self._assert_publish_scopes(report)
-            # In hybrid mode, proactively refresh near expiry but never block if token is still valid.
-            if self.auto_refresh_mode == 'hybrid':
-                refreshed, refresh_msg = self.maybe_auto_refresh(report=report, force_on_invalid=False)
-                if refreshed:
-                    report_after = self.inspect_token_health()
-                    if report_after.get("valid"):
-                        if report_after.get("scope_validation_skipped") and not self._scope_validation_warning_logged:
-                            logger.warning(
-                                "Facebook App credentials missing; Instagram scope validation and expiry introspection were skipped."
-                            )
-                            self._scope_validation_warning_logged = True
-                        self._assert_publish_scopes(report_after)
-                        logger.info("Instagram token proactively refreshed in hybrid mode.")
-                    else:
-                        logger.error(
-                            "Hybrid proactive refresh reported success but token check failed afterward: "
-                            f"{report_after.get('detail')}"
-                        )
-                elif refresh_msg not in ("refresh not needed", "auto-refresh disabled"):
-                    logger.info(f"Hybrid refresh skipped: {refresh_msg}")
             return self.access_token
 
         logger.error(detail)
-        if self.auto_refresh_mode in ('legacy_ig', 'hybrid'):
-            logger.info("Attempting auto-refresh recovery for invalid token...")
-            refreshed, refresh_msg = self.maybe_auto_refresh(report=report, force_on_invalid=True)
-            logger.info(f"Auto-refresh recovery result: {refresh_msg}")
-            if refreshed:
-                report_after = self.inspect_token_health()
-                if report_after.get("valid"):
-                    if report_after.get("scope_validation_skipped") and not self._scope_validation_warning_logged:
-                        logger.warning(
-                            "Facebook App credentials missing; Instagram scope validation and expiry introspection were skipped."
-                        )
-                        self._scope_validation_warning_logged = True
-                    self._assert_publish_scopes(report_after)
-                    logger.info("Instagram token recovered after refresh.")
-                    return self.access_token
-                logger.error(f"Token still invalid after refresh: {report_after.get('detail')}")
-
         raise RuntimeError(
             "Instagram token is invalid or expired. "
             "Generate a fresh posting token, update INSTAGRAM_ACCESS_TOKEN, then retry."

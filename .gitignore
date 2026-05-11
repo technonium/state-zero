@@ -21,6 +21,11 @@ __pycache__/
 *.pyc
 *.pyo
 *.swp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 venv*/
 venv_new/
 .venv/
