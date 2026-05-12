@@ -2226,6 +2226,16 @@ class PromptOrchestrator:
         re.IGNORECASE,
     )
 
+    # Catches body_keywords leaking into the output as a literal human figure in the scene.
+    _HUMAN_FIGURE = re.compile(
+        r"\bthe body (?:moves?|walks?|passes?|drifts?|strides?|travels?|crosses?|labou?rs?)\b"
+        r"|\bbody's (?:labor|labour|passage|weight|movement|motion|step|stride|drag)\b"
+        r'|\b(?:human figure|figure (?:moves?|walks?|crosses?|strides?|passes?|drifts?))\b'
+        r'|\bfootstep\w*|\bfootfall\w*'
+        r'|\beach (?:taxed|labored|laboured|weighted|dragged|heavy|exhausted|slow) step\b',
+        re.IGNORECASE,
+    )
+
     def _split_video_sentences(self, video_prompt: str) -> list[str]:
         lines = [line.strip() for line in video_prompt.splitlines() if line.strip()]
         normalized = ' '.join(lines)
@@ -2549,6 +2559,9 @@ class PromptOrchestrator:
             violation = self._check_materiality_violation(motion_sentence, material_class)
             if violation:
                 reasons.append(violation)
+        m = self._first_unnegated_match(self._HUMAN_FIGURE, video_prompt)
+        if m:
+            reasons.append(f'human_figure_language:{m.group(0).lower()}')
         return reasons
 
     def _build_video_retry_prompt(
@@ -2609,6 +2622,16 @@ class PromptOrchestrator:
                     'undertow, pressure displacement, or obscuring cloud of disturbed matter. '
                     'Solid failure terms are only acceptable when a named rock, reef, or formation is '
                     'explicitly the object that is failing.'
+                )
+            elif reason.startswith('human_figure_language:'):
+                term = reason.split(':', 1)[1]
+                corrections.append(
+                    f'Your output contains "{term}" — language that places a human body or figure inside the scene. '
+                    'Body keywords describe the behavioral register of the day, not a physical presence in the frame. '
+                    'No human, figure, or body should appear or move through this landscape. '
+                    'Rewrite so that the weight, drag, or labor implied by the body keywords is expressed entirely '
+                    'through the environment itself — the camera, the mist, the material, the atmosphere — '
+                    'with no implied human subject.'
                 )
         correction_text = '\n'.join(f'- {c}' for c in corrections)
         return (
