@@ -1,8 +1,10 @@
 import base64
 import io
+import json
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Add src/scripts to path to import utils
@@ -117,6 +119,28 @@ class GoogleVideoClient:
             )
         return error_text
 
+    @staticmethod
+    def _diagnostics_path(output_path: Path) -> Path:
+        return output_path.with_name("google_video_diagnostics.json")
+
+    def _write_diagnostics(self, output_path: Path, update: dict):
+        """
+        Persist non-sensitive breadcrumbs for VPS runs where stdout is not captured.
+        Never store prompt text, image bytes, API keys, or full response payloads here.
+        """
+        diagnostics_path = self._diagnostics_path(output_path)
+        diagnostics = {}
+        if diagnostics_path.exists():
+            try:
+                diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+            except Exception:
+                diagnostics = {}
+
+        diagnostics.update(update)
+        diagnostics["updated_at"] = datetime.now(timezone.utc).isoformat()
+        diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics_path.write_text(json.dumps(diagnostics, indent=2, sort_keys=True), encoding="utf-8")
+
     def generate_from_image(self, prompt_text: str, image_path: Path, output_path: Path) -> Path:
         """
         Generate video from image using VEO 3.1 Fast.
@@ -129,6 +153,7 @@ class GoogleVideoClient:
         def _call(api_key: str, key_label: str):
             model = self.default_model
             url = f"{self.BASE_URL}/models/{model}:predictLongRunning"
+            attempt_started_at = time.time()
 
             headers = {
                 "x-goog-api-key": api_key,
@@ -158,17 +183,43 @@ class GoogleVideoClient:
             print(f"   Source size: {source_size[0]}x{source_size[1]}")
             print("   Letterbox canvas: 1080x1920 (black bars, no crop)")
             print("   Payload image mode: bytesBase64Encoded")
+            self._write_diagnostics(output_path, {
+                "status": "starting",
+                "model": model,
+                "key_label": key_label,
+                "endpoint": f"models/{model}:predictLongRunning",
+                "source_image_name": image_path.name,
+                "source_size": {"width": source_size[0], "height": source_size[1]},
+                "payload_image_mode": "bytesBase64Encoded",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            })
 
             start_resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            self._write_diagnostics(output_path, {
+                "status": "start_response_received",
+                "start_http_status": start_resp.status_code,
+            })
 
             if start_resp.status_code >= 400:
                 error_msg = self._build_actionable_error(start_resp.text[:500])
                 print(f"❌ Video generation failed with {start_resp.status_code}")
                 print(f"   Error: {error_msg}")
+                self._write_diagnostics(output_path, {
+                    "status": "failed",
+                    "failure_phase": "start_request",
+                    "error_code": start_resp.status_code,
+                    "error_message": error_msg,
+                    "elapsed_seconds": int(time.time() - attempt_started_at),
+                })
                 raise GoogleAPIError(start_resp.status_code, error_msg)
 
             op_name = self._extract_operation_name(start_resp.json())
             print(f"✓ Operation started: {op_name}")
+            self._write_diagnostics(output_path, {
+                "status": "operation_started",
+                "operation_name": op_name,
+                "elapsed_seconds": int(time.time() - attempt_started_at),
+            })
 
             started_at = time.time()
             poll_count = 0
@@ -180,6 +231,14 @@ class GoogleVideoClient:
                 op_url = f"{self.BASE_URL}/{op_name}"
                 op_resp = requests.get(op_url, headers=headers, timeout=60)
                 if op_resp.status_code >= 400:
+                    self._write_diagnostics(output_path, {
+                        "status": "failed",
+                        "failure_phase": "operation_poll",
+                        "operation_name": op_name,
+                        "error_code": op_resp.status_code,
+                        "error_message": op_resp.text[:500],
+                        "elapsed_seconds": int(elapsed),
+                    })
                     raise GoogleAPIError(op_resp.status_code, op_resp.text[:500])
                 op_json = op_resp.json()
 
@@ -188,6 +247,14 @@ class GoogleVideoClient:
                     msg = err.get("message", "Unknown operation error")
                     code = err.get("code", 500)
                     print(f"❌ Operation failed: {msg}")
+                    self._write_diagnostics(output_path, {
+                        "status": "failed",
+                        "failure_phase": "operation_result",
+                        "operation_name": op_name,
+                        "error_code": code,
+                        "error_message": msg,
+                        "elapsed_seconds": int(elapsed),
+                    })
                     raise GoogleAPIError(code, msg)
 
                 if op_json.get("done") is True:
@@ -196,6 +263,12 @@ class GoogleVideoClient:
                     self._download_video(video_uri, api_key, output_path)
                     print(f"✅ Video generated via {key_label} key with {model}")
                     print(f"   Output: {output_path}")
+                    self._write_diagnostics(output_path, {
+                        "status": "completed",
+                        "operation_name": op_name,
+                        "elapsed_seconds": int(elapsed),
+                        "output_path": str(output_path),
+                    })
                     return output_path
 
                 poll_count += 1
