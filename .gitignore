@@ -16,6 +16,9 @@ gallery/
 local_vps/
 database/
 
+# Local Instagram/Figma exports
+IG/
+
 # Python
 __pycache__/
 *.pyc
