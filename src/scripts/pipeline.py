@@ -2591,7 +2591,7 @@ class WHOOPPipeline:
         caption = (
             f"{title} · {date_display}\n\n"
             "What if your daily health data could generate art?\n\n"
-            "My daily WHOOP data, sleep, recovery, yesterday's strain, runs through a metrics engine "
+            "My daily @whoop data (sleep, recovery, yesterday's strain) runs through a metrics engine "
             "I designed and I layered in Prana Dasha too, a Vedic astrology system that works at a "
             "daily level tuned to my natal chart. I'm skeptical, but it seeds real variation and it's "
             "personal enough that I kept it in.\n\n"
