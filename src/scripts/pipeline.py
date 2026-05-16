@@ -36,35 +36,14 @@ from utils import (
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
 from daily_run_state import DailyRunStateManager, OwnershipLostError
+from caption_builder import HASHTAGS, build_caption, build_hashtags
 
 load_project_dotenv()
 init()
 
 
-HASHTAGS = [
-    '#GenerativeArt',
-    '#AIArt',
-    '#DataArt',
-    '#DataVisualization',
-    '#CreativeCoding',
-    '#GenerativeAI',
-    '#AIGenerated',
-    '#AlgorithmicArt',
-    '#WHOOP',
-    '#WHOOPData',
-    '#QuantifiedSelf',
-    '#SelfTracking',
-    '#Biohacking',
-    '#Biohacker',
-    '#DigitalHealth',
-    '#HealthTech',
-    '#WearableTech',
-    '#DigitalArt',
-]
-
-
 def _build_hashtags(date_str: str) -> str:
-    return ' '.join(HASHTAGS)
+    return build_hashtags(date_str)
 
 
 def _setup_global_exception_handler(pipeline_instance):
@@ -2584,20 +2563,9 @@ class WHOOPPipeline:
 
     def step_13_build_caption(self, metadata: dict, daily_data: dict) -> str:
         self._set_heartbeat_context(status='STARTING', note='Building Instagram caption.', pulse=True)
-        date_str = daily_data.get('date', self.run_date)
-        date_display = daily_data.get('date_display') or metadata.get('date_display') or date_str
+        date_display = daily_data.get('date_display') or metadata.get('date_display') or daily_data.get('date', self.run_date)
         title = metadata.get('title', 'UNKNOWN TITLE')
-        hashtags = _build_hashtags(date_str)
-        caption = (
-            f"{title} · {date_display}\n\n"
-            "What if your daily health data could generate art?\n\n"
-            "My daily @whoop data (sleep, recovery, yesterday's strain) runs through a metrics engine "
-            "I designed and I layered in Prana Dasha too, a Vedic astrology system that works at a "
-            "daily level tuned to my natal chart. I'm skeptical, but it seeds real variation and it's "
-            "personal enough that I kept it in.\n\n"
-            "Not sure any of this means anything. That's kind of the point.\n\n"
-            f"{hashtags}"
-        )
+        caption = build_caption(metadata, daily_data, run_date=self.run_date)
         print(f"{Fore.CYAN}▶ Caption Built: {title}{Style.RESET_ALL}")
         self._set_heartbeat_context(status='STARTING', note='Instagram caption built.', pulse=True)
         return caption
