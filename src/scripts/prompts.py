@@ -1667,7 +1667,7 @@ class PromptOrchestrator:
             'sleep_hours': str(daily_data.get('sleep_hours', 'Unknown')),
             'creature_fragment_phrase': creature_fragment_phrase,
             'creature_fragment_grounding': creature_fragment_grounding,
-            'creature_negative_exclusion': f'no obvious literal {creature_name}',
+            'generic_creature_exclusion': 'no literal animal, creature, beast, mascot, or character subject',
         }
 
         filled_prompt = self.fill_template(template, placeholders, template_name='json_builder')
@@ -2218,7 +2218,13 @@ class PromptOrchestrator:
     )
 
     _POSITIVE_LITERALIZING = re.compile(
-        r'\b(silhouette|outline readable|shaped like|resembles|full-body|statue|animal figure)\b',
+        r'\b('
+        r'silhouette|outline readable|shaped like|resembles|full-body|statue|'
+        r'animal figure|animal subject|beast form|creature form|creature subject|'
+        r'humanoid|human-like|humanlike|figure|(?:readable|animal|human|humanoid|creature) face|eyes?|head|muzzle|snout|'
+        r'teeth|jaws?|paws?|limbs?|torso|anatomy|muscular|predator\w*|hunter|'
+        r'stalking|prey'
+        r')\b',
         re.IGNORECASE,
     )
     _FRAGMENT_STAGING = re.compile(
@@ -2344,18 +2350,6 @@ class PromptOrchestrator:
                     reasons.append('creature_name_in_rendering_avoid')
                     break
 
-        mandatory_exclusions = image_json.get('mandatory_exclusions', [])
-        if creature_name_cf and isinstance(mandatory_exclusions, list):
-            expected_negative = f'no obvious literal {creature_name}'.casefold()
-            creature_specific_entries = [
-                item for item in mandatory_exclusions
-                if isinstance(item, str) and item.casefold() == expected_negative
-            ]
-            if len(creature_specific_entries) != 1:
-                reasons.append(f'creature_negative_count:{len(creature_specific_entries)}')
-            if not creature_specific_entries:
-                reasons.append('missing_standard_creature_negative')
-
         if depth_level not in {'DEEP', 'ABYSS'}:
             return reasons
 
@@ -2420,7 +2414,7 @@ class PromptOrchestrator:
                 _, path = reason.split(':', 1)
                 corrections.append(
                     f'The JSON field "{path}" contains the creature name in positive scene language. '
-                    'Remove the creature name from all positive fields and keep it only in the standardized negative exclusion.'
+                    'Remove the creature name from all image prompt fields. Use generic creature/anatomy exclusions only.'
                 )
             elif reason.startswith('fragment_occurrence_count:'):
                 _, count = reason.split(':', 1)
@@ -2444,23 +2438,13 @@ class PromptOrchestrator:
                 _, path, term = reason.split(':', 2)
                 corrections.append(
                     f'The JSON field "{path}" contains "{term}", which literalizes the creature. '
-                    'Do not use silhouette, outline-readable, shaped-like, full-body, statue, or animal-figure language.'
+                    'Do not use silhouette, outline-readable, shaped-like, full-body, statue, animal-figure, '
+                    'humanoid, face/head/eyes/anatomy, or predatory/hunter language.'
                 )
             elif reason == 'creature_name_in_rendering_avoid':
                 corrections.append(
                     'Do not repeat the creature name inside rendering.avoid. '
-                    'Keep creature-specific naming only in one mandatory_exclusions entry.'
-                )
-            elif reason.startswith('creature_negative_count:'):
-                _, count = reason.split(':', 1)
-                corrections.append(
-                    f'The JSON contains {count} creature-specific mandatory exclusions. '
-                    'Keep exactly one creature-specific exclusion.'
-                )
-            elif reason == 'missing_standard_creature_negative':
-                corrections.append(
-                    'mandatory_exclusions must include exactly one standardized creature-specific entry: '
-                    '"no obvious literal <Creature>".'
+                    'The image prompt must use generic creature/anatomy exclusions only.'
                 )
             elif reason.startswith('deep_image_architectural_language:'):
                 _, path, term = reason.split(':', 2)

@@ -34,7 +34,7 @@ You are constructing a complete image generation JSON prompt for a State Zero ca
 - **Moon Nakshatra:** {moon_nakshatra}
 - **Creature Fragment Phrase:** {creature_fragment_phrase}
 - **Creature Fragment Grounding:** {creature_fragment_grounding}
-- **Creature Negative Exclusion:** {creature_negative_exclusion}
+- **Generic Creature Exclusion:** {generic_creature_exclusion}
 
 ---
 
@@ -165,14 +165,13 @@ Once you've selected your option above, apply these language rules:
 
 The creature name (`{creature}`) is **FORBIDDEN** in all descriptive/positive fields. The image generator reads this JSON directly — naming the creature anchors it toward literal representation even when surrounded by "avoid" language.
 
-**Allowed (negative prompt lists only):**
-- `mandatory_exclusions` — creature name here is fine, but only in the single standardized exclusion
+**Important:** Do not write the creature name in `mandatory_exclusions` either. The image model receives this JSON directly, and creature-name tokens can still anchor the model even when they appear in negative wording.
 
 **Forbidden (all other fields):**
 - `core_concept` — NO creature name, use [QUALITY] only
 - `composition.midground` — NO creature name, NO fragment phrase
 - `creature_integration.visibility` — NO creature name, use [QUALITY] plus one embedded fragment phrase only
-- `rendering.avoid` — DO NOT repeat the creature name here
+- `rendering.avoid` and `mandatory_exclusions` — use generic creature/anatomy exclusions only
 
 ## CREATURE SIGNATURE FRAGMENT
 
@@ -205,8 +204,8 @@ Look at the creature, find the closest archetype below, and pick the quality phr
 | **Ancient / Armored** (turtles, crocodiles, beetles, crabs, nautilus) | "primordial patience", "armored density", "geological time" |
 | **Arachnid / Angular** (scorpions, spiders, mantis, lobsters) | "fracture-line tension", "segmented rock pressure", "tense stillness" |
 | **Delicate / Ephemeral** (moths, butterflies, dragonflies, fireflies) | "fragile tracery", "ephemeral pattern", "delicate threading" |
-| **Canine / Pack** (wolves, foxes, jackals, hyenas) | "lean tension", "predatory stillness", "low-center weight" |
-| **Feline / Predator** (lions, tigers, leopards, jaguars) | "coiled readiness", "compressed power", "muscular density" |
+| **Canine / Pack** (wolves, foxes, jackals, hyenas) | "lean boundary tension", "low-center pressure", "distributed edge-weight" |
+| **Feline / Predator** (lions, tigers, leopards, jaguars) | "compressed force", "spring-loaded stone pressure", "coiled geological density" |
 | **Avian / Patient** (owls, vultures, ravens, herons) | "patient weight", "hollow density", "watchful mass" |
 | **Mythological / Hybrid** (gryphons, phoenixes, dragons, chimeras) | "composite mass", "ancient fusion", "primordial scale" |
 
@@ -214,6 +213,7 @@ Look at the creature, find the closest archetype below, and pick the quality phr
 
 **CRITICAL — these quality phrases will cause creature bleed. AVOID them:**
 - Behavioral: "storm command", "watchful patience", "hunting focus" → produce recognizable creature poses
+- Animal-role words: "predatory", "hunter", "pack leader", "stalking", "prey" → produce readable animal subjects
 - Character: "sovereign stillness", "regal weight", "noble mass" → produce humanoid/throne forms
 - Action: "poised to strike", "mid-flight tension" → produce literal creature action
 
@@ -409,7 +409,9 @@ Fill ALL placeholders below using the input data and rules above:
       "hyper-realistic CG",
       "standalone creature subject",
       "literal animal figure in foreground or midground",
-      "statue-like beast form"
+      "statue-like beast form",
+      "humanoid or human-like figure",
+      "readable face, eyes, head, muzzle, snout, teeth, paws, limbs, torso, or anatomy"
     ],
     "DEPLOYMENT_NOTE": "Items in avoid array MUST be passed as weighted negative prompts to the image generator (if supported by your chosen system)"
   },
@@ -482,8 +484,9 @@ Fill ALL placeholders below using the input data and rules above:
     "no photorealistic animal anatomy",
     "no creature as a separate entity in the scene — creature IS the landscape",
     "no standalone animal subject, no statue-like creature, no mascot-like figure",
+    "no humanoid, human-like figure, face, eyes, head, muzzle, snout, teeth, paws, limbs, torso, or readable anatomy",
     "no modern 3D render aesthetic",
-    "{creature_negative_exclusion}"
+    "{generic_creature_exclusion}"
   ],
 
   "consistency_anchors": {
@@ -516,6 +519,7 @@ Before outputting the JSON, verify:
 - [ ] Aspect ratio is "VERTICAL 3:4 PORTRAIT"
 - [ ] Behavioral one-liner `{one_liner}` reflected in core_concept felt state (no planet names, no house numbers, no astrology)
 - [ ] `avoid` array includes "standalone creature subject", "literal animal figure in foreground or midground", and "statue-like beast form"
+- [ ] No positive field uses animal-role or anatomy language such as predatory, hunter, face, eyes, head, muzzle, paws, limbs, humanoid, or human-like figure
 - [ ] `"text": "NO TEXT, NO TITLES, NO OVERLAYS"` present in technical_specifications
 - [ ] Celestial treatment matches depth: open sky only at SURFACE, partial framing at MID-DEPTH, lateral light bleed or omission at DEEP (no overhead aperture), fracture glimpse or omission at ABYSS
 - [ ] Depth level {depth_level} influences lighting.time and composition.sky appropriately
