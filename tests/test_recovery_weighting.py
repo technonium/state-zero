@@ -341,6 +341,60 @@ class ImagePromptWiringTests(unittest.TestCase):
             "fragment_grounding": "",
         }
 
+    def test_image_json_validator_rejects_literal_animal_and_humanoid_language(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        image_json = {
+            "core_concept": "Volcanic formations carry lean predatory tension around a readable face in the rock.",
+            "lighting": {"time": "Lateral ember light only."},
+            "composition": {"sky": "None visible."},
+            "color_palette": {"sky_gradient": "No open sky."},
+            "creature_integration": {
+                "blend": "Option A - Sculptural",
+                "visibility": "Geological formations barely evoke boundary pressure through natural erosion patterns.",
+            },
+            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
+        }
+
+        reasons = orchestrator._validate_image_json(
+            image_json,
+            "DEEP",
+            creature_name="Jackal",
+            fragment_phrase="",
+            fragment_required=False,
+        )
+
+        self.assertTrue(
+            any(reason.startswith("positive_literalizing_language:core_concept:") for reason in reasons),
+            reasons,
+        )
+
+    def test_image_json_validator_allows_geological_rock_face_language(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        image_json = {
+            "core_concept": "Volcanic formations press across a cracked rock face with lateral ember light.",
+            "lighting": {"time": "Lateral ember light only."},
+            "composition": {"sky": "None visible."},
+            "color_palette": {"sky_gradient": "No open sky."},
+            "creature_integration": {
+                "blend": "Option A - Sculptural",
+                "visibility": "Geological formations barely evoke boundary pressure through natural erosion patterns.",
+            },
+            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
+        }
+
+        reasons = orchestrator._validate_image_json(
+            image_json,
+            "DEEP",
+            creature_name="Jackal",
+            fragment_phrase="",
+            fragment_required=False,
+        )
+
+        self.assertFalse(
+            any(reason.startswith("positive_literalizing_language:core_concept:face") for reason in reasons),
+            reasons,
+        )
+
     def test_build_image_json_retries_until_deep_output_removes_overhead_aperture_language(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
@@ -359,8 +413,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             },
                             "composition": {"sky": "A pale upper opening is visible."},
                             "color_palette": {"sky_gradient": "Cold white shaft glow."},
-                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
-                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect boundary tension."},
+                            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                         }
                     ),
                     json.dumps(
@@ -372,8 +426,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             },
                             "composition": {"sky": "None visible."},
                             "color_palette": {"sky_gradient": "Omit direct sky glow."},
-                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
-                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect boundary tension."},
+                            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                         }
                     ),
                 ])
@@ -432,8 +486,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                         "lighting": {"time": "A shaft falls from above."},
                         "composition": {"sky": "Upper opening remains visible."},
                         "color_palette": {"sky_gradient": "Cold shaft glow."},
-                        "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
-                        "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                        "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect boundary tension."},
+                        "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                     }
                 )
                 responses = iter([bad_output, bad_output, bad_output])
@@ -492,8 +546,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             "lighting": {"time": "Cold light enters laterally through a side-wall seam."},
                             "composition": {"sky": "None visible."},
                             "color_palette": {"sky_gradient": "Enclosed interior, no direct sky glow."},
-                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect predatory tension."},
-                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                            "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect boundary tension."},
+                            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                         }
                     ),
                 ])
@@ -600,8 +654,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                                 "background": "A tunnel exit points to a horizon line.",
                                 "sky": "Bright upper opening visible.",
                             },
-                            "creature_integration": {"blend": "Option A - Default", "visibility": "Sealed stone masses hold indirect predatory tension."},
-                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                            "creature_integration": {"blend": "Option A - Default", "visibility": "Sealed stone masses hold indirect boundary tension."},
+                            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                         }
                     ),
                     json.dumps(
@@ -610,8 +664,8 @@ class ImagePromptWiringTests(unittest.TestCase):
                             "lighting": {"time": "Interior pressure-light pulses through hairline seams."},
                             "composition": {"background": "Solid enclosed stone from all sides.", "sky": "None visible."},
                             "color_palette": {"sky_gradient": "No sky; interior mineral pressure glow only."},
-                            "creature_integration": {"blend": "Option A - Default", "visibility": "Sealed stone masses hold indirect predatory tension."},
-                            "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                            "creature_integration": {"blend": "Option A - Default", "visibility": "Sealed stone masses hold indirect boundary tension."},
+                            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                         }
                     ),
                 ])
@@ -780,9 +834,9 @@ class CreatureFragmentRegressionTests(unittest.TestCase):
                         "color_palette": {"sky_gradient": "No open sky."},
                         "creature_integration": {
                             "blend": "Option B - Sculptural",
-                            "visibility": "Compressed cave masses hold indirect predatory tension.",
+                            "visibility": "Compressed cave masses hold indirect boundary tension.",
                         },
-                        "mandatory_exclusions": ["no obvious literal Snow Leopard"],
+                        "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                     }
                 )
                 orchestrator.latest_creature_fragment = "old stale fragment"
@@ -817,7 +871,7 @@ class CreatureFragmentRegressionTests(unittest.TestCase):
                     fragment_grounding="",
                 )
 
-        self.assertIn("indirect predatory tension", result["creature_integration"]["visibility"])
+        self.assertIn("indirect boundary tension", result["creature_integration"]["visibility"])
 
 
 class PromptStageSmokeTests(unittest.TestCase):
@@ -872,7 +926,7 @@ class PromptStageSmokeTests(unittest.TestCase):
                                     "blend": "Option B - Sculptural",
                                     "visibility": "Sculptural cave masses dominate, and to someone looking closely one hooked scale ridge might be half-lost in the patterning while landscape remains primary.",
                                 },
-                                "mandatory_exclusions": ["no obvious literal Naga"],
+                                "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
                             }
                         )
                     if "video" in prompt.lower():
@@ -915,6 +969,7 @@ class PromptStageSmokeTests(unittest.TestCase):
         self.assertEqual(creature.split("—")[0].strip(), "Naga")
         self.assertEqual(environment.split("—")[0].strip(), "Cave Systems")
         self.assertIn("hooked scale ridge", image_json["creature_integration"]["visibility"])
+        self.assertNotIn("Naga", json.dumps(image_json.get("mandatory_exclusions", [])))
         self.assertEqual(metadata["date_display"], "21 Mar 2026")
         self.assertIn("Mineral dust pours", video_prompt)
 
