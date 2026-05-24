@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import subprocess
 import sqlite3
 import stat
 import sys
@@ -986,6 +987,413 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             fsync_mock.assert_called_once()
             self.assertEqual(json.loads(path.read_text(encoding="utf-8")), payload)
+
+    def test_run_stops_before_render_when_whoop_revalidation_mismatches(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.mode = "automatic"
+            pipeline.media_mode = "live_vps"
+            pipeline.post_to_instagram = True
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.run_date = "2026-03-09"
+            pipeline.deadline_dt = datetime(2026, 3, 9, 18, 0, 0)
+            pipeline._now = lambda: datetime(2026, 3, 9, 12, 0, 0)
+            pipeline._claim_daily_run_or_exit = lambda: None
+            pipeline._ensure_owner_runtime_dirs = lambda: None
+            pipeline._stop_heartbeat_thread = lambda: None
+            pipeline._cleanup_non_authoritative_daily_state = lambda: None
+            pipeline.step_1_validate = lambda: None
+            pipeline.step_1b_validate_instagram_token = lambda: None
+            pipeline.step_4_6_prompts = lambda: None
+            pipeline._load_required_json = lambda path, label: {"title": "Title", "scene_description": "scene"} if label == "card_metadata.json" else {"prompt": "x"}
+            pipeline._load_required_text_outputs = lambda: ("blend", "creature", "Frozen/Ice — reason")
+            pipeline.step_7_generate_image = lambda image_json: Path(tmpdir) / "art.png"
+            pipeline.step_9_generate_video = lambda art_path, prompt_path: Path(tmpdir) / "video.mp4"
+            render_calls = []
+            pipeline.step_10a_render_image = lambda *args: render_calls.append("image") or Path(tmpdir) / "card_final.png"
+            pipeline.step_10b_render_video = lambda *args: render_calls.append("video") or Path(tmpdir) / "card_final.mp4"
+
+            original_snapshot = {
+                "provenance_version": 1,
+                "sleep_id": "sleep-1",
+                "recovery_cycle_id": 10,
+                "recovery_sleep_id": "sleep-1",
+                "strain_cycle_id": 9,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 23.0,
+                    "sleep_score_pct": 43.0,
+                    "sleep_hours": 4.0,
+                },
+            }
+            fresh_snapshot = {
+                **original_snapshot,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 47.0,
+                    "sleep_score_pct": 87.0,
+                    "sleep_hours": 9.3,
+                },
+            }
+
+            def _lookup():
+                pipeline._write_json_atomic(pipeline.output_dir / "whoop_snapshot.json", original_snapshot)
+                return {
+                    "date": "2026-03-09",
+                    "dasha": {},
+                    "strain": 15.1,
+                    "recovery_pct": 23.0,
+                    "sleep_score_pct": 43.0,
+                    "sleep_hours": 4.0,
+                }
+
+            pipeline.step_2_3_lookups = _lookup
+            pipeline._fetch_fresh_whoop_snapshot = lambda: fresh_snapshot
+            handled_errors = []
+            pipeline._handle_runtime_stage_error = lambda exc: handled_errors.append(exc) or True
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false"}, clear=False):
+                with patch("builtins.print"):
+                    WHOOPPipeline.run(pipeline)
+
+        self.assertEqual(render_calls, [])
+        self.assertEqual(handled_errors[0].stage, "WHOOP Data Revalidation")
+        self.assertTrue(handled_errors[0].fallback_eligible)
+        self.assertFalse(handled_errors[0].emergency_fallback_allowed)
+
+    def test_whoop_revalidation_cutoff_race_never_runs_emergency_fallback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.post_to_instagram = True
+            pipeline.in_emergency_fallback = False
+            pipeline.deadline_dt = datetime(2026, 3, 9, 14, 0, 0)
+            original_snapshot = {
+                "provenance_version": 1,
+                "sleep_id": "sleep-1",
+                "recovery_cycle_id": 10,
+                "recovery_sleep_id": "sleep-1",
+                "strain_cycle_id": 9,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 23.0,
+                    "sleep_score_pct": 43.0,
+                    "sleep_hours": 4.0,
+                },
+            }
+            fresh_snapshot = {
+                **original_snapshot,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 47.0,
+                    "sleep_score_pct": 87.0,
+                    "sleep_hours": 9.3,
+                },
+            }
+            pipeline._write_json_atomic(pipeline.output_dir / "whoop_snapshot.json", original_snapshot)
+            pipeline._fetch_fresh_whoop_snapshot = lambda: fresh_snapshot
+
+            pipeline._now = lambda: datetime(2026, 3, 9, 13, 59, 59)
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
+                with self.assertRaises(PipelineStageError) as revalidation_ctx:
+                    WHOOPPipeline._revalidate_whoop_checkpoint(
+                        pipeline,
+                        {
+                            "strain": 15.1,
+                            "recovery_pct": 23.0,
+                            "sleep_score_pct": 43.0,
+                            "sleep_hours": 4.0,
+                        },
+                        checkpoint="before_render",
+                    )
+
+            fatal_calls = []
+            pipeline.daily_run = types.SimpleNamespace(
+                is_owner=lambda: True,
+                mark_fatal_failure=lambda **kwargs: fatal_calls.append(kwargs),
+            )
+            pipeline._run_emergency_fallback = lambda *args, **kwargs: self.fail("WHOOP mismatch must not emergency post")
+            pipeline._now = lambda: datetime(2026, 3, 9, 14, 0, 1)
+
+            notifier = types.SimpleNamespace(notify_error=lambda **kwargs: None)
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
+                with patch("pipeline.get_notifier", return_value=notifier):
+                    with self.assertRaises(SystemExit) as ctx:
+                        WHOOPPipeline._handle_runtime_stage_error(pipeline, revalidation_ctx.exception)
+
+            revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(fatal_calls[0]["step"], "WHOOP Data Revalidation")
+        self.assertEqual(fatal_calls[0]["failure_classification"], "lookup_not_ready")
+        self.assertEqual(revalidation_log["checks"][0]["decision"], "retry")
+        self.assertEqual(revalidation_log["checks"][-1]["decision"], "no_post")
+        self.assertEqual(revalidation_log["checks"][-1]["previous_decision"], "retry")
+        self.assertEqual(revalidation_log["checks"][-1]["decision_source"], "terminal_handler_recheck")
+
+    def test_whoop_revalidation_terminal_handler_records_malformed_details_as_no_post(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.post_to_instagram = True
+            pipeline.in_emergency_fallback = False
+            pipeline.deadline_dt = datetime(2026, 3, 9, 14, 0, 0)
+            pipeline._now = lambda: datetime(2026, 3, 9, 14, 0, 1)
+            fatal_calls = []
+            pipeline.daily_run = types.SimpleNamespace(
+                is_owner=lambda: True,
+                mark_fatal_failure=lambda **kwargs: fatal_calls.append(kwargs),
+            )
+            pipeline._run_emergency_fallback = lambda *args, **kwargs: self.fail("WHOOP mismatch must not emergency post")
+            notifier = types.SimpleNamespace(notify_error=lambda **kwargs: None)
+            exc = PipelineStageError(
+                stage="WHOOP Data Revalidation",
+                message="WHOOP data changed after initial lookup; refusing to publish stale metrics.",
+                details="not json",
+                fallback_eligible=True,
+                emergency_fallback_allowed=False,
+                failure_classification="lookup_not_ready",
+            )
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
+                with patch("pipeline.get_notifier", return_value=notifier):
+                    with self.assertRaises(SystemExit) as ctx:
+                        WHOOPPipeline._handle_runtime_stage_error(pipeline, exc)
+
+            revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(fatal_calls[0]["failure_classification"], "lookup_not_ready")
+        self.assertEqual(revalidation_log["checks"][-1]["decision"], "no_post")
+        self.assertEqual(revalidation_log["checks"][-1]["decision_source"], "terminal_handler_recheck")
+        self.assertEqual(revalidation_log["checks"][-1]["raw_details_tail"], "not json")
+
+    def test_dry_run_revalidates_before_render_and_stops_on_mismatch(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.mode = "automatic"
+            pipeline.media_mode = "live_vps"
+            pipeline.post_to_instagram = False
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.run_date = "2026-03-09"
+            pipeline.deadline_dt = datetime(2026, 3, 9, 18, 0, 0)
+            pipeline._now = lambda: datetime(2026, 3, 9, 12, 0, 0)
+            pipeline._claim_daily_run_or_exit = lambda: None
+            pipeline._ensure_owner_runtime_dirs = lambda: None
+            pipeline._stop_heartbeat_thread = lambda: None
+            pipeline._cleanup_non_authoritative_daily_state = lambda: None
+            pipeline.step_1_validate = lambda: None
+            pipeline.step_4_6_prompts = lambda: None
+            pipeline._load_required_json = lambda path, label: {"title": "Title", "scene_description": "scene"} if label == "card_metadata.json" else {"prompt": "x"}
+            pipeline._load_required_text_outputs = lambda: ("blend", "creature", "Frozen/Ice — reason")
+            pipeline.step_7_generate_image = lambda image_json: Path(tmpdir) / "art.png"
+            pipeline.step_9_generate_video = lambda art_path, prompt_path: Path(tmpdir) / "video.mp4"
+            render_calls = []
+            pipeline.step_10a_render_image = lambda *args: render_calls.append("image") or Path(tmpdir) / "card_final.png"
+            pipeline.step_10b_render_video = lambda *args: render_calls.append("video") or Path(tmpdir) / "card_final.mp4"
+
+            original_snapshot = {
+                "provenance_version": 1,
+                "sleep_id": "sleep-1",
+                "recovery_cycle_id": 10,
+                "recovery_sleep_id": "sleep-1",
+                "strain_cycle_id": 9,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 23.0,
+                    "sleep_score_pct": 43.0,
+                    "sleep_hours": 4.0,
+                },
+            }
+            fresh_snapshot = {
+                **original_snapshot,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 47.0,
+                    "sleep_score_pct": 87.0,
+                    "sleep_hours": 9.3,
+                },
+            }
+
+            def _lookup():
+                pipeline._write_json_atomic(pipeline.output_dir / "whoop_snapshot.json", original_snapshot)
+                return {
+                    "date": "2026-03-09",
+                    "dasha": {},
+                    "strain": 15.1,
+                    "recovery_pct": 23.0,
+                    "sleep_score_pct": 43.0,
+                    "sleep_hours": 4.0,
+                }
+
+            pipeline.step_2_3_lookups = _lookup
+            pipeline._fetch_fresh_whoop_snapshot = lambda: fresh_snapshot
+            notifier = types.SimpleNamespace(notify_error=lambda **kwargs: None)
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false"}, clear=False):
+                with patch("pipeline.get_notifier", return_value=notifier):
+                    with patch("builtins.print"):
+                        with self.assertRaises(SystemExit) as ctx:
+                            WHOOPPipeline.run(pipeline)
+
+            revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(render_calls, [])
+        self.assertEqual(revalidation_log["checks"][-1]["checkpoint"], "before_render")
+        self.assertEqual(revalidation_log["checks"][-1]["decision"], "retry")
+
+    def test_dry_run_skips_before_instagram_post_revalidation_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.post_to_instagram = False
+            pipeline.run_date = "2026-03-09"
+            pipeline._fetch_fresh_whoop_snapshot = lambda: self.fail("dry-run post checkpoint should be skipped")
+
+            WHOOPPipeline._revalidate_whoop_checkpoint(
+                pipeline,
+                {
+                    "strain": 15.1,
+                    "recovery_pct": 47.0,
+                    "sleep_score_pct": 87.0,
+                    "sleep_hours": 9.3,
+                },
+                checkpoint="before_instagram_post",
+            )
+
+            self.assertFalse((pipeline.output_dir / "whoop_revalidation.json").exists())
+
+    def test_whoop_revalidation_after_deadline_is_no_post_not_fallback_eligible(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.post_to_instagram = True
+            pipeline.run_date = "2026-03-09"
+            pipeline.deadline_dt = datetime(2026, 3, 9, 14, 0, 0)
+            pipeline._now = lambda: datetime(2026, 3, 9, 14, 5, 0)
+            original_snapshot = {
+                "provenance_version": 1,
+                "sleep_id": "sleep-1",
+                "recovery_cycle_id": 10,
+                "recovery_sleep_id": "sleep-1",
+                "strain_cycle_id": 9,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 23.0,
+                    "sleep_score_pct": 43.0,
+                    "sleep_hours": 4.0,
+                },
+            }
+            fresh_snapshot = {
+                **original_snapshot,
+                "public_values": {
+                    "strain": 15.1,
+                    "recovery_pct": 47.0,
+                    "sleep_score_pct": 87.0,
+                    "sleep_hours": 9.3,
+                },
+            }
+            pipeline._write_json_atomic(pipeline.output_dir / "whoop_snapshot.json", original_snapshot)
+            pipeline._fetch_fresh_whoop_snapshot = lambda: fresh_snapshot
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false"}, clear=False):
+                with self.assertRaises(PipelineStageError) as ctx:
+                    WHOOPPipeline._revalidate_whoop_checkpoint(
+                        pipeline,
+                        {
+                            "strain": 15.1,
+                            "recovery_pct": 23.0,
+                            "sleep_score_pct": 43.0,
+                            "sleep_hours": 4.0,
+                        },
+                        checkpoint="before_instagram_post",
+                    )
+
+            revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(ctx.exception.fallback_eligible)
+        self.assertFalse(ctx.exception.emergency_fallback_allowed)
+        self.assertEqual(revalidation_log["checks"][-1]["decision"], "no_post")
+
+    def test_prompt_validation_failure_retries_before_deadline_without_emergency_fallback(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.post_to_instagram = True
+            pipeline.in_emergency_fallback = False
+            pipeline.deadline_dt = datetime(2026, 3, 9, 18, 0, 0)
+            pipeline._now = lambda: datetime(2026, 3, 9, 12, 0, 0)
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+            pipeline._stop_heartbeat_thread = lambda: None
+            retryable_calls = []
+            release_calls = []
+            pipeline.daily_run = types.SimpleNamespace(
+                mark_retryable_failure=lambda **kwargs: retryable_calls.append(kwargs),
+                release_claim=lambda: release_calls.append("released"),
+            )
+            pipeline._run_emergency_fallback = lambda *args, **kwargs: self.fail("strict prompt validation must not emergency post")
+            notifier = types.SimpleNamespace(notify_warning=lambda **kwargs: None)
+            failed = subprocess.CompletedProcess(
+                args=["prompts.py"],
+                returncode=1,
+                stdout="",
+                stderr="RuntimeError: Video prompt validation failed after 2 LLM attempts and deterministic repair.",
+            )
+
+            with patch("pipeline.subprocess.run", return_value=failed):
+                with self.assertRaises(PipelineStageError) as prompt_ctx:
+                    WHOOPPipeline.step_4_6_prompts(pipeline)
+
+            self.assertTrue(prompt_ctx.exception.fallback_eligible)
+            self.assertFalse(prompt_ctx.exception.emergency_fallback_allowed)
+            self.assertEqual(prompt_ctx.exception.failure_classification, "prompt_validation_failed")
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
+                with patch("pipeline.get_notifier", return_value=notifier):
+                    with self.assertRaises(SystemExit) as ctx:
+                        WHOOPPipeline._handle_runtime_stage_error(pipeline, prompt_ctx.exception)
+
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertEqual(len(retryable_calls), 1)
+        self.assertEqual(release_calls, ["released"])
+        self.assertEqual(retryable_calls[0]["failure_classification"], "prompt_validation_failed")
+
+    def test_prompt_validation_failure_after_deadline_is_no_post(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pipeline = self._build_manual_session_pipeline(tmpdir)
+            pipeline.base_dir = PROJECT_ROOT
+            pipeline.post_to_instagram = True
+            pipeline.in_emergency_fallback = False
+            pipeline.deadline_dt = datetime(2026, 3, 9, 14, 0, 0)
+            pipeline._now = lambda: datetime(2026, 3, 9, 14, 0, 1)
+            pipeline._set_heartbeat_context = lambda **kwargs: None
+            fatal_calls = []
+            pipeline.daily_run = types.SimpleNamespace(
+                is_owner=lambda: True,
+                mark_fatal_failure=lambda **kwargs: fatal_calls.append(kwargs),
+            )
+            pipeline._run_emergency_fallback = lambda *args, **kwargs: self.fail("strict prompt validation must not emergency post")
+            notifier = types.SimpleNamespace(notify_error=lambda **kwargs: None)
+            failed = subprocess.CompletedProcess(
+                args=["prompts.py"],
+                returncode=1,
+                stdout="",
+                stderr="RuntimeError: Video prompt validation failed after 2 LLM attempts and deterministic repair.",
+            )
+
+            with patch("pipeline.subprocess.run", return_value=failed):
+                with self.assertRaises(PipelineStageError) as prompt_ctx:
+                    WHOOPPipeline.step_4_6_prompts(pipeline)
+
+            self.assertTrue(prompt_ctx.exception.fallback_eligible)
+            self.assertFalse(prompt_ctx.exception.emergency_fallback_allowed)
+
+            with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
+                with patch("pipeline.get_notifier", return_value=notifier):
+                    with self.assertRaises(SystemExit) as ctx:
+                        WHOOPPipeline._handle_runtime_stage_error(pipeline, prompt_ctx.exception)
+
+        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(fatal_calls[0]["step"], "LLM Prompts (Interpretation -> Video)")
+        self.assertEqual(fatal_calls[0]["failure_classification"], "prompt_validation_failed")
 
     def test_fallback_post_upsert_updates_existing_run_date(self):
         with tempfile.TemporaryDirectory() as tmpdir:

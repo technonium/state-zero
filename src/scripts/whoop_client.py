@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import date, datetime, time, timedelta, timezone
 import math
 from zoneinfo import ZoneInfo
@@ -72,7 +73,71 @@ class WHOOPClient:
     def _parse_iso_utc(self, value: str | None) -> datetime | None:
         if not value:
             return None
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _now_utc(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _env_int_minutes(name: str, default: int) -> int:
+        raw = (os.getenv(name) or "").strip()
+        if not raw:
+            return default
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return default
+
+    def _min_wake_finalization(self) -> timedelta:
+        return timedelta(minutes=self._env_int_minutes("WHOOP_MIN_WAKE_FINALIZATION_MINUTES", 90))
+
+    def _quiet_update_window(self) -> timedelta:
+        return timedelta(minutes=self._env_int_minutes("WHOOP_QUIET_UPDATE_MINUTES", 15))
+
+    @staticmethod
+    def _score_state(record: dict) -> str:
+        return str(record.get("score_state") or "").strip().upper()
+
+    def _require_scored(self, record: dict, *, label: str, reason: str, day: date):
+        score_state = self._score_state(record)
+        if score_state != "SCORED":
+            display_state = score_state or "missing"
+            raise WhoopDailyDataPendingError(
+                reason,
+                f"{label} score_state is {display_state}; waiting for SCORED for {day} IST",
+            )
+
+    def _require_quiet_update(self, record: dict, *, label: str, reason: str, day: date):
+        updated_dt = self._parse_iso_utc(record.get("updated_at"))
+        if not updated_dt:
+            raise WhoopDailyDataPendingError(
+                f"{reason}_updated_at_missing",
+                f"{label} updated_at is missing for {day} IST",
+            )
+        elapsed = self._now_utc() - updated_dt
+        quiet_window = self._quiet_update_window()
+        if elapsed < quiet_window:
+            remaining = max(0, int((quiet_window - elapsed).total_seconds() // 60) + 1)
+            raise WhoopDailyDataPendingError(
+                reason,
+                f"{label} updated {elapsed.total_seconds() / 60:.1f} minutes ago; waiting ~{remaining} more minute(s) for WHOOP to settle",
+            )
+
+    def _require_sleep_finalization_window(self, sleep: dict, *, day: date):
+        end_dt = self._parse_iso_utc(sleep.get("end"))
+        if not end_dt:
+            raise WhoopDailyDataPendingError("primary_sleep_end_missing", f"Primary sleep end missing for {day} IST")
+        elapsed = self._now_utc() - end_dt
+        min_window = self._min_wake_finalization()
+        if elapsed < min_window:
+            remaining = max(0, int((min_window - elapsed).total_seconds() // 60) + 1)
+            raise WhoopDailyDataPendingError(
+                "whoop_finalization_window_open",
+                f"Primary sleep ended {elapsed.total_seconds() / 60:.1f} minutes ago; waiting ~{remaining} more minute(s) before using same-day WHOOP data",
+            )
 
     def _to_ist_date(self, value: str | None) -> date | None:
         dt = self._parse_iso_utc(value)
@@ -209,17 +274,20 @@ class WHOOPClient:
         """Compatibility shim for older callers expecting the previous helper name."""
         return await self.get_prior_completed_strain_cycle(target_date)
 
-    async def get_today_recovery(self, target_date: datetime = None) -> dict:
+    async def get_today_recovery(self, target_date: datetime = None, sleep_data: dict | None = None) -> dict:
         """
         Get recovery for local target day D:
-        choose recovery where updated_at_ist == D.
+        choose recovery where updated_at_ist == D and, when available,
+        recovery.sleep_id matches the selected primary sleep.
         """
         day = (target_date.date() if isinstance(target_date, datetime) else target_date) or datetime.now(self.local_tz).date()
         cycles = await self._get_cycles_window(day)
         if not cycles:
             raise WhoopDailyDataPendingError("recovery_cycle_window_empty", f"No cycle data around {day} for recovery lookup")
 
+        expected_sleep_id = str(sleep_data.get("id")) if isinstance(sleep_data, dict) and sleep_data.get("id") else ""
         matches: list[tuple[dict, datetime]] = []
+        sleep_mismatches: list[str] = []
         for cycle in cycles:
             cycle_id = cycle.get("id")
             if not cycle_id:
@@ -233,14 +301,27 @@ class WHOOPClient:
             updated_at = recovery.get("updated_at")
             if self._to_ist_date(updated_at) == day:
                 updated_dt = self._parse_iso_utc(updated_at)
-                if updated_dt:
-                    matches.append((recovery, updated_dt))
+                if not updated_dt:
+                    continue
+                recovery_sleep_id = str(recovery.get("sleep_id") or "")
+                if expected_sleep_id and recovery_sleep_id != expected_sleep_id:
+                    sleep_mismatches.append(recovery_sleep_id or "<missing>")
+                    continue
+                matches.append((recovery, updated_dt))
 
         if not matches:
+            if expected_sleep_id and sleep_mismatches:
+                raise WhoopDailyDataPendingError(
+                    "whoop_recovery_sleep_mismatch",
+                    f"Recovery entries for {day} IST were linked to sleep_id(s) {sorted(set(sleep_mismatches))}, not selected primary sleep {expected_sleep_id}",
+                )
             raise WhoopDailyDataPendingError("recovery_missing", f"No recovery entry found for {day} IST")
 
         matches.sort(key=lambda t: t[1], reverse=True)
-        return matches[0][0]
+        selected = matches[0][0]
+        self._require_scored(selected, label="Recovery", reason="whoop_recovery_unscored", day=day)
+        self._require_quiet_update(selected, label="Recovery", reason="whoop_recovery_still_updating", day=day)
+        return selected
 
     async def get_last_sleep(self, target_date: datetime = None) -> dict:
         """
@@ -262,4 +343,8 @@ class WHOOPClient:
         if not matches:
             raise WhoopDailyDataPendingError("primary_sleep_missing", f"No primary sleep found ending on {day} IST")
         matches.sort(key=lambda s: self._parse_iso_utc(s.get("end")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        return matches[0]
+        selected = matches[0]
+        self._require_scored(selected, label="Primary sleep", reason="whoop_sleep_unscored", day=day)
+        self._require_sleep_finalization_window(selected, day=day)
+        self._require_quiet_update(selected, label="Primary sleep", reason="whoop_sleep_still_updating", day=day)
+        return selected

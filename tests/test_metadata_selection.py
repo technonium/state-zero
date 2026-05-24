@@ -186,7 +186,7 @@ class MetadataSelectionTests(unittest.TestCase):
             "soft_accept_family_collision_first_batch",
         )
 
-    def test_extract_metadata_retries_scene_description_and_falls_back_to_core_concept(self):
+    def test_extract_metadata_retries_scene_description_and_uses_safe_fallback(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -209,8 +209,9 @@ class MetadataSelectionTests(unittest.TestCase):
                     (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
                 )
 
-        self.assertEqual(metadata["scene_description"], "A frozen field holding its shape under pressure.")
-        self.assertEqual(debug_payload["scene_selection_source"], "fallback_core_concept")
+        self.assertNotEqual(metadata["scene_description"], "A frozen field holding its shape under pressure.")
+        self.assertEqual(debug_payload["scene_selection_source"], "fallback_safe_scene")
+        self.assertFalse(orchestrator._validate_scene_description(metadata["scene_description"]))
         self.assertTrue(debug_payload["scene_debug"]["retry_triggered"])
 
     def test_extract_metadata_handles_db_lookup_failure_without_crashing(self):

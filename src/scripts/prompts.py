@@ -1862,11 +1862,29 @@ class PromptOrchestrator:
             f"{previous_output.strip()}\n"
         )
 
-    def _fallback_scene_description(self, image_json: dict | None) -> str:
-        image_json = image_json or {}
-        core_concept = str(image_json.get('core_concept', '')).strip()
-        short_scene = (core_concept[:157] + '...') if len(core_concept) > 160 else core_concept
-        return short_scene or "Scene description unavailable."
+    _SAFE_SCENE_FALLBACKS: dict[tuple[str, str], str] = {
+        ('LOW', 'ABYSS'): 'A sealed field of dark pressure buckles inward, with dim particles dragging through the frame.',
+        ('LOW', 'DEEP'): 'A buried mineral field sags under pressure while dim side-light catches the failing edge.',
+        ('LOW', 'MID-DEPTH'): 'A low-lit terrain holds together unevenly as heavy air gathers around the central mass.',
+        ('LOW', 'SURFACE'): 'An exposed field sits under hard light, its surface stressed and uneven after a visible shift.',
+        ('MID', 'ABYSS'): 'A sealed dark field holds a narrow pulse of light, with suspended dust drifting in slow layers.',
+        ('MID', 'DEEP'): 'A buried recess steadies around lateral light, with mineral haze moving through the center.',
+        ('MID', 'MID-DEPTH'): 'A muted terrain carries soft pressure across its surface while distant light stays restrained.',
+        ('MID', 'SURFACE'): 'An open field steadies under clear light, with small textures moving around the central form.',
+        ('HIGH', 'ABYSS'): 'A sealed interior glows from within, with bright particles pressing through the surrounding dark.',
+        ('HIGH', 'DEEP'): 'A dense mineral field gathers bright lateral light as active textures move through the recess.',
+        ('HIGH', 'MID-DEPTH'): 'A charged terrain brightens across its surface, with layered motion gathering near the center.',
+        ('HIGH', 'SURFACE'): 'A clear exposed field holds bright motion along the edges while the center stays sharply defined.',
+    }
+
+    def _fallback_scene_description(self, daily_data: dict | None) -> str:
+        daily_data = daily_data or {}
+        recovery_zone = str(daily_data.get('recovery_zone') or 'MID').strip().upper()
+        depth_level = str(daily_data.get('depth_level') or 'MID-DEPTH').strip().upper()
+        return self._SAFE_SCENE_FALLBACKS.get(
+            (recovery_zone, depth_level),
+            'A contained terrain holds quiet pressure, with layered texture moving around the central field.',
+        )
 
     def generate_title(self, daily_data: dict, date_display: str, environment: str = "") -> dict:
         template = self.load_template('title_builder')
@@ -2010,6 +2028,7 @@ class PromptOrchestrator:
         retry_raw_output = ""
         retry_cleaned = ""
         retry_rejection_reasons: list[str] = []
+        fallback_rejection_reasons: list[str] = []
         selected_scene = first_cleaned
         selected_scene_source = 'first_pass_valid'
 
@@ -2029,8 +2048,14 @@ class PromptOrchestrator:
                 selected_scene = retry_cleaned
                 selected_scene_source = 'retry_valid'
             else:
-                selected_scene = self._fallback_scene_description(image_json)
-                selected_scene_source = 'fallback_core_concept'
+                selected_scene = self._fallback_scene_description(daily_data)
+                fallback_rejection_reasons = self._validate_scene_description(selected_scene)
+                if fallback_rejection_reasons:
+                    raise RuntimeError(
+                        'Safe scene description fallback failed validation: '
+                        f"{', '.join(fallback_rejection_reasons)}"
+                    )
+                selected_scene_source = 'fallback_safe_scene'
         else:
             if scene_retry_path.exists():
                 scene_retry_path.unlink()
@@ -2046,6 +2071,7 @@ class PromptOrchestrator:
                 'retry_raw_output': retry_raw_output,
                 'retry_cleaned_output': retry_cleaned,
                 'retry_rejection_reasons': retry_rejection_reasons,
+                'fallback_rejection_reasons': fallback_rejection_reasons,
                 'selected_scene_description': selected_scene,
                 'selected_scene_source': selected_scene_source,
             },
@@ -2629,6 +2655,65 @@ class PromptOrchestrator:
             f"{previous_output.strip()}\n"
         )
 
+    def _build_safe_motion_sentence(
+        self,
+        *,
+        environment_name: str,
+        recovery_zone: str,
+        material_class: str,
+    ) -> str:
+        recovery_zone = (recovery_zone or '').strip().upper()
+        if material_class == 'atmospheric':
+            if environment_name == 'Plasma/Nebula':
+                return (
+                    'A pressure wave releases from the core, gas shearing outward in a visible ripple '
+                    'as suspended particles disperse across the full frame and refuse to settle for the full 8 seconds.'
+                )
+            return (
+                'A pressure front shears through the air, directional bands compressing the lower layer '
+                'as visibility fails across the full frame for the full 8 seconds.'
+            )
+        if material_class == 'fluid':
+            return (
+                'A sudden surge churns sediment outward, the current billowing into a dense cloud '
+                'that obscures the central field for the full 8 seconds.'
+            )
+        if recovery_zone == 'LOW':
+            return (
+                'A stressed formation fractures along its weakest edge, loose material shedding downward '
+                'as the failure keeps widening through the full 8 seconds.'
+            )
+        return (
+            'Fine material streams from the central edge, accumulating in slow layers '
+            'as the surrounding field keeps moving through the full 8 seconds.'
+        )
+
+    def _repair_video_prompt(
+        self,
+        video_prompt: str,
+        *,
+        environment_name: str,
+        depth_level: str,
+        recovery_zone: str,
+        material_class: str,
+    ) -> str:
+        sentences = self._split_video_sentences(video_prompt)
+        sentence_one = sentences[0] if sentences else 'The camera holds a fixed witnessing frame on the environment.'
+        sentence_three = (
+            sentences[2]
+            if len(sentences) >= 3
+            else 'Film grain remains visible while restrained light stays inside the scene.'
+        )
+        motion_sentence = self._build_safe_motion_sentence(
+            environment_name=environment_name,
+            recovery_zone=recovery_zone,
+            material_class=material_class,
+        )
+        return f'{sentence_one} {motion_sentence} {sentence_three}'
+
+    def _write_video_validation_debug(self, payload: dict):
+        self.save_json_output('video_prompt_validation_debug.json', payload)
+
     def build_video_prompt(self, daily_data: dict, environment: str, blend_option: str) -> str:
         """Build video animation prompt — scene continuation, no creature reference"""
         template = self.load_template('video')
@@ -2654,33 +2739,83 @@ class PromptOrchestrator:
 
         filled_prompt = self.fill_template(template, placeholders, template_name='video')
         self.save_output('last_prompt_video.txt', filled_prompt)
+        for stale_name in (
+            'video_prompt.txt',
+            'last_prompt_video_retry.txt',
+            'last_prompt_video_retry_2.txt',
+            'video_prompt_validation_debug.json',
+        ):
+            (self.output_dir / stale_name).unlink(missing_ok=True)
         prompt_to_send = filled_prompt
         video_prompt = ''
         last_rejection_reasons: list[str] = []
-        for attempt in range(3):
+        validation_debug = {
+            'environment_name': environment_name,
+            'depth_level': depth_level,
+            'recovery_zone': recovery_zone,
+            'material_class': material_class,
+            'attempts': [],
+            'selected_source': None,
+        }
+        for attempt in range(2):
             video_prompt = self.call_llm(prompt_to_send)
             rejection_reasons = self._validate_video_prompt(video_prompt, depth_level, recovery_zone, material_class)
+            validation_debug['attempts'].append(
+                {
+                    'source': 'llm_first' if attempt == 0 else 'llm_retry',
+                    'output': video_prompt,
+                    'rejection_reasons': rejection_reasons,
+                }
+            )
             if not rejection_reasons:
+                validation_debug['selected_source'] = 'llm_first' if attempt == 0 else 'llm_retry'
+                self._write_video_validation_debug(validation_debug)
                 self.save_output('video_prompt.txt', video_prompt)
                 return video_prompt
 
             last_rejection_reasons = rejection_reasons
-
-            if attempt == 2:
-                break
 
             retry_prompt = self._build_video_retry_prompt(
                 filled_prompt,
                 previous_output=video_prompt,
                 rejection_reasons=rejection_reasons,
             )
-            suffix = '' if attempt == 0 else f'_{attempt + 1}'
-            self.save_output(f'last_prompt_video_retry{suffix}.txt', retry_prompt)
-            prompt_to_send = retry_prompt
+            if attempt == 0:
+                self.save_output('last_prompt_video_retry.txt', retry_prompt)
+                prompt_to_send = retry_prompt
+
+        repaired_prompt = self._repair_video_prompt(
+            video_prompt,
+            environment_name=environment_name,
+            depth_level=depth_level,
+            recovery_zone=recovery_zone,
+            material_class=material_class,
+        )
+        repaired_rejection_reasons = self._validate_video_prompt(
+            repaired_prompt,
+            depth_level,
+            recovery_zone,
+            material_class,
+        )
+        validation_debug['attempts'].append(
+            {
+                'source': 'deterministic_repair_sentence_two',
+                'output': repaired_prompt,
+                'rejection_reasons': repaired_rejection_reasons,
+            }
+        )
+        if not repaired_rejection_reasons:
+            validation_debug['selected_source'] = 'deterministic_repair_sentence_two'
+            self._write_video_validation_debug(validation_debug)
+            self.save_output('video_prompt.txt', repaired_prompt)
+            return repaired_prompt
+
+        self._write_video_validation_debug(validation_debug)
+        last_rejection_reasons = repaired_rejection_reasons or last_rejection_reasons
 
         reason_text = ', '.join(last_rejection_reasons) if last_rejection_reasons else 'unknown_validation_failure'
         raise RuntimeError(
-            'Video prompt validation failed after 3 attempts. '
+            'Video prompt validation failed after 2 LLM attempts and deterministic repair. '
             f'Reasons: {reason_text}. Last output: {video_prompt.strip()}'
         )
 

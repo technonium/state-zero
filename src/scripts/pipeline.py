@@ -103,6 +103,7 @@ class PipelineStageError(Exception):
         details: str | None = None,
         details_obj: object | None = None,
         fallback_eligible: bool = False,
+        emergency_fallback_allowed: bool | None = None,
         failure_classification: str | None = None,
     ):
         self.stage = stage
@@ -110,11 +111,29 @@ class PipelineStageError(Exception):
         self.details = details
         self.details_obj = details_obj
         self.fallback_eligible = fallback_eligible
+        self.emergency_fallback_allowed = fallback_eligible if emergency_fallback_allowed is None else emergency_fallback_allowed
         self.failure_classification = failure_classification
         super().__init__(message)
 
 
 class WHOOPPipeline:
+    PROMPT_PUBLIC_SAFETY_FAILURE_MARKERS = (
+        'Video prompt validation failed after 2 LLM attempts and deterministic repair.',
+        'Safe scene description fallback failed validation:',
+    )
+    WHOOP_REVALIDATION_TOLERANCES = {
+        "strain": 0.05,
+        "recovery_pct": 0.5,
+        "sleep_score_pct": 0.5,
+        "sleep_hours": 0.1,
+    }
+    WHOOP_REVALIDATION_ID_FIELDS = (
+        "sleep_id",
+        "recovery_cycle_id",
+        "recovery_sleep_id",
+        "strain_cycle_id",
+    )
+
     def __init__(self):
         raw_mode = os.getenv('PIPELINE_MODE', 'automatic').strip().lower()
         self.mode = self._normalize_mode(raw_mode)
@@ -810,11 +829,18 @@ class WHOOPPipeline:
 
                 details_tail = self._build_subprocess_details_tail(result)
                 if fallback_eligible:
+                    public_safety_failure = self._is_prompt_public_safety_subprocess_failure(
+                        step_name,
+                        result,
+                        details_tail,
+                    )
                     raise PipelineStageError(
                         stage=step_name,
                         message=f'Script exited with code {result.returncode}',
                         details=details_tail,
                         fallback_eligible=True,
+                        emergency_fallback_allowed=not public_safety_failure,
+                        failure_classification='prompt_validation_failed' if public_safety_failure else None,
                     )
                 self.log_error(step_name, f'Script exited with code {result.returncode}', details_tail)
             print(f"{Fore.GREEN}✅ {step_name} completed{Style.RESET_ALL}")
@@ -824,18 +850,21 @@ class WHOOPPipeline:
             raise
         except Exception as e:
             if fallback_eligible:
+                public_safety_failure = self._is_prompt_public_safety_text(step_name, str(e))
                 raise PipelineStageError(
                     stage=step_name,
                     message=str(e),
                     details=str(e),
                     fallback_eligible=True,
+                    emergency_fallback_allowed=not public_safety_failure,
+                    failure_classification='prompt_validation_failed' if public_safety_failure else None,
                 ) from e
             self.log_error(step_name, str(e), str(e))
 
     def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
         if exc.fallback_eligible and self.post_to_instagram and not self.in_emergency_fallback:
             if self._is_terminal_rescue_run():
-                if env_bool('EMERGENCY_FALLBACK_ENABLED', default=False):
+                if exc.emergency_fallback_allowed and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False):
                     notifier = get_notifier()
                     notifier.notify_warning(
                         run_date=self.run_date,
@@ -856,6 +885,8 @@ class WHOOPPipeline:
                         failure_classification=self._emergency_failure_classification(),
                     )
                     return False
+                if not exc.emergency_fallback_allowed:
+                    self._normalize_terminal_no_post_error(exc)
             else:
                 self._release_retryable_stage_failure(exc)
 
@@ -866,6 +897,52 @@ class WHOOPPipeline:
             failure_classification=exc.failure_classification,
         )
         return False
+
+    def _normalize_terminal_no_post_error(self, exc: PipelineStageError) -> None:
+        if exc.stage != 'WHOOP Data Revalidation':
+            return
+
+        previous_details = exc.details
+        corrected: dict
+        try:
+            parsed = json.loads(previous_details) if previous_details else None
+        except (TypeError, json.JSONDecodeError):
+            parsed = None
+
+        if isinstance(parsed, dict):
+            corrected = dict(parsed)
+            previous_decision = corrected.get("decision")
+            if previous_decision:
+                corrected["previous_decision"] = previous_decision
+            corrected["decision"] = "no_post"
+            corrected["decision_source"] = "terminal_handler_recheck"
+        else:
+            corrected = {
+                "stage": exc.stage,
+                "message": exc.message,
+                "decision": "no_post",
+                "decision_source": "terminal_handler_recheck",
+                "details_parse_error": "missing_or_invalid_json",
+                "raw_details_tail": previous_details,
+            }
+
+        self._append_whoop_revalidation_log(corrected)
+        exc.details = json.dumps(corrected, indent=2, default=str)[-4000:]
+
+    def _is_prompt_public_safety_subprocess_failure(
+        self,
+        step_name: str,
+        result: subprocess.CompletedProcess,
+        details_tail: str | None = None,
+    ) -> bool:
+        combined = '\n'.join(part for part in (result.stdout, result.stderr, details_tail) if part)
+        return self._is_prompt_public_safety_text(step_name, combined)
+
+    def _is_prompt_public_safety_text(self, step_name: str, text: str | None) -> bool:
+        if step_name != 'LLM Prompts (Interpretation -> Video)':
+            return False
+        haystack = text or ''
+        return any(marker in haystack for marker in self.PROMPT_PUBLIC_SAFETY_FAILURE_MARKERS)
 
     def _build_caption_or_raise(self, metadata: dict, daily_data: dict) -> str:
         try:
@@ -899,6 +976,180 @@ class WHOOPPipeline:
             message=message,
             details_tail=details_tail,
         )
+
+    def _whoop_revalidation_enabled(self) -> bool:
+        return env_bool('WHOOP_REVALIDATE_BEFORE_PUBLISH', default=True)
+
+    @staticmethod
+    def _daily_data_has_whoop_metrics(daily_data: dict) -> bool:
+        required = ("strain", "recovery_pct", "sleep_score_pct", "sleep_hours")
+        return isinstance(daily_data, dict) and all(key in daily_data for key in required)
+
+    def _load_whoop_snapshot(self) -> dict:
+        snapshot_path = self.output_dir / 'whoop_snapshot.json'
+        try:
+            snapshot = json.loads(snapshot_path.read_text(encoding='utf-8'))
+        except FileNotFoundError as e:
+            raise RuntimeError(f'Missing WHOOP provenance snapshot: {snapshot_path}') from e
+        except json.JSONDecodeError as e:
+            raise RuntimeError(f'Invalid WHOOP provenance snapshot JSON: {e}') from e
+        if not isinstance(snapshot, dict):
+            raise RuntimeError('WHOOP provenance snapshot must be a JSON object.')
+        return snapshot
+
+    def _fetch_fresh_whoop_snapshot(self) -> dict:
+        import lookups
+
+        target_date = datetime.strptime(self.run_date, "%Y-%m-%d").date()
+        whoop_data = lookups.get_whoop_data(target_date)
+        snapshot = whoop_data.get("whoop_snapshot") if isinstance(whoop_data, dict) else None
+        if not isinstance(snapshot, dict):
+            raise RuntimeError('Fresh WHOOP lookup did not return a provenance snapshot.')
+        return snapshot
+
+    @staticmethod
+    def _snapshot_public_values(snapshot: dict) -> dict:
+        public_values = snapshot.get("public_values") if isinstance(snapshot, dict) else None
+        return public_values if isinstance(public_values, dict) else {}
+
+    def _compare_whoop_snapshots(self, original: dict, fresh: dict) -> list[dict]:
+        mismatches: list[dict] = []
+        for field in self.WHOOP_REVALIDATION_ID_FIELDS:
+            original_value = original.get(field)
+            fresh_value = fresh.get(field)
+            if original_value != fresh_value:
+                mismatches.append(
+                    {
+                        "field": field,
+                        "type": "id_mismatch",
+                        "original": original_value,
+                        "fresh": fresh_value,
+                    }
+                )
+
+        original_values = self._snapshot_public_values(original)
+        fresh_values = self._snapshot_public_values(fresh)
+        for field, tolerance in self.WHOOP_REVALIDATION_TOLERANCES.items():
+            try:
+                original_value = float(original_values[field])
+                fresh_value = float(fresh_values[field])
+            except (KeyError, TypeError, ValueError):
+                mismatches.append(
+                    {
+                        "field": field,
+                        "type": "public_value_missing",
+                        "original": original_values.get(field),
+                        "fresh": fresh_values.get(field),
+                    }
+                )
+                continue
+            delta = abs(original_value - fresh_value)
+            if delta > tolerance:
+                mismatches.append(
+                    {
+                        "field": field,
+                        "type": "public_value_mismatch",
+                        "original": original_value,
+                        "fresh": fresh_value,
+                        "delta": round(delta, 4),
+                        "tolerance": tolerance,
+                    }
+                )
+        return mismatches
+
+    def _append_whoop_revalidation_log(self, check: dict):
+        path = self.output_dir / 'whoop_revalidation.json'
+        payload = {"checks": []}
+        if path.exists():
+            try:
+                existing = json.loads(path.read_text(encoding='utf-8'))
+                if isinstance(existing, dict) and isinstance(existing.get("checks"), list):
+                    payload = existing
+            except Exception:
+                payload = {"checks": []}
+        payload["checks"].append(check)
+        self._write_json_atomic(path, payload)
+
+    def _whoop_revalidation_error(
+        self,
+        *,
+        checkpoint: str,
+        message: str,
+        details_payload: dict,
+    ) -> PipelineStageError:
+        retryable_before_deadline = not self._is_terminal_rescue_run()
+        decision = "retry" if retryable_before_deadline else "no_post"
+        details_payload["decision"] = decision
+        self._append_whoop_revalidation_log(details_payload)
+        return PipelineStageError(
+            stage='WHOOP Data Revalidation',
+            message=f'{message} ({checkpoint})',
+            details=json.dumps(details_payload, indent=2, default=str)[-4000:],
+            fallback_eligible=retryable_before_deadline,
+            emergency_fallback_allowed=False,
+            failure_classification='lookup_not_ready',
+        )
+
+    def _revalidate_whoop_checkpoint(self, daily_data: dict, *, checkpoint: str):
+        if not self._whoop_revalidation_enabled():
+            return
+        if checkpoint == 'before_instagram_post' and not self.post_to_instagram:
+            return
+        if not self._daily_data_has_whoop_metrics(daily_data):
+            return
+
+        checked_at = self._now().isoformat()
+        try:
+            original_snapshot = self._load_whoop_snapshot()
+        except Exception as e:
+            payload = {
+                "checkpoint": checkpoint,
+                "checked_at": checked_at,
+                "error": str(e),
+            }
+            raise self._whoop_revalidation_error(
+                checkpoint=checkpoint,
+                message='WHOOP provenance snapshot is unavailable; refusing to publish unverified metrics.',
+                details_payload=payload,
+            ) from e
+
+        try:
+            fresh_snapshot = self._fetch_fresh_whoop_snapshot()
+        except Exception as e:
+            payload = {
+                "checkpoint": checkpoint,
+                "checked_at": checked_at,
+                "original_snapshot": original_snapshot,
+                "error": str(e),
+            }
+            raise self._whoop_revalidation_error(
+                checkpoint=checkpoint,
+                message='WHOOP data could not be revalidated; refusing to publish unverified metrics.',
+                details_payload=payload,
+            ) from e
+
+        mismatches = self._compare_whoop_snapshots(original_snapshot, fresh_snapshot)
+        check = {
+            "checkpoint": checkpoint,
+            "checked_at": checked_at,
+            "original_snapshot": original_snapshot,
+            "fresh_snapshot": fresh_snapshot,
+            "mismatches": mismatches,
+            "decision": "pass" if not mismatches else ("retry" if not self._is_terminal_rescue_run() else "no_post"),
+        }
+        self._append_whoop_revalidation_log(check)
+
+        if mismatches:
+            raise PipelineStageError(
+                stage='WHOOP Data Revalidation',
+                message='WHOOP data changed after initial lookup; refusing to publish stale metrics.',
+                details=json.dumps(check, indent=2, default=str)[-4000:],
+                fallback_eligible=check["decision"] == "retry",
+                emergency_fallback_allowed=False,
+                failure_classification='lookup_not_ready',
+            )
+
+        print(f"{Fore.GREEN}✅ WHOOP revalidation passed ({checkpoint}){Style.RESET_ALL}")
 
     @staticmethod
     def _publish_strategy_requires_public_urls(strategy: str) -> bool:
@@ -969,6 +1220,7 @@ class WHOOPPipeline:
                     art_path = self.step_7_generate_image(image_json)
                     video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
 
+                self._revalidate_whoop_checkpoint(daily_data, checkpoint='before_render')
                 final_png = self.step_10a_render_image(art_path, daily_data, metadata)
                 final_mp4 = self.step_10b_render_video(video_path, daily_data, metadata)
 
@@ -985,6 +1237,7 @@ class WHOOPPipeline:
 
                 # Only post to Instagram when enabled
                 if self.post_to_instagram:
+                    self._revalidate_whoop_checkpoint(daily_data, checkpoint='before_instagram_post')
                     post_result = self.step_14_post_instagram(video_url, thumb_url, caption, publish_strategy=publish_strategy)
                 else:
                     print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")

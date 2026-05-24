@@ -147,7 +147,6 @@ class VideoPromptWiringTests(unittest.TestCase):
                 responses = iter([
                     "The camera watches from stillness. A chamber wall cracks and dust falls in thin streams. Lens bloom holds on the brightest edge.",
                     "The camera watches from stillness. Fine ash drifts softly through the frame. Lens bloom holds on the brightest edge.",
-                    "The camera watches from stillness. A rock shelf collapses and mineral dust cascades from the buried recess for the full shot. Lens bloom holds on the brightest edge.",
                 ])
                 orchestrator.call_llm = lambda prompt: next(responses)
 
@@ -170,11 +169,14 @@ class VideoPromptWiringTests(unittest.TestCase):
                 )
 
                 first_retry_prompt = (orchestrator.output_dir / "last_prompt_video_retry.txt").read_text(encoding="utf-8")
-                second_retry_prompt = (orchestrator.output_dir / "last_prompt_video_retry_2.txt").read_text(encoding="utf-8")
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "video_prompt_validation_debug.json").read_text(encoding="utf-8")
+                )
 
         self.assertIn('contains "chamber"', first_retry_prompt)
-        self.assertIn("specifically in sentence 2", second_retry_prompt)
-        self.assertIn("rock shelf collapses", result)
+        self.assertFalse((orchestrator.output_dir / "last_prompt_video_retry_2.txt").exists())
+        self.assertEqual(debug_payload["selected_source"], "deterministic_repair_sentence_two")
+        self.assertIn("stressed formation fractures", result)
         self.assertNotIn("chamber", result.lower())
 
     def test_deep_recovery_retry_rejects_overhead_aperture_language(self):
@@ -225,14 +227,14 @@ class VideoPromptWiringTests(unittest.TestCase):
             ):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
                 responses = iter([
-                    "The camera watches from stillness. Fine ash drifts softly through the frame. Lens bloom holds on the brightest edge.",
-                    "The camera watches from stillness. Fine ash drifts softly through the frame. Lens bloom holds on the brightest edge.",
-                    "The camera watches from stillness. Fine ash drifts softly through the frame. Lens bloom holds on the brightest edge.",
+                    "A bright skylight opens above the sealed view. Fine ash drifts softly through the frame. Lens bloom holds on the brightest edge.",
+                    "A bright skylight opens above the sealed view. Fine ash drifts softly through the frame. Lens bloom holds on the brightest edge.",
                 ])
                 orchestrator.call_llm = lambda prompt: next(responses)
+                (orchestrator.output_dir / "video_prompt.txt").write_text("stale prompt", encoding="utf-8")
 
                 daily_data = {
-                    "depth_level": "DEEP",
+                    "depth_level": "ABYSS",
                     "energy_zone": "LOW",
                     "recovery_zone": "LOW",
                     "moon_count": 0,
@@ -253,8 +255,49 @@ class VideoPromptWiringTests(unittest.TestCase):
                 output_path = orchestrator.output_dir / "video_prompt.txt"
                 self.assertFalse(output_path.exists())
 
-        self.assertIn("Video prompt validation failed after 3 attempts", str(ctx.exception))
-        self.assertIn("low_recovery_sentence_two_no_failure_event", str(ctx.exception))
+        self.assertIn("Video prompt validation failed after 2 LLM attempts and deterministic repair", str(ctx.exception))
+        self.assertIn("abyss_bright_opening", str(ctx.exception))
+
+    def test_plasma_low_video_prompt_repairs_materiality_after_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-15"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                responses = iter([
+                    "The camera holds still, fixed witnessing frame. A pressure wave cracks the plasma core, debris of superheated gas fragmenting outward in visible ruptures across the nebula field. Film grain present throughout, lens bloom at the core.",
+                    "The camera holds still, fixed witnessing frame. A pressure wave cracks the plasma core, debris of superheated gas fragmenting outward in visible ruptures across the nebula field. Film grain present throughout, lens bloom at the core.",
+                ])
+                orchestrator.call_llm = lambda prompt: next(responses)
+
+                daily_data = {
+                    "depth_level": "SURFACE",
+                    "energy_zone": "HIGH",
+                    "recovery_zone": "LOW",
+                    "moon_count": 0,
+                    "behavior_matrix": {
+                        "body_keywords": ["Wrecked", "shutdown", "leaden"],
+                        "art_keywords": ["Collapsed", "shattered", "suffocating"],
+                        "one_liner": "Total shutdown.",
+                    },
+                }
+
+                result = orchestrator.build_video_prompt(
+                    daily_data,
+                    "Plasma/Nebula — materiality repair test",
+                    "Option A",
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "video_prompt_validation_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(debug_payload["selected_source"], "deterministic_repair_sentence_two")
+        self.assertIn("pressure wave releases from the core", result)
+        self.assertIn("gas shearing outward", result)
+        for forbidden in ("crack", "fracture", "shatter", "rupture", "debris"):
+            self.assertNotIn(forbidden, result.lower())
 
     def test_mock_mode_video_prompt_still_produces_valid_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
