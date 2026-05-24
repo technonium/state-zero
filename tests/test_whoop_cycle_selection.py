@@ -1,6 +1,6 @@
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -204,6 +204,114 @@ class WhoopCycleSelectionTests(unittest.IsolatedAsyncioTestCase):
         selected = await client.get_yesterday_cycle(date(2026, 4, 9))
 
         self.assertEqual(selected["id"], 999)
+
+    async def test_primary_sleep_waits_for_wake_finalization_window(self):
+        client = WHOOPClient.__new__(WHOOPClient)
+        client.local_tz = ZoneInfo("Asia/Kolkata")
+        client._now_utc = lambda: datetime(2026, 5, 23, 5, 30, tzinfo=timezone.utc)
+
+        async def _fake_get(path, params=None):
+            self.assertEqual(path, "/v2/activity/sleep")
+            return {
+                "records": [
+                    {
+                        "id": "sleep-1",
+                        "nap": False,
+                        "start": "2026-05-22T19:40:00Z",
+                        "end": "2026-05-23T05:15:00Z",
+                        "updated_at": "2026-05-23T05:20:00Z",
+                        "score_state": "SCORED",
+                        "score": {"sleep_performance_percentage": 43.0},
+                    }
+                ]
+            }
+
+        client.get = _fake_get
+
+        with self.assertRaises(WhoopDailyDataPendingError) as ctx:
+            await client.get_last_sleep(date(2026, 5, 23))
+
+        self.assertEqual(ctx.exception.reason, "whoop_finalization_window_open")
+
+    async def test_recovery_must_match_selected_sleep_id(self):
+        client = WHOOPClient.__new__(WHOOPClient)
+        client.local_tz = ZoneInfo("Asia/Kolkata")
+        client._now_utc = lambda: datetime(2026, 5, 23, 8, 0, tzinfo=timezone.utc)
+
+        async def _fake_cycles_window(_day):
+            return [{"id": 1514500539}]
+
+        async def _fake_get(path, params=None):
+            self.assertEqual(path, "/v2/cycle/1514500539/recovery")
+            return {
+                "cycle_id": 1514500539,
+                "sleep_id": "other-sleep",
+                "updated_at": "2026-05-23T06:16:34Z",
+                "score_state": "SCORED",
+                "score": {"recovery_score": 47.0},
+            }
+
+        client._get_cycles_window = _fake_cycles_window
+        client.get = _fake_get
+
+        with self.assertRaises(WhoopDailyDataPendingError) as ctx:
+            await client.get_today_recovery(
+                date(2026, 5, 23),
+                sleep_data={"id": "selected-sleep"},
+            )
+
+        self.assertEqual(ctx.exception.reason, "whoop_recovery_sleep_mismatch")
+
+    async def test_fetch_whoop_data_returns_provenance_snapshot(self):
+        testcase = self
+
+        class _FakeClient:
+            local_tz = ZoneInfo("Asia/Kolkata")
+
+            async def get_last_sleep(self, target_dt):
+                return {
+                    "id": "sleep-1",
+                    "start": "2026-05-22T19:40:00Z",
+                    "end": "2026-05-23T05:15:00Z",
+                    "updated_at": "2026-05-23T06:16:00Z",
+                    "score_state": "SCORED",
+                    "score": {
+                        "sleep_performance_percentage": 87.0,
+                        "total_sleep_time_milli": 33_480_000,
+                    },
+                }
+
+            async def get_prior_completed_strain_cycle(self, target_dt, sleep_data=None):
+                return {
+                    "id": 1514500539,
+                    "start": "2026-05-22T01:10:00Z",
+                    "end": "2026-05-22T19:40:00Z",
+                    "updated_at": "2026-05-23T06:16:00Z",
+                    "score_state": "SCORED",
+                    "score": {"strain": 15.121763},
+                }
+
+            async def get_today_recovery(self, target_dt, sleep_data=None):
+                testcase.assertEqual(sleep_data["id"], "sleep-1")
+                return {
+                    "cycle_id": 1514500540,
+                    "sleep_id": "sleep-1",
+                    "updated_at": "2026-05-23T06:16:34Z",
+                    "score_state": "SCORED",
+                    "score": {"recovery_score": 47.0},
+                }
+
+        with patch("lookups.WHOOPClient", return_value=_FakeClient()):
+            payload = await lookups._fetch_whoop_data(date(2026, 5, 23))
+
+        snapshot = payload["whoop_snapshot"]
+        self.assertEqual(snapshot["provenance_version"], 1)
+        self.assertEqual(snapshot["sleep_id"], "sleep-1")
+        self.assertEqual(snapshot["recovery_sleep_id"], "sleep-1")
+        self.assertEqual(snapshot["strain_cycle_id"], 1514500539)
+        self.assertEqual(snapshot["public_values"]["sleep_score_pct"], 87.0)
+        self.assertEqual(snapshot["public_values"]["recovery_pct"], 47.0)
+        self.assertEqual(snapshot["public_values"]["sleep_hours"], 9.3)
 
 
 class LookupsNotReadyTests(unittest.TestCase):

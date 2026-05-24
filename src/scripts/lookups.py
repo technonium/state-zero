@@ -19,6 +19,8 @@ from utils import (
 logger = logging.getLogger(__name__)
 
 MILLISECONDS_PER_HOUR = 3_600_000
+WHOOP_PROVENANCE_VERSION = 1
+WHOOP_SNAPSHOT_FILENAME = 'whoop_snapshot.json'
 
 ZODIAC_SIGNS = [
     'Aries', 'Taurus', 'Gemini', 'Cancer', 'Leo', 'Virgo',
@@ -138,6 +140,52 @@ def derive_sleep_hours(sleep_data: dict) -> float:
 
     logger.warning("Could not derive sleep duration from WHOOP payload; defaulting to 0.0h")
     return 0.0
+
+
+def _parse_iso_utc(value: str | None) -> str | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).isoformat()
+    except Exception:
+        return str(value)
+
+
+def _public_whoop_values(strain: float, recovery_score: float, sleep_score: float, sleep_hours: float) -> dict:
+    return {
+        "strain": float(strain),
+        "recovery_pct": round(float(recovery_score), 1),
+        "sleep_score_pct": round(float(sleep_score), 1),
+        "sleep_hours": round(float(sleep_hours), 1),
+    }
+
+
+def build_whoop_snapshot(
+    *,
+    target_date: date,
+    sleep_data: dict,
+    recovery_data: dict,
+    strain_cycle: dict,
+    public_values: dict,
+) -> dict:
+    return {
+        "provenance_version": WHOOP_PROVENANCE_VERSION,
+        "date": str(target_date),
+        "sleep_id": sleep_data.get("id"),
+        "sleep_start": _parse_iso_utc(sleep_data.get("start")),
+        "sleep_end": _parse_iso_utc(sleep_data.get("end")),
+        "sleep_updated_at": _parse_iso_utc(sleep_data.get("updated_at")),
+        "sleep_score_state": sleep_data.get("score_state"),
+        "recovery_cycle_id": recovery_data.get("cycle_id"),
+        "recovery_sleep_id": recovery_data.get("sleep_id"),
+        "recovery_updated_at": _parse_iso_utc(recovery_data.get("updated_at")),
+        "recovery_score_state": recovery_data.get("score_state"),
+        "strain_cycle_id": strain_cycle.get("id"),
+        "strain_cycle_start": _parse_iso_utc(strain_cycle.get("start")),
+        "strain_cycle_end": _parse_iso_utc(strain_cycle.get("end")),
+        "strain_cycle_updated_at": _parse_iso_utc(strain_cycle.get("updated_at")),
+        "public_values": public_values,
+    }
 
 def get_energy_zone(strain: float) -> str:
     """Strain → Energy Zone"""
@@ -464,6 +512,7 @@ async def _fetch_whoop_data(target_date: date = None):
     client = WHOOPClient()
     
     target_dt = datetime.combine(target_date, datetime.min.time()) if target_date else None
+    resolved_date = target_date or datetime.now(client.local_tz).date()
 
     # Fetch last night's sleep
     sleep_data = await client.get_last_sleep(target_dt)
@@ -475,14 +524,23 @@ async def _fetch_whoop_data(target_date: date = None):
     strain = cycle.get("score", {}).get("strain", 0)
 
     # Fetch today's recovery
-    recovery_data = await client.get_today_recovery(target_dt)
+    recovery_data = await client.get_today_recovery(target_dt, sleep_data=sleep_data)
     recovery_score = recovery_data.get("score", {}).get("recovery_score", 0)
+    public_values = _public_whoop_values(strain, recovery_score, sleep_score, sleep_hours)
+    snapshot = build_whoop_snapshot(
+        target_date=resolved_date,
+        sleep_data=sleep_data,
+        recovery_data=recovery_data,
+        strain_cycle=cycle,
+        public_values=public_values,
+    )
 
     return {
         "strain": strain,              # 0-21 scale
         "recovery": recovery_score,    # 0-100 percentage
         "sleep_score": sleep_score,    # 0-100 percentage
-        "sleep_hours": round(sleep_hours, 1)
+        "sleep_hours": round(sleep_hours, 1),
+        "whoop_snapshot": snapshot,
     }
 
 def main():
@@ -518,10 +576,14 @@ def main():
     print(f"▶ Generating daily_data.json for {target_date}...")
     try:
         output = build_daily_data(strain, recovery_pct, sleep_score_pct, sleep_hours, target_date)
+        snapshot = whoop_data.get("whoop_snapshot")
+        if isinstance(snapshot, dict):
+            output_dir = get_output_root() / str(target_date)
+            _write_json_atomic(output_dir / WHOOP_SNAPSHOT_FILENAME, snapshot)
     except Exception as e:
         print(f"❌ [LOOKUPS] Terminal data assembly error: {e}")
         sys.exit(LOOKUP_EXIT_TERMINAL_FAILURE)
-    print("✅ Successfully generated output/daily_data.json")
+    print("✅ Successfully generated output/daily_data.json and WHOOP provenance snapshot")
     
 if __name__ == '__main__':
     main()
