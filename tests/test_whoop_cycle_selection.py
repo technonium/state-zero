@@ -231,7 +231,7 @@ class WhoopCycleSelectionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WhoopDailyDataPendingError) as ctx:
             await client.get_last_sleep(date(2026, 5, 23))
 
-        self.assertEqual(ctx.exception.reason, "whoop_finalization_window_open")
+        self.assertEqual(ctx.exception.reason, "whoop_sleep_still_updating")
 
     async def test_recovery_must_match_selected_sleep_id(self):
         client = WHOOPClient.__new__(WHOOPClient)

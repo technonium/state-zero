@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import logging
@@ -43,8 +44,8 @@ class WHOOPTokenManager:
             env_refresh_token = (os.getenv('WHOOP_REFRESH_TOKEN') or '').strip()
             self.refresh_token = env_refresh_token or None
 
-        self.client_id = os.getenv('WHOOP_CLIENT_ID')
-        self.client_secret = os.getenv('WHOOP_CLIENT_SECRET')
+        self.client_id = (os.getenv('WHOOP_CLIENT_ID') or '').strip() or None
+        self.client_secret = (os.getenv('WHOOP_CLIENT_SECRET') or '').strip() or None
         self.token_url = "https://api.prod.whoop.com/oauth/oauth2/token"
 
         if self.access_token:
@@ -114,58 +115,67 @@ class WHOOPTokenManager:
                 self._notify_refresh_failure(note)
                 raise RuntimeError(note)
 
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    self.token_url,
-                    data={
-                        "grant_type": "refresh_token",
-                        "refresh_token": self.refresh_token,
-                        "client_id": self.client_id,
-                        "client_secret": self.client_secret,
-                        "scope": "offline read:recovery read:cycles read:sleep read:profile read:workout",
-                    },
-                    headers={"Content-Type": "application/x-www-form-urlencoded"},
-                    timeout=30.0,
-                )
+            last_failure_note = None
+            for attempt in range(2):
+                if attempt > 0:
+                    logger.warning("WHOOP token refresh attempt 1 failed; retrying in 5 seconds…")
+                    await asyncio.sleep(5)
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.post(
+                            self.token_url,
+                            data={
+                                "grant_type": "refresh_token",
+                                "refresh_token": self.refresh_token,
+                                "client_id": self.client_id,
+                                "client_secret": self.client_secret,
+                                "scope": "offline read:recovery read:cycles read:sleep read:profile read:workout",
+                            },
+                            headers={"Content-Type": "application/x-www-form-urlencoded"},
+                            timeout=30.0,
+                        )
 
-                if response.status_code != 200:
-                    body_preview = (response.text or "").strip().replace("\n", " ")[:300]
-                    note = f"WHOOP token refresh failed: {response.status_code} body={body_preview}"
-                    logger.error(note)
-                    if response.status_code in (400, 401):
-                        lowered = body_preview.lower()
-                        if "invalid_grant" in lowered or "expired" in lowered or "revoked" in lowered:
-                            note = "WHOOP refresh token was rejected by OAuth server; re-authentication is required."
+                    if response.status_code != 200:
+                        body_preview = (response.text or "").strip().replace("\n", " ")[:300]
+                        note = f"WHOOP token refresh failed: {response.status_code} body={body_preview}"
+                        logger.error(note)
+                        if response.status_code in (400, 401):
+                            lowered = body_preview.lower()
+                            if "invalid_grant" in lowered or "expired" in lowered or "revoked" in lowered:
+                                note = "WHOOP refresh token was rejected by OAuth server; re-authentication is required."
+                                self._record_refresh_attempt(False, note)
+                                self._notify_reauth_required(note)
+                                raise WhoopReauthRequired(note)
+                        if response.status_code < 500 and response.status_code != 429:
+                            # 4xx (other than the reauth case detected above) is a permanent OAuth
+                            # rejection — retrying won't change the outcome and can trip rate limits.
                             self._record_refresh_attempt(False, note)
-                            self._notify_reauth_required(note)
-                            raise WhoopReauthRequired(note)
-                    self._record_refresh_attempt(False, note)
-                    self._notify_refresh_failure(note)
-                    return False
+                            self._notify_refresh_failure(note)
+                            return False
+                        last_failure_note = note
+                        continue
 
-                tokens = response.json()
-                self.access_token = tokens.get("access_token")
-                self.refresh_token = tokens.get("refresh_token", self.refresh_token)
-                
-                # Use expires_in from response (typically 3600 seconds = 1 hour)
-                expires_in = tokens.get("expires_in", 3600)
-                self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                    tokens = response.json()
+                    self.access_token = tokens.get("access_token")
+                    self.refresh_token = tokens.get("refresh_token", self.refresh_token)
+                    expires_in = tokens.get("expires_in", 3600)
+                    self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                    os.environ["WHOOP_ACCESS_TOKEN"] = self.access_token
+                    os.environ["WHOOP_REFRESH_TOKEN"] = self.refresh_token
+                    self._record_refresh_attempt(True, f"expires_in={expires_in}")
+                    logger.info(f"✅ Token refreshed, expires {self.token_expires_at}")
+                    return True
+                except WhoopReauthRequired:
+                    raise
+                except Exception as e:
+                    last_failure_note = f"WHOOP token refresh error: {e}"
+                    logger.error(last_failure_note, exc_info=True)
 
-                # Update environment only (not .env file)
-                os.environ["WHOOP_ACCESS_TOKEN"] = self.access_token
-                os.environ["WHOOP_REFRESH_TOKEN"] = self.refresh_token
-                self._record_refresh_attempt(True, f"expires_in={expires_in}")
-
-                logger.info(f"✅ Token refreshed, expires {self.token_expires_at}")
-                return True
+            self._record_refresh_attempt(False, last_failure_note)
+            self._notify_refresh_failure(last_failure_note)
+            return False
         except WhoopReauthRequired:
             raise
-        except Exception as e:
-            note = f"WHOOP token refresh error: {e}"
-            logger.error(note, exc_info=True)
-            self._record_refresh_attempt(False, note)
-            self._notify_refresh_failure(note)
-            return False
         finally:
             self._refresh_lock.release()
 

@@ -2247,9 +2247,17 @@ class PromptOrchestrator:
         r'\b('
         r'silhouette|outline readable|shaped like|resembles|full-body|statue|'
         r'animal figure|animal subject|beast form|creature form|creature subject|'
-        r'humanoid|human-like|humanlike|figure|(?:readable|animal|human|humanoid|creature) face|eyes?|head|muzzle|snout|'
-        r'teeth|jaws?|paws?|limbs?|torso|anatomy|muscular|predator\w*|hunter|'
-        r'stalking|prey'
+        r'humanoid|human-like|humanlike|figure|(?:readable|animal|human|humanoid|creature) face'
+        r')\b',
+        re.IGNORECASE,
+    )
+    # Anatomy/behavioral words are permitted ONLY inside creature_integration.visibility
+    # (so the fragment phrase can describe a body cue). Anywhere else they cause the model
+    # to render a literal creature/human form.
+    _POSITIVE_ANATOMY_LITERALIZING = re.compile(
+        r'\b('
+        r'eyes?|head|muzzle|snout|teeth|jaws?|paws?|limbs?|torso|anatomy|muscular|'
+        r'predator\w*|hunter|stalking|prey'
         r')\b',
         re.IGNORECASE,
     )
@@ -2369,6 +2377,14 @@ class PromptOrchestrator:
                 reasons.append(f'positive_literalizing_language:{path}:{match.group(0).lower()}')
                 break
 
+        for path, text in positive_fragments:
+            if path == 'creature_integration.visibility':
+                continue
+            match = self._first_unnegated_match(self._POSITIVE_ANATOMY_LITERALIZING, text)
+            if match:
+                reasons.append(f'positive_anatomy_outside_visibility:{path}:{match.group(0).lower()}')
+                break
+
         rendering_avoid = image_json.get('rendering', {}).get('avoid', [])
         if creature_name_cf and isinstance(rendering_avoid, list):
             for item in rendering_avoid:
@@ -2463,9 +2479,16 @@ class PromptOrchestrator:
             elif reason.startswith('positive_literalizing_language:'):
                 _, path, term = reason.split(':', 2)
                 corrections.append(
-                    f'The JSON field "{path}" contains "{term}", which literalizes the creature. '
-                    'Do not use silhouette, outline-readable, shaped-like, full-body, statue, animal-figure, '
-                    'humanoid, face/head/eyes/anatomy, or predatory/hunter language.'
+                    f'The JSON field "{path}" contains "{term}", which places a representational creature or human form in the scene. '
+                    'Do not use humanoid, human-like, figure, silhouette, outline-readable, shaped-like, full-body, statue, '
+                    'animal-figure, beast-form, creature-form, or readable-face language in any positive field.'
+                )
+            elif reason.startswith('positive_anatomy_outside_visibility:'):
+                _, path, term = reason.split(':', 2)
+                corrections.append(
+                    f'The JSON field "{path}" contains the anatomy/behavioral word "{term}". '
+                    'Anatomy and predator-behavior words (eye, head, jaw, limb, paw, muzzle, predator, stalking, prey, etc.) are permitted only inside creature_integration.visibility as part of the fragment description. '
+                    'Remove or rephrase this term in landscape language.'
                 )
             elif reason == 'creature_name_in_rendering_avoid':
                 corrections.append(

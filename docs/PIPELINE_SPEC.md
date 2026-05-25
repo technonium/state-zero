@@ -108,7 +108,6 @@ PIPELINE_MODE=telegram    # Mode 2
 | `VPS_PUBLIC_BASE_URL` | Public base URL for hosted files, e.g. `https://your-ip/media` |
 | `EMERGENCY_FALLBACK_ENABLED` | `true` enables the private `error_404_v1` emergency post fallback after eligible pipeline failures |
 | `PIPELINE_TERMINAL_RESCUE_RUN` | `true` forces terminal rescue behavior on the dedicated 2:00 PM IST run; the pipeline also infers rescue mode automatically once the configured local deadline has passed |
-| `WHOOP_MIN_WAKE_FINALIZATION_MINUTES` | Minutes after primary sleep end before same-day WHOOP data can be used (default: `90`) |
 | `WHOOP_QUIET_UPDATE_MINUTES` | Minutes since WHOOP sleep/recovery `updated_at` before values are considered stable (default: `15`) |
 | `WHOOP_REVALIDATE_BEFORE_PUBLISH` | `true` re-fetches WHOOP before render and, for live posts, before Instagram publish; blocks stale metrics (default: `true`) |
 | `VPS_SSH_HOST` | Host IP or domain for SCP/SSH uploading final assets to VPS |

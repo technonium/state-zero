@@ -567,7 +567,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
         self.assertEqual(pipeline.daily_run.release_calls, 1)
         self.assertEqual(pipeline.daily_run.retryable_calls[0]["failure_classification"], "generation")
-        self.assertIn("next cron retry", notifications[0]["message"])
+        self.assertIn("Next retry ~", notifications[0]["message"])
 
     def test_validation_fallback_unavailable_fails_fatally_before_cutoff(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
