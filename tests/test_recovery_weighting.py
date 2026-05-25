@@ -411,6 +411,60 @@ class ImagePromptWiringTests(unittest.TestCase):
             reasons,
         )
 
+    def test_image_json_validator_flags_anatomy_word_outside_visibility(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        image_json = {
+            "core_concept": "Volcanic formations stalking the horizon with predator-tense ridges and jaw-like fissures.",
+            "lighting": {"time": "Lateral ember light only."},
+            "composition": {"sky": "None visible."},
+            "color_palette": {"sky_gradient": "No open sky."},
+            "creature_integration": {
+                "blend": "Option A - Sculptural",
+                "visibility": "Geological formations barely evoke boundary pressure through natural erosion patterns.",
+            },
+            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
+        }
+
+        reasons = orchestrator._validate_image_json(
+            image_json,
+            "DEEP",
+            creature_name="Jackal",
+            fragment_phrase="",
+            fragment_required=False,
+        )
+
+        self.assertTrue(
+            any(reason.startswith("positive_anatomy_outside_visibility:core_concept:") for reason in reasons),
+            reasons,
+        )
+
+    def test_image_json_validator_permits_anatomy_inside_visibility(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        image_json = {
+            "core_concept": "Volcanic formations press across cracked rock with lateral ember light.",
+            "lighting": {"time": "Lateral ember light only."},
+            "composition": {"sky": "None visible."},
+            "color_palette": {"sky_gradient": "No open sky."},
+            "creature_integration": {
+                "blend": "Option A - Sculptural",
+                "visibility": "Erosion patterns barely suggest a low jaw-line softened by mineral seams.",
+            },
+            "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
+        }
+
+        reasons = orchestrator._validate_image_json(
+            image_json,
+            "DEEP",
+            creature_name="Jackal",
+            fragment_phrase="",
+            fragment_required=False,
+        )
+
+        self.assertFalse(
+            any(reason.startswith("positive_anatomy_outside_visibility:") for reason in reasons),
+            reasons,
+        )
+
     def test_image_json_validator_allows_geological_rock_face_language(self):
         orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
         image_json = {

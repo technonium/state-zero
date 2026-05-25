@@ -167,11 +167,14 @@ The creature name (`{creature}`) is **FORBIDDEN** in all descriptive/positive fi
 
 **Important:** Do not write the creature name in `mandatory_exclusions` either. The image model receives this JSON directly, and creature-name tokens can still anchor the model even when they appear in negative wording.
 
-**Forbidden (all other fields):**
+**Forbidden (all fields, including `creature_integration.visibility`):**
 - `core_concept` — NO creature name, use [QUALITY] only
 - `composition.midground` — NO creature name, NO fragment phrase
 - `creature_integration.visibility` — NO creature name, use [QUALITY] plus one embedded fragment phrase only
 - `rendering.avoid` and `mandatory_exclusions` — use generic creature/anatomy exclusions only
+
+**Additionally forbidden in ALL positive fields (including `creature_integration.visibility`):**
+`humanoid`, `human-like`, `humanlike`, `figure` (as a creature or human subject), `silhouette`, `shaped like`, `resembles`, `full-body`, `readable face`. These words cause image models to render a literal human or creature shape even when surrounded by landscape language.
 
 ## CREATURE SIGNATURE FRAGMENT
 
@@ -519,7 +522,7 @@ Before outputting the JSON, verify:
 - [ ] Aspect ratio is "VERTICAL 3:4 PORTRAIT"
 - [ ] Behavioral one-liner `{one_liner}` reflected in core_concept felt state (no planet names, no house numbers, no astrology)
 - [ ] `avoid` array includes "standalone creature subject", "literal animal figure in foreground or midground", and "statue-like beast form"
-- [ ] No positive field uses animal-role or anatomy language such as predatory, hunter, face, eyes, head, muzzle, paws, limbs, humanoid, or human-like figure
+- [ ] No positive field uses representational or humanoid language such as `humanoid`, `human-like`, `figure`, `silhouette`, `shaped like`, `full-body`, or `readable face` — anatomy words (jaw, limb, eye, etc.) are permitted only inside `creature_integration.visibility` as part of the fragment description
 - [ ] `"text": "NO TEXT, NO TITLES, NO OVERLAYS"` present in technical_specifications
 - [ ] Celestial treatment matches depth: open sky only at SURFACE, partial framing at MID-DEPTH, lateral light bleed or omission at DEEP (no overhead aperture), fracture glimpse or omission at ABYSS
 - [ ] Depth level {depth_level} influences lighting.time and composition.sky appropriately

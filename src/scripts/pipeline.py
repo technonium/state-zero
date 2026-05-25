@@ -117,6 +117,9 @@ class PipelineStageError(Exception):
 
 
 class WHOOPPipeline:
+    # Dokploy cron fires every 30 minutes at :00 and :30 IST. If the schedule
+    # ever changes, update this constant so retry-ETA notifications stay accurate.
+    CRON_INTERVAL_MINUTES = 30
     PROMPT_PUBLIC_SAFETY_FAILURE_MARKERS = (
         'Video prompt validation failed after 2 LLM attempts and deterministic repair.',
         'Safe scene description fallback failed validation:',
@@ -546,6 +549,21 @@ class WHOOPPipeline:
                 details_tail=str(e),
             )
 
+    def _next_cron_slot_ist(self, now: datetime | None = None) -> str:
+        ist = ZoneInfo("Asia/Kolkata")
+        base = now.astimezone(ist) if now else datetime.now(ist)
+        interval = self.CRON_INTERVAL_MINUTES
+        hour_start = base.replace(minute=0, second=0, microsecond=0)
+        elapsed_minutes = (base - hour_start).total_seconds() / 60.0
+        next_slot_minute = (int(elapsed_minutes // interval) + 1) * interval
+        if next_slot_minute >= 60:
+            slot = (hour_start + timedelta(hours=1)).replace(
+                minute=next_slot_minute - 60, second=0, microsecond=0
+            )
+        else:
+            slot = hour_start.replace(minute=next_slot_minute, second=0, microsecond=0)
+        return slot.strftime("%H:%M IST")
+
     def _release_retryable_lookup_failure(
         self,
         *,
@@ -601,23 +619,25 @@ class WHOOPPipeline:
         raise SystemExit(0)
 
     def _handle_retryable_lookup_not_ready(self, details_tail: str | None = None):
+        next_slot = self._next_cron_slot_ist()
         self._release_retryable_lookup_failure(
-            retry_message='WHOOP daily data for today is not ready yet. Releasing claim for next cron retry.',
+            retry_message=f'WHOOP daily data for today is not ready yet. Releasing claim for next cron retry (~{next_slot}).',
             rescue_stage='WHOOP Data Unavailable',
             rescue_message='WHOOP daily data never became ready. Terminal rescue run triggering emergency fallback.',
             notifier_step='WHOOPRecoveryNotReady',
-            notifier_message='WHOOP daily data not ready yet. This run was released for the next cron retry.',
+            notifier_message=f'WHOOP daily data not ready yet. Next retry ~{next_slot}.',
             details_tail=details_tail,
             failure_classification='lookup_not_ready',
         )
 
     def _handle_retryable_lookup_external_failure(self, details_tail: str | None = None):
+        next_slot = self._next_cron_slot_ist()
         self._release_retryable_lookup_failure(
-            retry_message='Transient WHOOP or lookup failure encountered. Releasing claim for next cron retry.',
+            retry_message=f'Transient WHOOP or lookup failure encountered. Releasing claim for next cron retry (~{next_slot}).',
             rescue_stage='Lookup Retry Exhausted',
             rescue_message='Transient WHOOP or lookup failure persisted into the terminal rescue run. Triggering emergency fallback.',
             notifier_step='LookupRetryableFailure',
-            notifier_message='Transient WHOOP or lookup failure. This run was released for the next cron retry.',
+            notifier_message=f'Transient WHOOP or lookup failure. Next retry ~{next_slot}.',
             details_tail=details_tail,
             failure_classification='lookup_not_ready',
         )
@@ -625,7 +645,8 @@ class WHOOPPipeline:
     def _release_retryable_stage_failure(self, exc: PipelineStageError):
         self._stop_heartbeat_thread()
         classification = exc.failure_classification or self._failure_classification_for_stage(exc.stage)
-        retry_message = f'{exc.message} Releasing claim for next cron retry.'
+        next_slot = self._next_cron_slot_ist()
+        retry_message = f'{exc.message} Releasing claim for next cron retry (~{next_slot}).'
 
         retry_cleanup_notes: list[str] = []
         try:
@@ -652,7 +673,7 @@ class WHOOPPipeline:
         notifier.notify_warning(
             run_date=self.run_date,
             step=exc.stage,
-            message=f'{exc.message} This run was released for the next cron retry.',
+            message=f'{exc.message} Next retry ~{next_slot}.',
             details_tail=warning_details,
         )
         if retry_cleanup_notes:

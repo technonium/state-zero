@@ -91,9 +91,6 @@ class WHOOPClient:
         except ValueError:
             return default
 
-    def _min_wake_finalization(self) -> timedelta:
-        return timedelta(minutes=self._env_int_minutes("WHOOP_MIN_WAKE_FINALIZATION_MINUTES", 90))
-
     def _quiet_update_window(self) -> timedelta:
         return timedelta(minutes=self._env_int_minutes("WHOOP_QUIET_UPDATE_MINUTES", 15))
 
@@ -124,19 +121,6 @@ class WHOOPClient:
             raise WhoopDailyDataPendingError(
                 reason,
                 f"{label} updated {elapsed.total_seconds() / 60:.1f} minutes ago; waiting ~{remaining} more minute(s) for WHOOP to settle",
-            )
-
-    def _require_sleep_finalization_window(self, sleep: dict, *, day: date):
-        end_dt = self._parse_iso_utc(sleep.get("end"))
-        if not end_dt:
-            raise WhoopDailyDataPendingError("primary_sleep_end_missing", f"Primary sleep end missing for {day} IST")
-        elapsed = self._now_utc() - end_dt
-        min_window = self._min_wake_finalization()
-        if elapsed < min_window:
-            remaining = max(0, int((min_window - elapsed).total_seconds() // 60) + 1)
-            raise WhoopDailyDataPendingError(
-                "whoop_finalization_window_open",
-                f"Primary sleep ended {elapsed.total_seconds() / 60:.1f} minutes ago; waiting ~{remaining} more minute(s) before using same-day WHOOP data",
             )
 
     def _to_ist_date(self, value: str | None) -> date | None:
@@ -345,6 +329,5 @@ class WHOOPClient:
         matches.sort(key=lambda s: self._parse_iso_utc(s.get("end")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         selected = matches[0]
         self._require_scored(selected, label="Primary sleep", reason="whoop_sleep_unscored", day=day)
-        self._require_sleep_finalization_window(selected, day=day)
         self._require_quiet_update(selected, label="Primary sleep", reason="whoop_sleep_still_updating", day=day)
         return selected
