@@ -160,6 +160,29 @@ def _public_whoop_values(strain: float, recovery_score: float, sleep_score: floa
     }
 
 
+def derive_whoop_zones(public_values: dict) -> dict:
+    """
+    Map raw WHOOP metrics to the qualitative zones that drive content selection.
+
+    These zones are the unit of truth for revalidation: intra-zone numeric drift
+    is cosmetic (the pipeline would generate the same creature/environment/
+    interpretation), while zone boundary crossings change the public artifact.
+    """
+    try:
+        strain = float(public_values.get("strain"))
+        recovery_pct = float(public_values.get("recovery_pct"))
+        sleep_score_pct = float(public_values.get("sleep_score_pct"))
+        sleep_hours = float(public_values.get("sleep_hours"))
+    except (TypeError, ValueError):
+        return {}
+    return {
+        "energy_zone": get_energy_zone(strain),
+        "recovery_zone": get_recovery_zone(recovery_pct),
+        "sleep_score_zone": get_sleep_score_zone(sleep_score_pct),
+        "moon_count": get_moon_count(sleep_hours),
+    }
+
+
 def build_whoop_snapshot(
     *,
     target_date: date,
@@ -185,6 +208,7 @@ def build_whoop_snapshot(
         "strain_cycle_end": _parse_iso_utc(strain_cycle.get("end")),
         "strain_cycle_updated_at": _parse_iso_utc(strain_cycle.get("updated_at")),
         "public_values": public_values,
+        "zones": derive_whoop_zones(public_values),
     }
 
 def get_energy_zone(strain: float) -> str:

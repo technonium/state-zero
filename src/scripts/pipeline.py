@@ -124,6 +124,10 @@ class WHOOPPipeline:
         'Video prompt validation failed after 2 LLM attempts and deterministic repair.',
         'Safe scene description fallback failed validation:',
     )
+    # Drift tolerances are informational only — they drive logging, not gating.
+    # Revalidation gates on zone equality (see WHOOP_REVALIDATION_ZONE_FIELDS) and
+    # biometric identity (see WHOOP_REVALIDATION_ID_FIELDS). Intra-zone numeric drift
+    # is recorded in whoop_revalidation.json[*].drift but never produces a mismatch.
     WHOOP_REVALIDATION_TOLERANCES = {
         "strain": 0.05,
         "recovery_pct": 0.5,
@@ -135,6 +139,12 @@ class WHOOPPipeline:
         "recovery_cycle_id",
         "recovery_sleep_id",
         "strain_cycle_id",
+    )
+    WHOOP_REVALIDATION_ZONE_FIELDS = (
+        "recovery_zone",
+        "energy_zone",
+        "sleep_score_zone",
+        "moon_count",
     )
 
     def __init__(self):
@@ -1001,6 +1011,20 @@ class WHOOPPipeline:
     def _whoop_revalidation_enabled(self) -> bool:
         return env_bool('WHOOP_REVALIDATE_BEFORE_PUBLISH', default=True)
 
+    def _telegram_wait_revalidation_seconds(self) -> int:
+        """Interval for periodic WHOOP zone+ID revalidation during Telegram wait.
+        Returns 0 if disabled (env var = 0 or revalidation globally disabled)."""
+        if not self._whoop_revalidation_enabled():
+            return 0
+        raw = (os.getenv('WHOOP_TELEGRAM_WAIT_REVAL_MINUTES') or '').strip()
+        if not raw:
+            return 15 * 60  # default 15 min
+        try:
+            minutes = max(0, int(raw))
+        except ValueError:
+            return 15 * 60
+        return minutes * 60
+
     @staticmethod
     def _daily_data_has_whoop_metrics(daily_data: dict) -> bool:
         required = ("strain", "recovery_pct", "sleep_score_pct", "sleep_hours")
@@ -1033,21 +1057,72 @@ class WHOOPPipeline:
         public_values = snapshot.get("public_values") if isinstance(snapshot, dict) else None
         return public_values if isinstance(public_values, dict) else {}
 
-    def _compare_whoop_snapshots(self, original: dict, fresh: dict) -> list[dict]:
+    @staticmethod
+    def _snapshot_zones(snapshot: dict) -> dict:
+        """Return zone labels from snapshot. Backfills from public_values for older
+        snapshots that pre-date the explicit `zones` block."""
+        if not isinstance(snapshot, dict):
+            return {}
+        zones = snapshot.get("zones")
+        if isinstance(zones, dict) and zones:
+            return zones
+        # Backward compat: recompute via lookups helpers.
+        import lookups
+        public_values = WHOOPPipeline._snapshot_public_values(snapshot)
+        return lookups.derive_whoop_zones(public_values)
+
+    def _compare_whoop_snapshots(self, original: dict, fresh: dict) -> tuple[list[dict], list[dict]]:
+        """
+        Zone-aware comparator.
+
+        Returns (mismatches, drift):
+          - mismatches: blocking — biometric identity or qualitative zone changed.
+            The pipeline must NOT publish a normal post if any are present.
+          - drift: informational — raw numeric deltas that did not cross a zone
+            boundary. Logged for forensic transparency; never gates.
+        """
         mismatches: list[dict] = []
+        drift: list[dict] = []
+
+        # (a) Biometric identity must match — different sleep_id / cycle_id =
+        # different underlying biometric event.
         for field in self.WHOOP_REVALIDATION_ID_FIELDS:
             original_value = original.get(field)
             fresh_value = fresh.get(field)
             if original_value != fresh_value:
-                mismatches.append(
-                    {
-                        "field": field,
-                        "type": "id_mismatch",
-                        "original": original_value,
-                        "fresh": fresh_value,
-                    }
-                )
+                mismatches.append({
+                    "field": field,
+                    "type": "id_change",
+                    "original": original_value,
+                    "fresh": fresh_value,
+                })
 
+        # (b) Qualitative zones must match — these drive creature, environment,
+        # interpretation, blend, depth, moon. A zone crossing means the content
+        # that was generated no longer represents the WHOOP state.
+        original_zones = self._snapshot_zones(original)
+        fresh_zones = self._snapshot_zones(fresh)
+        for field in self.WHOOP_REVALIDATION_ZONE_FIELDS:
+            original_value = original_zones.get(field)
+            fresh_value = fresh_zones.get(field)
+            if original_value is None or fresh_value is None:
+                mismatches.append({
+                    "field": field,
+                    "type": "zone_missing",
+                    "original": original_value,
+                    "fresh": fresh_value,
+                })
+                continue
+            if original_value != fresh_value:
+                mismatches.append({
+                    "field": field,
+                    "type": "zone_change",
+                    "original": original_value,
+                    "fresh": fresh_value,
+                })
+
+        # (c) Drift — raw numeric deltas beyond the informational tolerance.
+        # Recorded for transparency. Does NOT gate the post.
         original_values = self._snapshot_public_values(original)
         fresh_values = self._snapshot_public_values(fresh)
         for field, tolerance in self.WHOOP_REVALIDATION_TOLERANCES.items():
@@ -1055,28 +1130,18 @@ class WHOOPPipeline:
                 original_value = float(original_values[field])
                 fresh_value = float(fresh_values[field])
             except (KeyError, TypeError, ValueError):
-                mismatches.append(
-                    {
-                        "field": field,
-                        "type": "public_value_missing",
-                        "original": original_values.get(field),
-                        "fresh": fresh_values.get(field),
-                    }
-                )
                 continue
             delta = abs(original_value - fresh_value)
             if delta > tolerance:
-                mismatches.append(
-                    {
-                        "field": field,
-                        "type": "public_value_mismatch",
-                        "original": original_value,
-                        "fresh": fresh_value,
-                        "delta": round(delta, 4),
-                        "tolerance": tolerance,
-                    }
-                )
-        return mismatches
+                drift.append({
+                    "field": field,
+                    "original": original_value,
+                    "fresh": fresh_value,
+                    "delta": round(delta, 4),
+                    "tolerance": tolerance,
+                })
+
+        return mismatches, drift
 
     def _append_whoop_revalidation_log(self, check: dict):
         path = self.output_dir / 'whoop_revalidation.json'
@@ -1102,12 +1167,16 @@ class WHOOPPipeline:
         decision = "retry" if retryable_before_deadline else "no_post"
         details_payload["decision"] = decision
         self._append_whoop_revalidation_log(details_payload)
+        # Both flags True: handler routes on terminal-rescue state.
+        #   - Before deadline → _release_retryable_stage_failure (next cron retries).
+        #   - After deadline  → _run_emergency_fallback (posts error_404_v1 — the
+        #     honest public signal, not a silent skip).
         return PipelineStageError(
             stage='WHOOP Data Revalidation',
             message=f'{message} ({checkpoint})',
             details=json.dumps(details_payload, indent=2, default=str)[-4000:],
-            fallback_eligible=retryable_before_deadline,
-            emergency_fallback_allowed=False,
+            fallback_eligible=True,
+            emergency_fallback_allowed=True,
             failure_classification='lookup_not_ready',
         )
 
@@ -1149,28 +1218,32 @@ class WHOOPPipeline:
                 details_payload=payload,
             ) from e
 
-        mismatches = self._compare_whoop_snapshots(original_snapshot, fresh_snapshot)
+        mismatches, drift = self._compare_whoop_snapshots(original_snapshot, fresh_snapshot)
+        decision = "pass" if not mismatches else ("retry" if not self._is_terminal_rescue_run() else "no_post")
         check = {
             "checkpoint": checkpoint,
             "checked_at": checked_at,
             "original_snapshot": original_snapshot,
             "fresh_snapshot": fresh_snapshot,
             "mismatches": mismatches,
-            "decision": "pass" if not mismatches else ("retry" if not self._is_terminal_rescue_run() else "no_post"),
+            "drift": drift,
+            "decision": decision,
         }
         self._append_whoop_revalidation_log(check)
 
         if mismatches:
+            # Both flags True: same routing rationale as _whoop_revalidation_error.
             raise PipelineStageError(
                 stage='WHOOP Data Revalidation',
                 message='WHOOP data changed after initial lookup; refusing to publish stale metrics.',
                 details=json.dumps(check, indent=2, default=str)[-4000:],
-                fallback_eligible=check["decision"] == "retry",
-                emergency_fallback_allowed=False,
+                fallback_eligible=True,
+                emergency_fallback_allowed=True,
                 failure_classification='lookup_not_ready',
             )
 
-        print(f"{Fore.GREEN}✅ WHOOP revalidation passed ({checkpoint}){Style.RESET_ALL}")
+        drift_suffix = f" (drift on {len(drift)} field(s) within zone — logged)" if drift else ""
+        print(f"{Fore.GREEN}✅ WHOOP revalidation passed ({checkpoint}){drift_suffix}{Style.RESET_ALL}")
 
     @staticmethod
     def _publish_strategy_requires_public_urls(strategy: str) -> bool:
@@ -1234,8 +1307,10 @@ class WHOOPPipeline:
                 blend_option, creature, environment = self._load_required_text_outputs()
 
                 if self.mode == 'telegram':
-                    # In telegram mode: always do manual wait + fallback (not skipped in dry run)
-                    art_path, video_path = self.step_7_9_manual_or_fallback(image_json)
+                    # In telegram mode: always do manual wait + fallback (not skipped in dry run).
+                    # daily_data is passed so the wait loop can periodically revalidate WHOOP
+                    # zones/IDs and bail fast if the data drifts across a zone boundary mid-wait.
+                    art_path, video_path = self.step_7_9_manual_or_fallback(image_json, daily_data=daily_data)
                 else:
                     # Automatic mode: just generate
                     art_path = self.step_7_generate_image(image_json)
@@ -1868,7 +1943,7 @@ class WHOOPPipeline:
         if self.daily_run.is_owner() and status in {'WAITING_MANUAL', 'AUTO_FALLBACK_RUNNING'}:
             self._set_heartbeat_context(status=status, note=note or f'Manual session status={status}.', pulse=True)
 
-    def step_7_9_manual_or_fallback(self, image_json: dict) -> tuple[Path, Path]:
+    def step_7_9_manual_or_fallback(self, image_json: dict, daily_data: dict | None = None) -> tuple[Path, Path]:
         # In telegram mode, we always do manual wait + fallback (not skipped in dry run)
         # The post_to_instagram flag only controls whether we publish to Instagram at the end
         self.in_auto_fallback = False
@@ -1958,6 +2033,8 @@ class WHOOPPipeline:
 
         poll_error_streak = 0
         last_poll_warning_epoch = 0.0
+        wait_reval_interval = self._telegram_wait_revalidation_seconds()
+        last_wait_reval_epoch = time.time()
         while self._now() < session_deadline:
             try:
                 self._set_heartbeat_context(
@@ -1996,6 +2073,17 @@ class WHOOPPipeline:
                         details_tail=str(e)[-1000:],
                     )
                     last_poll_warning_epoch = now_epoch
+
+            # Periodic WHOOP zone+ID revalidation during the wait. If a zone or ID
+            # has changed mid-wait, bail out now instead of discovering the stale
+            # snapshot post-generation at `before_render`. Saves the API spend and
+            # gives the next cron a clean shot at a real post.
+            if wait_reval_interval > 0 and daily_data is not None:
+                if time.time() - last_wait_reval_epoch >= wait_reval_interval:
+                    last_wait_reval_epoch = time.time()
+                    # Raises PipelineStageError on mismatch — propagates up to run()
+                    # → _handle_runtime_stage_error → _release_retryable_stage_failure.
+                    self._revalidate_whoop_checkpoint(daily_data, checkpoint='during_telegram_wait')
 
             time.sleep(max(5, self.telegram_poll_seconds))
 
