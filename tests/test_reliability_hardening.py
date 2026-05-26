@@ -1058,10 +1058,12 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
         self.assertEqual(render_calls, [])
         self.assertEqual(handled_errors[0].stage, "WHOOP Data Revalidation")
+        # New contract: zone/ID mismatch -> both flags True. Handler routes on
+        # terminal-rescue state: before deadline = retry, after deadline = fallback.
         self.assertTrue(handled_errors[0].fallback_eligible)
-        self.assertFalse(handled_errors[0].emergency_fallback_allowed)
+        self.assertTrue(handled_errors[0].emergency_fallback_allowed)
 
-    def test_whoop_revalidation_cutoff_race_never_runs_emergency_fallback(self):
+    def test_whoop_revalidation_cutoff_race_runs_emergency_fallback_after_deadline(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = self._build_manual_session_pipeline(tmpdir)
             pipeline.post_to_instagram = True
@@ -1111,25 +1113,36 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 is_owner=lambda: True,
                 mark_fatal_failure=lambda **kwargs: fatal_calls.append(kwargs),
             )
-            pipeline._run_emergency_fallback = lambda *args, **kwargs: self.fail("WHOOP mismatch must not emergency post")
+            # NEW contract: when deadline races past mid-handling, the handler
+            # at terminal rescue MUST run emergency fallback (error_404_v1),
+            # not silent no-post. This is the honest public signal.
+            fallback_calls = []
+            pipeline._run_emergency_fallback = lambda stage, message: (
+                fallback_calls.append((stage, message)) or True
+            )
             pipeline._now = lambda: datetime(2026, 3, 9, 14, 0, 1)
 
-            notifier = types.SimpleNamespace(notify_error=lambda **kwargs: None)
+            notifier = types.SimpleNamespace(
+                notify_error=lambda **kwargs: None,
+                notify_warning=lambda **kwargs: None,
+                notify_status=lambda **kwargs: None,
+            )
 
             with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
                 with patch("pipeline.get_notifier", return_value=notifier):
-                    with self.assertRaises(SystemExit) as ctx:
-                        WHOOPPipeline._handle_runtime_stage_error(pipeline, revalidation_ctx.exception)
+                    result = WHOOPPipeline._handle_runtime_stage_error(pipeline, revalidation_ctx.exception)
 
             revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(ctx.exception.code, 1)
-        self.assertEqual(fatal_calls[0]["step"], "WHOOP Data Revalidation")
-        self.assertEqual(fatal_calls[0]["failure_classification"], "lookup_not_ready")
+        # Handler returned True (fallback completed successfully).
+        self.assertTrue(result)
+        # Fallback was invoked with the revalidation stage.
+        self.assertEqual(len(fallback_calls), 1)
+        self.assertEqual(fallback_calls[0][0], "WHOOP Data Revalidation")
+        # Pre-deadline log entry is intact.
         self.assertEqual(revalidation_log["checks"][0]["decision"], "retry")
-        self.assertEqual(revalidation_log["checks"][-1]["decision"], "no_post")
-        self.assertEqual(revalidation_log["checks"][-1]["previous_decision"], "retry")
-        self.assertEqual(revalidation_log["checks"][-1]["decision_source"], "terminal_handler_recheck")
+        # Drift array exists even on mismatch path (forensic trail).
+        self.assertIn("drift", revalidation_log["checks"][0])
 
     def test_whoop_revalidation_terminal_handler_records_malformed_details_as_no_post(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1262,7 +1275,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             self.assertFalse((pipeline.output_dir / "whoop_revalidation.json").exists())
 
-    def test_whoop_revalidation_after_deadline_is_no_post_not_fallback_eligible(self):
+    def test_whoop_revalidation_after_deadline_is_fallback_eligible_for_emergency_post(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             pipeline = self._build_manual_session_pipeline(tmpdir)
             pipeline.post_to_instagram = True
@@ -1309,8 +1322,13 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
 
-        self.assertFalse(ctx.exception.fallback_eligible)
-        self.assertFalse(ctx.exception.emergency_fallback_allowed)
+        # New contract: even after the deadline, the raised exception is fallback-
+        # eligible so the handler can route to emergency_404_v1. Silent no-post is
+        # never the chosen path on a live day.
+        self.assertTrue(ctx.exception.fallback_eligible)
+        self.assertTrue(ctx.exception.emergency_fallback_allowed)
+        # The in-process decision still records "no_post" (deadline has passed),
+        # but the exception itself authorizes the handler to attempt fallback.
         self.assertEqual(revalidation_log["checks"][-1]["decision"], "no_post")
 
     def test_prompt_validation_failure_retries_before_deadline_without_emergency_fallback(self):

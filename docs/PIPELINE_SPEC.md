@@ -109,7 +109,8 @@ PIPELINE_MODE=telegram    # Mode 2
 | `EMERGENCY_FALLBACK_ENABLED` | `true` enables the private `error_404_v1` emergency post fallback after eligible pipeline failures |
 | `PIPELINE_TERMINAL_RESCUE_RUN` | `true` forces terminal rescue behavior on the dedicated 2:00 PM IST run; the pipeline also infers rescue mode automatically once the configured local deadline has passed |
 | `WHOOP_QUIET_UPDATE_MINUTES` | Minutes since WHOOP sleep/recovery `updated_at` before values are considered stable (default: `15`) |
-| `WHOOP_REVALIDATE_BEFORE_PUBLISH` | `true` re-fetches WHOOP before render and, for live posts, before Instagram publish; blocks stale metrics (default: `true`) |
+| `WHOOP_REVALIDATE_BEFORE_PUBLISH` | `true` re-fetches WHOOP before render and, for live posts, before Instagram publish; blocks a normal post only when biometric IDs or qualitative zones change (default: `true`) |
+| `WHOOP_TELEGRAM_WAIT_REVAL_MINUTES` | Interval in minutes between WHOOP zone+ID revalidations during the Telegram manual-asset wait; `0` disables the periodic check (default: `15`) |
 | `VPS_SSH_HOST` | Host IP or domain for SCP/SSH uploading final assets to VPS |
 | `VPS_SSH_USER` | Target user for the VPS connection |
 | `VPS_SSH_PATH` | Server directory path for uploaded assets |
@@ -305,11 +306,16 @@ State Zero hit a pipeline fault today, so the emergency fallback card posted ins
 **Failure classification:**
 - **Retryable before cutoff** — Any pre-post failure before `2:00 PM IST`, including WHOOP lookup issues, prompt/generation/render failures, VPS upload failures, and Instagram main-post failures. The pipeline releases these for cron retry.
 - **Terminal rescue / auto-fallback** — Eligible pre-post failures that still exist once the final rescue trigger runs. These route into the emergency fallback automatically.
-- **Fatal no-post** — The fallback package is unavailable/invalid, the emergency fallback publish attempt itself fails, WHOOP revalidation detects changed/unverified metrics after the cutoff, or strict prompt validation cannot produce safe output.
+- **Fatal no-post** — The fallback package is unavailable/invalid, the emergency fallback publish attempt itself fails, or strict prompt validation cannot produce safe output.
 
-WHOOP-specific safety:
-- `lookups.py` writes `whoop_snapshot.json` beside `daily_data.json`, including selected sleep/recovery/strain IDs, score states, update timestamps, and rounded public values.
-- Live runs and dry-runs revalidate WHOOP immediately before render; live posting revalidates again immediately before Instagram publish. If selected IDs or public values changed beyond tolerance, the run retries before cutoff and refuses to post after cutoff. This path never routes to the emergency fallback, and terminal handling records the final decision as `no_post`.
+WHOOP-specific safety (zone-aware revalidation):
+- `lookups.py` writes `whoop_snapshot.json` beside `daily_data.json`, including selected sleep/recovery/strain IDs, score states, update timestamps, rounded public values, and an explicit `zones` block (`recovery_zone`, `energy_zone`, `sleep_score_zone`, `moon_count`).
+- Revalidation gates on **biometric identity** (`sleep_id`, `recovery_cycle_id`, `recovery_sleep_id`, `strain_cycle_id`) and **qualitative zone** equality. Raw numeric drift within the same zone is recorded as `drift` in `whoop_revalidation.json` but does **not** block the post — the metric arcs on the final card are circular fills with no numeric labels, so an intra-zone delta has zero observable effect on the published artifact.
+- Revalidation runs at three checkpoints: `during_telegram_wait` (periodic, only in `telegram` mode), `before_render`, and `before_instagram_post` (live only).
+- When biometric IDs or zones differ:
+  - **Before cutoff** (`PIPELINE_MANUAL_DEADLINE_LOCAL`, default 14:00 IST): the run releases its claim as `FAILED_RETRYABLE` and the next cron picks up with fresh data.
+  - **After cutoff**: the run routes to the emergency fallback (`error_404_v1`). This is the honest public-facing signal of a real data problem; silent skip is never the chosen path on a live day.
+- `WHOOP_REVALIDATION_TOLERANCES` in `pipeline.py` is **informational only** — it controls which intra-zone deltas are written to the `drift` field. Tightening or loosening it changes the forensic log, not the gating decision.
 - Prompt metadata fallback uses a curated safe scene description instead of copying image prompt/core concept text. Video prompt failures are repaired once with deterministic material-aware sentence-2 motion, then fail without leaving a stale `video_prompt.txt`.
 
 Daily state files now include `failure_classification` values such as `validation`, `lookup_not_ready`, `generation`, `prompt_validation_failed`, `upload`, `instagram_main_post`, `fallback_unavailable`, and `fallback_publish_failed`.
