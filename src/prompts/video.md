@@ -61,7 +61,7 @@ Use the single most characteristic motion for this environment, scaled to recove
 | Environment | HIGH recovery | LOW recovery |
 |---|---|---|
 | **Plasma/Nebula** | outer gas edges drift slowly apart in stellar wind; fine particles drift without settling | a pressure wave releases from the core — gas expands outward in a visible ripple, particles scatter and disperse outward, holding suspended throughout |
-| **Bioluminescent** | organic surfaces pulse in slow rhythmic waves of breathing light; a few spores lift upward and hold | a discharge event — one cluster pulses rapidly in irregular bursts, light overloads and refuses to return to baseline, spores scatter and hold in suspension throughout |
+| **Bioluminescent** | organic surfaces pulse in slow rhythmic waves of breathing light; a few spores lift upward and hold | a damaged cluster vents a sustained milky spore-fog from inside cracked membranes — bioluminescent light pulses in irregular exhausted bursts through failing tissue, dulling without recovery, the fog spreading across the full frame and holding throughout |
 | **Stone Monuments** | near total stillness; fine dust shifts at formation bases in a barely perceptible current | a stone fragment sheds from a formation surface and falls; fine dust cascades from the impact point |
 | **Volcanic** | heat shimmer warps the air above formations; fine ash settles across stone | a fissure ruptures along the formation base — ash billows upward from the breach in a dense sustained plume, spreading and refusing to clear for the full 8 seconds |
 | **Lightning/Storm** | a single electrical arc traces a surface slowly; conductive rock absorbs and dims | storm intensifies — a sustained arc traces and re-traces the same formation surface, wind-driven particles streaming laterally across the frame for the full duration |
@@ -122,6 +122,8 @@ The underlying logic:
 The environment has a material nature, and failure must match it.
 
 Solid environments — stone, ice, crystal, earth — may crack, fracture, collapse, and shed debris. That language belongs there.
+
+Organic/biological environments — bioluminescent tissue, living membrane, biological formation — do not crack like stone or shatter like crystal. They rupture, vent, seep, and degrade. Failure appears as membrane breach, spore release, tissue collapse, and the slow extinction of living light. Never apply stone-fracture or crystal-shatter vocabulary to biological material.
 
 Atmospheric environments — clouds, fog, mist, plasma, nebula — do not crack. They fail through pressure, shear, compression, turbulence, density collapse, and the loss of form or visibility. A LOW-recovery sky or fog scene should feel violent through weather physics, not through the vocabulary of breaking stone.
 
