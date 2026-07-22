@@ -19,10 +19,20 @@ class WhoopReauthRequired(Exception):
     """Raised when OAuth refresh can no longer proceed and user re-auth is required."""
     pass
 
+
+class _RefreshAttempt:
+    """Outcome shared by callers that overlap the same refresh attempt."""
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.result = False
+        self.error_type = None
+        self.error_message = None
+
+
 class WHOOPTokenManager:
     _instance = None
     _lock = threading.Lock()
-    _refresh_lock = threading.Lock()
 
     def __init__(self):
         # Durable token state lives in private runtime storage.
@@ -32,6 +42,8 @@ class WHOOPTokenManager:
         self.last_refresh_at = None
         self.last_refresh_attempt_at = None
         self.last_refresh_attempt_result = None
+        self._refresh_attempt_lock = threading.Lock()
+        self._active_refresh_attempt = None
         # Default to expired so bootstrap tokens get refreshed on first use.
         self.token_expires_at = datetime.now() - timedelta(seconds=1)
 
@@ -98,11 +110,42 @@ class WHOOPTokenManager:
             logger.warning(f"Failed to load WHOOP token state: {e}")
 
     async def _refresh_token(self) -> bool:
-        if not self._refresh_lock.acquire(blocking=False):
-            self._refresh_lock.acquire(blocking=True)
-            self._refresh_lock.release()
-            return True
+        """Refresh once and share the exact outcome with overlapping callers."""
+        with self._refresh_attempt_lock:
+            attempt = self._active_refresh_attempt
+            is_leader = attempt is None
+            if is_leader:
+                attempt = _RefreshAttempt()
+                self._active_refresh_attempt = attempt
 
+        if not is_leader:
+            # A blocking threading wait would deadlock the event loop while the
+            # leader is awaiting HTTP, so wait in the default worker pool.
+            await asyncio.to_thread(attempt.done.wait)
+            if attempt.error_type is not None:
+                if issubclass(attempt.error_type, WhoopReauthRequired):
+                    raise WhoopReauthRequired(attempt.error_message)
+                if issubclass(attempt.error_type, RuntimeError):
+                    raise RuntimeError(attempt.error_message)
+                raise RuntimeError(
+                    f"Concurrent WHOOP token refresh failed: {attempt.error_message}"
+                )
+            return attempt.result
+
+        try:
+            attempt.result = await self._refresh_token_once()
+            return attempt.result
+        except BaseException as error:
+            attempt.error_type = type(error)
+            attempt.error_message = str(error)
+            raise
+        finally:
+            with self._refresh_attempt_lock:
+                if self._active_refresh_attempt is attempt:
+                    self._active_refresh_attempt = None
+            attempt.done.set()
+
+    async def _refresh_token_once(self) -> bool:
         try:
             if not self.refresh_token:
                 note = "WHOOP_REFRESH_TOKEN is missing; re-authentication is required."
@@ -129,7 +172,9 @@ class WHOOPTokenManager:
                                 "refresh_token": self.refresh_token,
                                 "client_id": self.client_id,
                                 "client_secret": self.client_secret,
-                                "scope": "offline read:recovery read:cycles read:sleep read:profile read:workout",
+                                # Match WHOOP's documented refresh payload. The response
+                                # retains the data scopes granted during authorization.
+                                "scope": "offline",
                             },
                             headers={"Content-Type": "application/x-www-form-urlencoded"},
                             timeout=30.0,
@@ -140,8 +185,20 @@ class WHOOPTokenManager:
                         note = f"WHOOP token refresh failed: {response.status_code} body={body_preview}"
                         logger.error(note)
                         if response.status_code in (400, 401):
+                            try:
+                                error_payload = response.json()
+                            except (TypeError, ValueError):
+                                error_payload = {}
+                            oauth_error = str(error_payload.get("error") or "").strip().lower()
                             lowered = body_preview.lower()
-                            if "invalid_grant" in lowered or "expired" in lowered or "revoked" in lowered:
+                            # WHOOP currently reports rejected opaque refresh tokens as
+                            # invalid_request as well as invalid_grant. Because this request
+                            # uses their canonical payload, both require fresh user consent.
+                            if (
+                                oauth_error in {"invalid_grant", "invalid_request"}
+                                or "expired" in lowered
+                                or "revoked" in lowered
+                            ):
                                 note = "WHOOP refresh token was rejected by OAuth server; re-authentication is required."
                                 self._record_refresh_attempt(False, note)
                                 self._notify_reauth_required(note)
@@ -156,9 +213,31 @@ class WHOOPTokenManager:
                         continue
 
                     tokens = response.json()
-                    self.access_token = tokens.get("access_token")
-                    self.refresh_token = tokens.get("refresh_token", self.refresh_token)
-                    expires_in = tokens.get("expires_in", 3600)
+                    if not isinstance(tokens, dict):
+                        raise ValueError("WHOOP token response must be a JSON object")
+
+                    access_token = tokens.get("access_token")
+                    if not isinstance(access_token, str) or not access_token.strip():
+                        raise ValueError("WHOOP token response is missing access_token")
+
+                    refresh_token = tokens.get("refresh_token") or self.refresh_token
+                    if not isinstance(refresh_token, str) or not refresh_token.strip():
+                        raise ValueError("WHOOP token response is missing refresh_token")
+
+                    expires_raw = tokens.get("expires_in", 3600)
+                    if isinstance(expires_raw, bool):
+                        raise ValueError("WHOOP token response has invalid expires_in")
+                    try:
+                        expires_in = int(expires_raw)
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("WHOOP token response has invalid expires_in") from error
+                    if expires_in <= 0:
+                        raise ValueError("WHOOP token response has invalid expires_in")
+
+                    # Apply the rotated credentials only after the complete response
+                    # has passed validation, so a malformed 200 cannot corrupt state.
+                    self.access_token = access_token.strip()
+                    self.refresh_token = refresh_token.strip()
                     self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
                     os.environ["WHOOP_ACCESS_TOKEN"] = self.access_token
                     os.environ["WHOOP_REFRESH_TOKEN"] = self.refresh_token
@@ -176,8 +255,6 @@ class WHOOPTokenManager:
             return False
         except WhoopReauthRequired:
             raise
-        finally:
-            self._refresh_lock.release()
 
     def _save_token_state(self):
         """Save token state to JSON file in private runtime storage."""
