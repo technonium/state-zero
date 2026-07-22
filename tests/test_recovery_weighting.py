@@ -830,6 +830,35 @@ class CreatureFragmentRegressionTests(unittest.TestCase):
         self.assertEqual(parse_creature_payload(plain)["name"], "Dragon")
         self.assertEqual(parse_creature_payload(partial), {})
 
+    def test_pointable_fragment_matching_rejects_incidental_substrings(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+
+                for fragment in ("stable fold", "spring contour", "billowing fold"):
+                    verdict, reasons = orchestrator._analyze_signature_fragment(
+                        fragment,
+                        "A localized fold is a structurally distinct marker.",
+                        "Creature",
+                    )
+                    self.assertEqual(verdict, "generic", fragment)
+                    self.assertIn("fragment_not_pointable", reasons, fragment)
+
+    def test_pointable_fragment_matching_accepts_controlled_inflections(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=False):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+
+                for token in (
+                    "crested",
+                    "grooved",
+                    "lobed",
+                    "tabbed",
+                    "membranous",
+                    "ocellar",
+                ):
+                    self.assertTrue(orchestrator._is_pointable_fragment_token(token), token)
+
     def test_generate_creature_repairs_fragment_and_saves_source(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(

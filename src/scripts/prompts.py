@@ -171,20 +171,29 @@ FRAGMENT_POINTABLE_FEATURE_TERMS = {
     "bill",
     "carapace",
     "casque",
+    "crest",
     "curl",
     "curve",
     "edge",
     "feather",
     "frill",
     "gill",
+    "groove",
     "hook",
     "hood",
     "jaw",
+    "lobe",
     "mandible",
     "mane",
+    "membrane",
+    "nub",
+    "ocelli",
+    "panel",
+    "patch",
     "plate",
     "plume",
     "ridge",
+    "ring",
     "ruff",
     "sail",
     "scale",
@@ -196,6 +205,7 @@ FRAGMENT_POINTABLE_FEATURE_TERMS = {
     "spine",
     "spur",
     "sucker",
+    "tab",
     "tip",
     "tine",
     "tusk",
@@ -261,6 +271,7 @@ WHY_UNIQUE_FORBIDDEN_TERMS = {
     "environment",
 }
 WHY_UNIQUE_STRUCTURAL_TERMS = FRAGMENT_POINTABLE_FEATURE_TERMS | {
+    "anatomic",
     "curve",
     "distinctive",
     "edge",
@@ -271,6 +282,7 @@ WHY_UNIQUE_STRUCTURAL_TERMS = FRAGMENT_POINTABLE_FEATURE_TERMS | {
     "hook",
     "local",
     "localized",
+    "morpholog",
     "outline",
     "pointable",
     "protrusion",
@@ -752,6 +764,33 @@ class PromptOrchestrator:
     def _tokenize_fragment_text(self, text: str) -> list[str]:
         return [self._normalize_fragment_token(token) for token in re.findall(r'[a-zA-Z]+', (text or '').casefold())]
 
+    @staticmethod
+    def _is_pointable_fragment_token(token: str) -> bool:
+        """Match feature nouns and narrow adjectival inflections without substring leaks."""
+        if token in FRAGMENT_POINTABLE_FEATURE_TERMS:
+            return True
+
+        candidates: set[str] = set()
+        if token.endswith('ed') and len(token) > 4:
+            stem = token[:-2]
+            candidates.update({stem, stem + 'e'})
+            if len(stem) > 2 and stem[-1] == stem[-2]:
+                candidates.add(stem[:-1])
+        if token.endswith('ous') and len(token) > 5:
+            stem = token[:-3]
+            candidates.update({stem, stem + 'e'})
+
+        # Irregular domain adjectives whose noun form cannot be recovered by
+        # the narrow suffix rules above.
+        irregular_forms = {
+            'ocellar': 'ocelli',
+        }
+        irregular = irregular_forms.get(token)
+        if irregular:
+            candidates.add(irregular)
+
+        return any(candidate in FRAGMENT_POINTABLE_FEATURE_TERMS for candidate in candidates)
+
     def _analyze_signature_fragment(self, fragment_phrase: str, why_unique: str, creature_name: str) -> tuple[str, list[str]]:
         reasons: list[str] = []
         if not isinstance(fragment_phrase, str) or not fragment_phrase.strip():
@@ -785,7 +824,7 @@ class PromptOrchestrator:
             reasons.append('fragment_general_body_region')
         if 'mane' in fragment_tokens and 'crown' in fragment_tokens:
             reasons.append('fragment_full_identity_cue')
-        if not any(token in FRAGMENT_POINTABLE_FEATURE_TERMS for token in fragment_tokens):
+        if not any(self._is_pointable_fragment_token(token) for token in fragment_tokens):
             reasons.append('fragment_not_pointable')
 
         if word_count == 2 and fragment_tokens and fragment_tokens[-1] in GENERIC_FRAGMENT_SINGLETONS:
