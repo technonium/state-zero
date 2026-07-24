@@ -12,6 +12,7 @@ from utils import env_bool, get_runtime_root
 
 
 DEFAULT_FALLBACK_VERSION = "error_404_v1"
+PORTFOLIO_MEDIA_FILENAMES = ("light.webp", "dark.webp", "light.mp4", "dark.mp4")
 REQUIRED_MANIFEST_FIELDS = {
     "version",
     "title",
@@ -135,6 +136,34 @@ class EmergencyFallbackManager:
             "png_path": png_target,
             "mp4_path": mp4_target,
         }
+
+    def copy_portfolio_to_run_output(self, run_output_dir: Path) -> Path | None:
+        """Stage optional prebuilt fallback portfolio media for a posted run.
+
+        These files intentionally sit outside the emergency post manifest: they
+        are secondary delivery assets and must never make the emergency
+        Instagram fallback unavailable.
+        """
+        source_dir = self.fallback_root / "portfolio"
+        if not source_dir.is_dir():
+            return None
+        missing = [name for name in PORTFOLIO_MEDIA_FILENAMES if not (source_dir / name).is_file()]
+        if missing:
+            raise FallbackUnavailableError(
+                f"Fallback portfolio sidecars are incomplete: {', '.join(missing)}"
+            )
+        destination = run_output_dir / "portfolio"
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in PORTFOLIO_MEDIA_FILENAMES:
+            source = source_dir / name
+            if source.stat().st_size <= 0:
+                raise FallbackUnavailableError(f"Fallback portfolio sidecar is empty: {source}")
+            self._verify_portfolio_sidecar(source)
+            target = destination / name
+            shutil.copy2(source, target)
+            self._verify_staged_file(target, f"fallback portfolio sidecar {name}")
+            self._verify_portfolio_sidecar(target)
+        return destination
 
     def get_publish_strategy(self) -> dict:
         manifest = self._require_manifest()
@@ -274,6 +303,20 @@ class EmergencyFallbackManager:
                 img.verify()
         except Exception as exc:
             raise FallbackUnavailableError(f"Fallback PNG is unreadable: {exc}") from exc
+
+    def _verify_portfolio_sidecar(self, path: Path):
+        """Reject incomplete or corrupt optional portfolio assets before upload."""
+        if path.suffix.lower() == ".webp":
+            try:
+                with Image.open(path) as image:
+                    image.verify()
+            except Exception as exc:
+                raise FallbackUnavailableError(f"Fallback portfolio WebP is unreadable: {path}: {exc}") from exc
+            return
+        if path.suffix.lower() == ".mp4":
+            self._probe_video_duration(path)
+            return
+        raise FallbackUnavailableError(f"Unexpected fallback portfolio sidecar type: {path}")
 
     def _probe_video_duration(self, path: Path) -> float:
         cmd = [
