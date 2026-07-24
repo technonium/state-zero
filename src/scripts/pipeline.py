@@ -152,6 +152,9 @@ class WHOOPPipeline:
         self.mode = self._normalize_mode(raw_mode)
         # post_to_instagram=False means dry-run (skip Instagram publish path)
         self.post_to_instagram = env_bool('PIPELINE_POST_TO_INSTAGRAM', default=True)
+        # Portfolio delivery is deliberately secondary to the Instagram run.
+        # It is disabled for every existing installation unless explicitly enabled.
+        self.portfolio_media_enabled = env_bool('PORTFOLIO_MEDIA_ENABLED', default=False)
         self.media_mode = get_media_mode()
         if self.media_mode not in VALID_MEDIA_MODES:
             print(
@@ -1365,6 +1368,8 @@ class WHOOPPipeline:
                 if not finalized:
                     raise RuntimeError(f'Archive/database verification incomplete for {self.run_date}.')
 
+                self._run_portfolio_media_secondary(art_path=art_path, video_path=video_path)
+
                 # Send dry-run completion notification if not posting
                 if not self.post_to_instagram:
                     notifier = get_notifier()
@@ -2475,6 +2480,132 @@ class WHOOPPipeline:
         self._set_heartbeat_context(status='STARTING', note='VPS media upload completed.', pulse=True)
         return video_url, thumb_url
 
+    def step_16_render_portfolio_media(self, art_path: Path, video_path: Path) -> Path:
+        """Render the optional light/dark portfolio sidecars from source media."""
+        portfolio_dir = self.output_dir / 'portfolio'
+        args = [
+            '--image', str(art_path),
+            '--video', str(video_path),
+            '--data', str(self.output_dir / 'daily_data.json'),
+            '--meta', str(self.output_dir / 'card_metadata.json'),
+            '--output-dir', str(portfolio_dir),
+        ]
+        self.safe_step('Render Portfolio Media', 'src/scripts/portfolio_media.py', args)
+        expected = ('light.webp', 'dark.webp', 'light.mp4', 'dark.mp4')
+        missing = [name for name in expected if not (portfolio_dir / name).is_file()]
+        if missing:
+            raise RuntimeError(f"Portfolio renderer did not create: {', '.join(missing)}")
+        return portfolio_dir
+
+    def step_17_upload_portfolio_vps(self, portfolio_dir: Path) -> dict[str, str]:
+        """Upload a date archive plus predictable portfolio/latest aliases."""
+        filenames = ('light.webp', 'dark.webp', 'light.mp4', 'dark.mp4')
+        vps_base = (os.getenv('VPS_PUBLIC_BASE_URL') or '').strip()
+        if not vps_base or 'mock' in vps_base:
+            vps_base = 'https://mock-vps.com/media'
+        uploads = [(portfolio_dir / name, name) for name in filenames]
+        missing = [path.name for path, _name in uploads if not path.is_file() or path.stat().st_size <= 0]
+        if missing:
+            raise RuntimeError(f"Portfolio upload inputs are missing or empty: {', '.join(missing)}")
+
+        archive_relative = Path('portfolio') / self.run_date
+        latest_relative = Path('portfolio') / 'latest'
+        if 'mock' not in vps_base and self.post_to_instagram:
+            if self.media_mode == 'local_test':
+                for relative in (archive_relative, latest_relative):
+                    ensure_path(self.local_vps_dir / relative)
+                for local_path, name in uploads:
+                    shutil.copy2(local_path, self.local_vps_dir / archive_relative / name)
+                    shutil.copy2(local_path, self.local_vps_dir / latest_relative / name)
+            else:
+                ssh_host = (os.getenv('VPS_SSH_HOST') or '').strip()
+                ssh_user = (os.getenv('VPS_SSH_USER') or '').strip()
+                ssh_path = (os.getenv('VPS_SSH_PATH') or '').strip()
+                config_error = get_live_vps_config_error()
+                if config_error:
+                    raise RuntimeError(config_error)
+                if not (ssh_host and ssh_user and ssh_path):
+                    raise RuntimeError('VPS_SSH_HOST/VPS_SSH_USER/VPS_SSH_PATH are required for portfolio upload.')
+                archive_dir = Path(ssh_path) / archive_relative
+                latest_dir = Path(ssh_path) / latest_relative
+                mounted_root = Path(ssh_path)
+                if mounted_root.exists():
+                    ensure_path(archive_dir)
+                    ensure_path(latest_dir)
+                    for local_path, name in uploads:
+                        shutil.copy2(local_path, archive_dir / name)
+                        shutil.copy2(local_path, latest_dir / name)
+                else:
+                    target = f'{ssh_user}@{ssh_host}'
+                    strict_host_key_checking = (os.getenv('STATE_ZERO_SSH_STRICT_HOST_KEY_CHECKING') or 'accept-new').strip()
+                    if strict_host_key_checking not in {'yes', 'accept-new'}:
+                        strict_host_key_checking = 'accept-new'
+                    ssh_opts = ['-o', f'StrictHostKeyChecking={strict_host_key_checking}']
+                    mkdir = subprocess.run(
+                        ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(str(archive_dir))} {shlex.quote(str(latest_dir))}"],
+                        capture_output=True, text=True,
+                    )
+                    if mkdir.returncode:
+                        raise RuntimeError(f'Failed to create portfolio VPS directories: {self._build_subprocess_details_tail(mkdir)}')
+                    for local_path, name in uploads:
+                        for remote_dir in (archive_dir, latest_dir):
+                            result = subprocess.run(
+                                ['scp', *ssh_opts, str(local_path), f'{target}:{remote_dir}/{name}'],
+                                capture_output=True, text=True,
+                            )
+                            if result.returncode:
+                                raise RuntimeError(f'Failed to upload portfolio {name}: {self._build_subprocess_details_tail(result)}')
+
+        base = vps_base.rstrip('/')
+        urls = {name: f'{base}/portfolio/latest/{name}' for name in filenames}
+        if 'mock' not in vps_base and self.post_to_instagram:
+            self._ensure_public_urls_reachable(
+                tuple(('video' if name.endswith('.mp4') else 'image', f'portfolio {name}', url) for name, url in urls.items())
+            )
+        return urls
+
+    def _run_portfolio_media_secondary(
+        self,
+        *,
+        art_path: Path | None = None,
+        video_path: Path | None = None,
+        fallback_manager=None,
+    ) -> None:
+        """Best-effort portfolio delivery; never affect a completed Instagram post."""
+        # A few recovery/test paths construct the pipeline without __init__.
+        # Missing state must preserve the public default: feature disabled.
+        if not getattr(self, 'portfolio_media_enabled', False):
+            return
+        notifier = get_notifier()
+        try:
+            if fallback_manager is not None:
+                portfolio_dir = fallback_manager.copy_portfolio_to_run_output(self.output_dir)
+                if portfolio_dir is None:
+                    raise RuntimeError('Fallback portfolio sidecars have not been installed.')
+            else:
+                if art_path is None or video_path is None:
+                    raise RuntimeError('Portfolio source image/video are unavailable after primary completion.')
+                portfolio_dir = self.step_16_render_portfolio_media(art_path, video_path)
+
+            if self.post_to_instagram:
+                urls = self.step_17_upload_portfolio_vps(portfolio_dir)
+                print(f"{Fore.GREEN}✅ Portfolio media ready: {urls['dark.mp4']}{Style.RESET_ALL}")
+            else:
+                print(f"{Fore.GREEN}✅ Portfolio media rendered locally: {portfolio_dir}{Style.RESET_ALL}")
+        except Exception as exc:
+            print(f"{Fore.YELLOW}⚠ Portfolio media failed after primary completion: {exc}{Style.RESET_ALL}")
+            # Notification delivery is also secondary; never let it turn a
+            # confirmed Instagram/archive success into a failed pipeline run.
+            try:
+                notifier.notify_warning(
+                    run_date=self.run_date,
+                    step='Portfolio Media',
+                    message='Portfolio media failed after the primary Instagram flow completed.',
+                    details_tail=str(exc)[-1500:],
+                )
+            except Exception as notify_exc:
+                print(f"{Fore.YELLOW}⚠ Portfolio-media failure notification also failed: {notify_exc}{Style.RESET_ALL}")
+
     def _probe_public_media_url(self, media_kind: str, label: str, url: str) -> dict:
         snapshot = {
             "media_kind": media_kind,
@@ -2910,6 +3041,10 @@ class WHOOPPipeline:
                     message='Emergency fallback posted, but fallback_posts insert failed.',
                     details_tail=str(e),
                 )
+
+            # The fallback Instagram post is now confirmed. Portfolio sidecars
+            # are optional and must never change the fallback's success state.
+            self._run_portfolio_media_secondary(fallback_manager=manager)
 
             return True
         except FallbackUnavailableError as e:

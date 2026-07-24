@@ -106,6 +106,7 @@ PIPELINE_MODE=telegram    # Mode 2
 | `INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED` | Enable scheduled token health checker alerts (default: true) |
 | `INSTAGRAM_TOKEN_ALERT_DAYS` | Comma-separated alert thresholds in days (default: `14,7,3,1`) |
 | `VPS_PUBLIC_BASE_URL` | Public base URL for hosted files, e.g. `https://your-ip/media` |
+| `PORTFOLIO_MEDIA_ENABLED` | `true` creates optional light/dark portfolio WebP and MP4 sidecars after the primary Instagram flow; defaults to `false` |
 | `EMERGENCY_FALLBACK_ENABLED` | `true` enables the private `error_404_v1` emergency post fallback after eligible pipeline failures |
 | `PIPELINE_TERMINAL_RESCUE_RUN` | `true` forces terminal rescue behavior on the dedicated 2:00 PM IST run; the pipeline also infers rescue mode automatically once the configured local deadline has passed |
 | `WHOOP_QUIET_UPDATE_MINUTES` | Minutes since WHOOP sleep/recovery `updated_at` before values are considered stable (default: `15`) |
@@ -132,6 +133,28 @@ PIPELINE_MODE=telegram    # Mode 2
 ---
 
 ## Execution Matrix (What Actually Runs)
+
+### Optional portfolio media
+
+When `PORTFOLIO_MEDIA_ENABLED=true`, a successful run writes these private artifacts and publishes matching VPS date/latest paths without changing the Instagram card:
+
+```text
+runtime/output/YYYY-MM-DD/portfolio/{light,dark}.{webp,mp4}
+```
+
+The one-time emergency fallback sidecars can be generated from an existing full Instagram fallback card:
+
+```bash
+python3 src/scripts/portfolio_media.py \
+  --fallback-card \
+  --image /path/to/fallback_card.png \
+  --video /path/to/fallback_card.mp4 \
+  --output-dir "$STATE_ZERO_PRIVATE_ROOT/runtime/fallback/error_404_v1/portfolio" \
+  --date "27 JUL 1987" \
+  --title "ERROR 404"
+```
+
+The fallback sidecars are optional. Their absence never prevents the emergency Instagram post; a successful fallback post copies installed sidecars into that run's `portfolio/` directory and uploads them through the normal portfolio path.
 
 ### Core runtime switches
 
