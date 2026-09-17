@@ -76,7 +76,17 @@ class PortfolioMediaTests(unittest.TestCase):
                         self.assertGreater(sum(image.convert("RGB").getpixel((920, 378))), 700)
                     else:
                         self.assertLess(sum(bottom_pixel), 60)
-                        self.assertGreater(sum(image.convert("RGB").getpixel((434, 80))), 700)
+                        # (434, 80) lands on an antialiased edge of a metric
+                        # arc, not inside its stroke: the arc is drawn
+                        # supersampled and LANCZOS-downsampled, so the true
+                        # value here is ~690 even against pure black. The old
+                        # 700 bound cleared it only because lossy WebP happened
+                        # to ring upward. Once the frame paper moved off pure
+                        # black the encoder settled at 681 and the bound broke
+                        # without anything about the ink changing. 600 keeps the
+                        # ink/paper distinction this asserts (ink 681 vs paper
+                        # 39-42) while no longer cutting through a blend pixel.
+                        self.assertGreater(sum(image.convert("RGB").getpixel((434, 80))), 600)
                         self.assertLess(sum(image.convert("RGB").getpixel((999, 454))), 60)
                         self.assertLess(sum(image.convert("RGB").getpixel((920, 378))), 60)
                 mp4 = output / f"{theme}.mp4"
