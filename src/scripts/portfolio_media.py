@@ -31,6 +31,11 @@ from composite import (
 PORTFOLIO_W, PORTFOLIO_H = 1080, 1701
 PORTFOLIO_VIDEO_W, PORTFOLIO_VIDEO_H = 720, 1134
 PORTFOLIO_VIDEO_MAX_BYTES = 1_500_000
+PORTFOLIO_VIDEO_COLOR_ARGS = (
+    "-color_primaries", "bt709", "-color_trc", "iec61966-2-1",
+    "-colorspace", "bt709", "-color_range", "tv",
+    "-x264-params", "colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=tv",
+)
 
 # Figma node 204:119 / 204:181. The exact opaque frame exports own the
 # artwork aperture, including its slanted corner and bottom band.
@@ -160,7 +165,22 @@ def render_still(source_path: Path, output_path: Path, data: dict, theme: str, *
     canvas.save(output_path, "WEBP", quality=82, method=6)
 
 
-def _video_filter(theme: str, fallback_card: bool) -> str:
+def _source_scale_options(source_path: Path) -> str:
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=color_space,color_range", "-of", "json", str(source_path)],
+        capture_output=True, text=True, check=True,
+    )
+    streams = json.loads(probe.stdout).get("streams", [])
+    if not streams:
+        raise ValueError(f"Video source has no video stream: {source_path}")
+    stream = streams[0]
+    matrix = "" if stream.get("color_space") not in (None, "unknown") else ":in_color_matrix=bt709"
+    color_range = "" if stream.get("color_range") not in (None, "unknown") else ":in_range=tv"
+    return matrix + color_range
+
+
+def _video_filter(theme: str, fallback_card: bool, source_scale_options: str = "") -> str:
     background, _color = _theme(theme)
     prefix = ""
     input_label = "0:v"
@@ -168,13 +188,15 @@ def _video_filter(theme: str, fallback_card: bool) -> str:
         prefix = f"[0:v]crop={FALLBACK_ART_W}:{FALLBACK_ART_H}:{FALLBACK_ART_X}:{FALLBACK_ART_Y}[fallback];"
         input_label = "fallback"
     return (
-        f"{prefix}[{input_label}]scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase,"
+        f"{prefix}[{input_label}]scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase{source_scale_options},"
         f"crop={ART_W}:{ART_H}[art];"
         f"color=c={background}:s={PORTFOLIO_W}x{PORTFOLIO_H}[base];"
         f"[base][art]overlay={ART_X}:{ART_Y}[card];"
         # Do not impose a delivery frame rate: the portfolio video keeps the
         # source cadence (the supplied fallback is 25 fps).
-        f"[card][1:v]overlay=0:0,scale={PORTFOLIO_VIDEO_W}:{PORTFOLIO_VIDEO_H},format=yuv420p[v]"
+        f"[card][1:v]overlay=0:0,"
+        f"scale={PORTFOLIO_VIDEO_W}:{PORTFOLIO_VIDEO_H}:out_color_matrix=bt709:out_range=tv,"
+        "format=yuv420p[v]"
     )
 
 
@@ -182,6 +204,7 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
     """Encode a compact portfolio MP4, retaining source audio when available."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     overlay = _draw_ui(theme, data)
+    source_scale_options = _source_scale_options(source_path)
     with tempfile.TemporaryDirectory() as tmpdir:
         overlay_path = Path(tmpdir) / "portfolio_overlay.png"
         overlay.save(overlay_path, "PNG")
@@ -190,10 +213,11 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
             candidate = output_path.with_name(f".{output_path.stem}-crf{crf}.mp4")
             cmd = [
                 "ffmpeg", "-y", "-i", str(source_path), "-loop", "1", "-i", str(overlay_path),
-                "-filter_complex", _video_filter(theme, fallback_card),
+                "-filter_complex", _video_filter(theme, fallback_card, source_scale_options),
                 "-map", "[v]", "-map", "0:a?", "-shortest",
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p",
+                *PORTFOLIO_VIDEO_COLOR_ARGS,
                 "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(candidate),
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
