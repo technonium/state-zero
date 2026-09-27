@@ -42,15 +42,27 @@ def validate_shadow_environment() -> Path:
         raise ValueError("Shadow requires absolute STATE_ZERO_PRIVATE_ROOT and GFLOW_CLI_HOME")
     private_root = Path(raw_root).resolve()
     profile_root = Path(raw_profile).resolve()
-    production_roots = {Path("/opt/state-zero-private"), Path.home() / "Projects" / "state-zero-private"}
-    if private_root in (ROOT, ROOT.parent / f"{ROOT.name}-private", *production_roots) or ROOT in private_root.parents:
+    protected = {
+        ROOT.resolve(),
+        (ROOT.parent / f"{ROOT.name}-private").resolve(),
+        Path("/opt/state-zero-private").resolve(),
+        (Path.home() / "Projects" / "state-zero-private").resolve(),
+    }
+    def overlaps(path: Path, boundary: Path) -> bool:
+        return path == boundary or path in boundary.parents or boundary in path.parents
+
+    if any(overlaps(private_root, boundary) for boundary in protected):
         raise ValueError("Shadow private root overlaps the repository or the production default")
-    if (profile_root in production_roots or profile_root == private_root or
-            profile_root in private_root.parents or private_root in profile_root.parents or
-            ROOT in profile_root.parents):
+    if overlaps(profile_root, private_root) or any(overlaps(profile_root, boundary) for boundary in protected):
         raise ValueError("GFLOW_CLI_HOME must be a separate shadow profile volume")
     if profile_root == Path.home() / ".local" / "share" / "gflow-cli":
         raise ValueError("Shadow must not use the default gflow browser profile")
+    for directory, marker in (
+        (private_root, ".state-zero-flow-shadow-private"),
+        (profile_root, ".state-zero-flow-shadow-profile"),
+    ):
+        if not directory.is_dir() or not (directory / marker).is_file():
+            raise ValueError(f"Shadow volume is missing its marker: {marker}")
     return private_root
 
 
