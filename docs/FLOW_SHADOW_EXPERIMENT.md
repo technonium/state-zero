@@ -15,7 +15,7 @@ Mount two new, persistent, private host directories (or equivalent isolated volu
 | `<SHADOW_PRIVATE_HOST_DIR>` | `/opt/state-zero-flow-shadow` | astrology files, WHOOP token, logs, outputs, shadow SQLite |
 | `<SHADOW_PROFILE_HOST_DIR>` | `/opt/state-zero-flow-profile` | Flow Chrome cookies, gflow catalog, incidents |
 
-Create both with owner-only permissions. Never mount production runtime directories, production SQLite, or the production browser profile. The build excludes `.env` and runtime data via `.dockerignore`; the runner refuses a checkout `.env` and publishing/API credentials.
+Create both with owner-only permissions. Put an empty `.state-zero-flow-shadow-private` file in the private directory and an empty `.state-zero-flow-shadow-profile` file in the profile directory before starting the application. The runner requires both markers, so a missing volume fails before any generation. Never mount production runtime directories, production SQLite, or the production browser profile. The build excludes `.env` and runtime data via `.dockerignore`; the runner refuses a checkout `.env` and publishing/API credentials.
 
 Set these environment values on the **new application only**:
 

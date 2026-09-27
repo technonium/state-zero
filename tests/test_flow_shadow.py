@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -64,13 +65,22 @@ class FlowProviderTests(unittest.TestCase):
                         ImageGenerator().generate({"scene": "cloud"}, str(target))
             self.assertFalse(target.exists())
 
+    def test_cli_timeout_does_not_expose_prompt(self):
+        from flow_media_client import FlowMediaClient
+
+        command = ["gflow", "image", "t2i", "private WHOOP prompt"]
+        with patch("flow_media_client.subprocess.run", side_effect=subprocess.TimeoutExpired(command, 1)):
+            with self.assertRaises(RuntimeError) as failure:
+                FlowMediaClient._run_json(command, 1)
+        self.assertNotIn("private WHOOP prompt", str(failure.exception))
+
     def test_flow_keeps_jpeg_original_and_converts_canonical_art(self):
         from flow_media_client import FlowMediaClient
 
         with tempfile.TemporaryDirectory() as tmpdir:
             original = Path(tmpdir) / "flow_art.jpg"
             Image.new("RGB", (768, 1024), "white").save(original, "JPEG")
-            payload = {"status": "ok", "count": 1, "model": "nano2", "project_id": "project", "images": [{"local_path": str(original), "media_name": "media", "model_name_type": "NARWHAL"}]}
+            payload = {"status": "ok", "count": 1, "model": "NARWHAL", "project_id": "project", "images": [{"local_path": str(original), "media_name": "media", "model_name_type": "NARWHAL"}]}
             with patch.dict(os.environ, {"FLOW_IMAGE_UPSCALE_2K": "false"}):
                 with patch.object(FlowMediaClient, "_run_json", return_value=payload):
                     target = Path(tmpdir) / "generated_art.png"
@@ -110,10 +120,15 @@ class ShadowGuardTests(unittest.TestCase):
         from flow_shadow_run import validate_shadow_environment
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
+            root = Path(tmpdir) / "shadow"
+            profile = Path(tmpdir) / "profile"
+            root.mkdir()
+            profile.mkdir()
+            (root / ".state-zero-flow-shadow-private").touch()
+            (profile / ".state-zero-flow-shadow-profile").touch()
             env = {
                 "STATE_ZERO_PRIVATE_ROOT": str(root),
-                "GFLOW_CLI_HOME": str(root.parent / "flow-profile"),
+                "GFLOW_CLI_HOME": str(profile),
                 "PIPELINE_MODE": "automatic",
                 "PIPELINE_POST_TO_INSTAGRAM": "false",
                 "MEDIA_GENERATION_PROVIDER": "flow",
@@ -133,8 +148,16 @@ class ShadowGuardTests(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True):
                 with self.assertRaises(ValueError):
                     validate_shadow_environment()
+            env["STATE_ZERO_PRIVATE_ROOT"] = "/opt/state-zero-private/shadow"
+            with patch.dict(os.environ, env, clear=True):
+                with self.assertRaises(ValueError):
+                    validate_shadow_environment()
             env["STATE_ZERO_PRIVATE_ROOT"] = str(root)
             env["GFLOW_CLI_HOME"] = str(root / "gflow")
+            with patch.dict(os.environ, env, clear=True):
+                with self.assertRaises(ValueError):
+                    validate_shadow_environment()
+            env["GFLOW_CLI_HOME"] = "/opt/state-zero-private/flow-profile"
             with patch.dict(os.environ, env, clear=True):
                 with self.assertRaises(ValueError):
                     validate_shadow_environment()
@@ -144,9 +167,14 @@ class ShadowGuardTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir) / "shadow"
+            profile = Path(tmpdir) / "profile"
+            root.mkdir()
+            profile.mkdir()
+            (root / ".state-zero-flow-shadow-private").touch()
+            (profile / ".state-zero-flow-shadow-profile").touch()
             env = {
                 "STATE_ZERO_PRIVATE_ROOT": str(root),
-                "GFLOW_CLI_HOME": str(Path(tmpdir) / "profile"),
+                "GFLOW_CLI_HOME": str(profile),
                 "PIPELINE_MODE": "automatic",
                 "PIPELINE_POST_TO_INSTAGRAM": "false",
                 "MEDIA_GENERATION_PROVIDER": "flow",

@@ -35,7 +35,10 @@ class FlowMediaClient:
 
     @staticmethod
     def _run_json(command: list[str], timeout: int) -> dict:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"gflow {command[1]} {command[2]} timed out after {timeout}s") from None
         if result.returncode:
             # CLI output can contain private prompts or signed URLs; leave its private
             # incident bundle for diagnosis instead of copying output into app logs.
@@ -66,7 +69,7 @@ class FlowMediaClient:
         if payload.get("count") != 1 or len(images) != 1:
             raise RuntimeError("Flow did not return exactly one image")
         item = images[0]
-        if payload.get("model") != "nano2" or item.get("model_name_type") != "NARWHAL":
+        if payload.get("model") != "NARWHAL" or item.get("model_name_type") != "NARWHAL":
             raise RuntimeError("Flow did not attribute the image to Nano Banana 2")
         source = self._owned_path(item["local_path"], output_path.parent)
         original = source.name
