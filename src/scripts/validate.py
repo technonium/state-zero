@@ -140,16 +140,23 @@ def validate_environment(rescue_only: bool | None = None):
     fallback_enabled = env_bool("GOOGLE_API_FALLBACK_ENABLED", default=False)
     print(f"   Google API fallback: {'enabled' if fallback_enabled else 'disabled'}")
 
+    provider = (os.getenv("MEDIA_GENERATION_PROVIDER") or "google_api").strip().lower()
+    if provider not in {"google_api", "flow"}:
+        print_error("MEDIA_GENERATION_PROVIDER must be google_api or flow")
+        sys.exit(1)
+    api_required = provider == "google_api" or env_bool("FLOW_API_FALLBACK_ENABLED", default=False)
+
     if not rescue_only:
         required_env_vars.extend([
             'OPENROUTER_API_KEY',
-            'GOOGLE_API_KEY_PRIMARY',
             'WHOOP_CLIENT_ID',
             'WHOOP_CLIENT_SECRET',
         ])
+        if api_required:
+            required_env_vars.append('GOOGLE_API_KEY_PRIMARY')
 
         # Only require fallback key if fallback is enabled
-        if fallback_enabled:
+        if fallback_enabled and api_required:
             required_env_vars.append('GOOGLE_API_KEY_FALLBACK')
             # Validate: if fallback is enabled, the key must not be empty
             if not os.getenv('GOOGLE_API_KEY_FALLBACK'):

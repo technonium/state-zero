@@ -2275,12 +2275,22 @@ class WHOOPPipeline:
         generation_status = self._current_generation_status()
         self._set_heartbeat_context(status=generation_status, note='Generating video asset.', pulse=True)
         try:
-            from google_video_client import GoogleVideoClient
-
-            client = GoogleVideoClient()
+            provider = os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower()
             prompt_text = Path(video_prompt_path).read_text(encoding='utf-8').strip()
             out_path = self.output_dir / 'generated_video.mp4'
-            client.generate_from_image(prompt_text=prompt_text, image_path=art_path, output_path=out_path)
+            if provider == 'flow':
+                from flow_media_client import FlowMediaClient
+                out_path.unlink(missing_ok=True)
+                try:
+                    FlowMediaClient().generate_video(prompt_text, art_path, out_path)
+                except Exception:
+                    if not env_bool('FLOW_API_FALLBACK_ENABLED', default=False):
+                        raise
+                    from google_video_client import GoogleVideoClient
+                    GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)
+            else:
+                from google_video_client import GoogleVideoClient
+                GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)
             if not out_path.exists():
                 raise FileNotFoundError(f'Expected output missing: {out_path}')
             if out_path.stat().st_mtime < art_path.stat().st_mtime:
