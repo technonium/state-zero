@@ -2888,10 +2888,10 @@ def main():
     parser.add_argument('--data', help="Path to daily_data.json relative to project root")
     args = parser.parse_args()
 
-    api_key = os.getenv('GOOGLE_API_KEY_PRIMARY', 'mock')
+    api_key = os.getenv('PROMPT_GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY_PRIMARY', 'mock')
     or_key = os.getenv('OPENROUTER_API_KEY')
     persist_environment_history = env_bool('PIPELINE_PERSIST_ENVIRONMENT_HISTORY', default=False)
-    print(f"🔍 DEBUG: GOOGLE_API_KEY_PRIMARY={'set' if api_key and api_key != 'mock' else api_key}")
+    print(f"🔍 DEBUG: Prompt Gemini fallback={'set' if api_key and api_key != 'mock' else 'NOT SET'}")
     print(f"🔍 DEBUG: OPENROUTER_API_KEY={'set' if or_key else 'NOT SET'}")
     orchestrator = PromptOrchestrator(
         llm_api_key=api_key,

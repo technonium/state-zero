@@ -45,11 +45,15 @@ PIPELINE_TIMEZONE=Asia/Kolkata
 GFLOW_CLI_HEADLESS=false
 GFLOW_CLI_HISTORY_PROMPTS=redacted
 OPENROUTER_API_KEY=<separate or existing key; this experiment calls OpenRouter>
+PROMPT_GOOGLE_API_KEY=<Gemini key for prompt-only fallback; never used for media>
+OPENROUTER_CALL_DEADLINE_SECONDS=150
 WHOOP_CLIENT_ID=<shadow OAuth app ID>
 WHOOP_CLIENT_SECRET=<shadow OAuth app secret>
 ```
 
 The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. The runner's atomic per-date marker independently blocks repeated attempts, including failures and concurrent invocations. It refuses dates outside the seven-day window.
+
+`PROMPT_GOOGLE_API_KEY` is for Gemini prompt fallback only; it does not enable API media generation. The OpenRouter deadline applies to each prompt call and sends a timed-out call to that fallback. Run only one Chrome or gflow process against the persistent profile at a time. When moving the same profile volume between containers, verify the previous Chrome process is gone before clearing stale `Singleton*` links.
 
 Copy only `natal.yaml` and `dasha_periods.yaml` into `$STATE_ZERO_PRIVATE_ROOT/astrology/`. The shadow WHOOP grant must be separate because WHOOP rotates refresh tokens. Prefer a separate WHOOP developer app with `http://localhost:8888/callback`; authorize the same WHOOP user through that app. The existing `ops/auth_whoop.py` writes to `$STATE_ZERO_PRIVATE_ROOT/runtime/state/whoop_token_state.json`. Run it in a one-off container on the Linux server with the shadow private mount, `--network host`, and only the shadow WHOOP environment. Tunnel `localhost:8888` over SSH to complete its callback in your local browser. Inspect that the token file landed **only** in the shadow volume. Never copy the production refresh token.
 
@@ -128,7 +132,11 @@ Two archived days (2026-06-05 and 2026-04-25) produced an image, one video, full
 
 The second clip's automatic download succeeded, but the CLI's final rename crossed from its container filesystem into the private volume and raised `EXDEV`. Its recorded error hash exactly matched that reproduced exception. The adapter now passes `--out-dir` alongside `--output`, keeping download and rename on the same volume. Original recovery was verified without generating another clip, and the corrected relocation was checked using an existing file. No additional paid generation was used to retest this path.
 
-Private review copies and hash/dimension reports are under `/Users/harshit/Projects/state-zero-flow-linux-review/`. Credit lookup still uses the old Labs authentication endpoint on this account, so no balance change was measured; 20 credits per video remains an estimate. The separate WHOOP authorization, server shadow service, and seven scheduled runs remain pending. Production was untouched.
+Private review copies and hash/dimension reports are under `/Users/harshit/Projects/state-zero-flow-linux-review/`. Credit lookup still uses the old Labs authentication endpoint on this account, so no balance change was measured; 20 credits per video remains an estimate. At this point the separate WHOOP authorization, server shadow service, and seven scheduled runs were still pending. Production was untouched.
+
+### Fresh local gate — September 28
+
+The first full local run failed during prompts because the old OpenRouter key returned 401 and the shadow had no usable Gemini prompt fallback. A manually isolated retry with a disposable OpenRouter key stalled on a later prompt call. Both stopped before Flow submission. The branch now has a prompt-only Gemini fallback and a 150-second deadline on each OpenRouter call. A second manual retry completed the fresh WHOOP lookup, prompts, one Nano Banana 2 image, one Veo Fast start-frame video, cards, portfolio variants, and private SQLite archive. The image original is 896×1200. The raw clip is 720×1280, eight seconds, with audio; Flow's genuine 1080×1920 download was offered, validated, and selected as `generated_video.mp4`. Both media steps used Flow with one submission and zero retries. Credit balance lookup remained unavailable, so 20 video credits is an estimate. Reviewable media is in `/Users/harshit/Projects/state-zero-flow-linux-review/2026-09-28/`; sensitive inputs and logs remain in the separate local shadow volume. This local gate does not count toward the seven scheduled VPS dates.
 
 After the first **fresh WHOOP** full run validates, create one Dokploy Application Schedule Job on the new application with command `xvfb-run -a python3 -u /app/ops/flow_shadow_run.py`. Set it to **15:15 Asia/Kolkata** after confirming the scheduler's timezone on that VPS (09:45 UTC if its cron is UTC). Keep the production schedule as is. The first fresh full run is day one; the two archived local days do not count. Each of the next six dates gets one attempt. A failure remains in the seven-day evidence. Reconcile its Flow media ID and credits before any manual intervention; never automatically delete a date marker. On day seven the runner sends a Telegram summary, and subsequent scheduled invocations generate nothing. Review at least three dates after the account actually loses Pro access.
 
