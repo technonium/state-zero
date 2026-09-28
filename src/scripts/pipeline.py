@@ -2288,6 +2288,9 @@ class WHOOPPipeline:
                         raise
                     from google_video_client import GoogleVideoClient
                     GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)
+                    get_notifier().notify_warning(
+                        get_pipeline_run_date_str(), 'flow_video_fallback',
+                        '💸 Flow video failed; paid Google API video generation was used.')
             else:
                 from google_video_client import GoogleVideoClient
                 GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)

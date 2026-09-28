@@ -1,0 +1,43 @@
+diff --git a/src/gflow_cli/api/transports/migrated_composer.py b/src/gflow_cli/api/transports/migrated_composer.py
+index 5f8a863..a08510c 100644
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -33,6 +33,7 @@ from __future__ import annotations
+ import asyncio
+ import json
+ import mimetypes
++import os
+ import re
+ import time
+ from dataclasses import dataclass
+@@ -610,6 +611,14 @@ def _ligature(page: Any, name: str) -> Any:
+     return page.locator("mat-icon").filter(has_text=_exact(name))
+ 
+ 
++def _mark_shadow_submit_attempt() -> None:
++    """Persist the credit-spending boundary for State Zero's isolated runner."""
++    raw = os.getenv("GFLOW_SHADOW_SUBMIT_MARKER")
++    if raw:
++        with os.fdopen(os.open(raw, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as marker:
++            marker.write("submit_attempted\n")
++
++
+ async def _raise_if_out_of_credits(page: Any) -> None:
+     """Raise :class:`InsufficientCreditsError` when Flow has swapped the submit control
+     for its insufficient-credits warning.
+@@ -2513,6 +2522,7 @@ class MigratedComposer:
+             deadline = time.monotonic() + poll_timeout_s
+             # The credit-spending click: a bare timeout here leaves "did it submit?"
+             # unanswerable, which is the worst place in this driver to lose attribution.
++            _mark_shadow_submit_attempt()
+             await self._click(page, submit, named=SUBMIT_BUTTON, timeout=5000)
+             log.info("migrated.submit_clicked")
+             budget = min(SUBMIT_REPLY_BUDGET_S, poll_timeout_s)
+@@ -2767,6 +2777,7 @@ class MigratedComposer:
+                         detail="migrated host: image submit stayed disabled (host=migrated)"
+                     )
+                 await asyncio.sleep(SUBMIT_ENABLE_POLL_S)
++            _mark_shadow_submit_attempt()
+             await self._click(page, submit, named=SUBMIT_BUTTON, timeout=5000)
+             done, _ = await asyncio.wait(
+                 {result, route_error},

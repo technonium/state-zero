@@ -39,7 +39,12 @@ class ImageGenerator:
             except Exception:
                 if not env_bool('FLOW_API_FALLBACK_ENABLED', default=False):
                     raise
-                return GoogleImageClient().generate_from_json(prompt_json, target)
+                result = GoogleImageClient().generate_from_json(prompt_json, target)
+                from notifier import notify_warning
+                from utils import get_pipeline_run_date_str
+                notify_warning(get_pipeline_run_date_str(), 'flow_image_fallback',
+                               '💸 Flow image failed; paid Google API image generation was used.')
+                return result
         if self.mock_mode:
             print(f"⚠️ Falling back to mock image generation: {self._init_error}")
             try:
