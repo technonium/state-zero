@@ -75,12 +75,16 @@ class FlowMediaClient:
             reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("class", ""))).upper()
             policy_or_quota = any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "QUOTA", "CREDIT"))
             clicked = bool(marker and marker.exists())
+            auth_error = error_class in {
+                "AuthExpiredError", "AisandboxAuthError", "AuthMissingError",
+                "AuthLoginTimeoutError", "IdentityRecheckPendingError", "FlowAccountChooserError",
+            }
             if failed:
                 category = "generation_failed"
+            elif auth_error:
+                category = "auth_required"
             elif clicked:
                 category = "post_submit_error"
-            elif error_class in {"AuthExpiredError", "AuthMissingError", "IdentityRecheckPendingError"}:
-                category = "auth_required"
             elif bool(error.get("retryable")):
                 category = "pre_submit_transient"
             else:

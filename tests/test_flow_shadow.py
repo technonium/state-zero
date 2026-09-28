@@ -76,6 +76,19 @@ class FlowProviderTests(unittest.TestCase):
                 FlowMediaClient._run_json(command, 1)
         self.assertNotIn("private WHOOP prompt", str(failure.exception))
 
+    def test_auth_failure_after_submit_marker_still_requests_sign_in(self):
+        from flow_media_client import FlowCommandError, FlowMediaClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            marker = Path(tmpdir) / "submit"
+            marker.touch()
+            payload = {"status": "fail", "error": {"class": "AuthExpiredError"}}
+            result = subprocess.CompletedProcess([], 1, stdout=json.dumps(payload), stderr="")
+            with patch("flow_media_client.subprocess.run", return_value=result):
+                with self.assertRaises(FlowCommandError) as failure:
+                    FlowMediaClient._run_json(["gflow", "video", "i2v"], 1, marker)
+            self.assertEqual(failure.exception.category, "auth_required")
+
     def test_flow_keeps_jpeg_original_and_converts_canonical_art(self):
         from flow_media_client import FlowMediaClient
 
