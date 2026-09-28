@@ -130,12 +130,23 @@ def _flow_credits() -> int | None:
 
 
 def _preflight() -> bool:
-    result = subprocess.run(
-        [sys.executable, str(ROOT / "ops" / "flow_shadow_preflight.py")],
-        cwd=ROOT, capture_output=True, text=True, check=False, timeout=90,
-    )
-    print(result.stdout.strip() if result.stdout.strip() else "Flow shadow preflight failed; inspect private status")
-    return result.returncode == 0
+    for attempt in range(2):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "ops" / "flow_shadow_preflight.py")],
+            cwd=ROOT, capture_output=True, text=True, check=False, timeout=240,
+        )
+        status = result.stdout.strip()
+        print(status if status else "Flow shadow preflight failed; inspect private status")
+        if result.returncode == 0:
+            return True
+        if attempt == 0 and status in {
+            "Flow shadow preflight: browser_error",
+            "Flow shadow preflight: unknown_editor",
+            "Flow shadow preflight: controls_unavailable",
+        }:
+            continue
+        return False
+    return False
 
 
 def _alert(message: str) -> None:
@@ -207,6 +218,7 @@ def main() -> int:
     stage = "preflight"
     try:
         report["stage_times"][stage] = {"started_at": datetime.now(timezone.utc).isoformat()}
+        (state / "preflight.json").unlink(missing_ok=True)
         if not _preflight():
             raise RuntimeError("Flow editor sign-in or controls unavailable")
         report["stages"][stage] = "complete"
@@ -288,9 +300,20 @@ def main() -> int:
         _write_private_json(output / "shadow_report.json", report)
         _write_private_json(marker, {"date": run_date, "status": "failed"})
         attempts = [attempt for kind in ("image", "video") for attempt in report.get(kind, {}).get("attempts", [])]
-        auth_failure = stage == "preflight" or any(attempt.get("status") == "auth_required" for attempt in attempts)
+        preflight_status = "unknown"
+        if stage == "preflight":
+            try:
+                raw_status = json.loads((state / "preflight.json").read_text(encoding="utf-8")).get("status", "unknown")
+                preflight_status = re.sub(r"[^a-z0-9_]", "", str(raw_status))[:40] or "unknown"
+            except (OSError, ValueError):
+                pass
+        auth_failure = preflight_status in {"reauth_required", "chrome_profile_missing"} or any(
+            attempt.get("status") == "auth_required" for attempt in attempts
+        )
         if auth_failure:
             _alert(f"🚨 Flow sign-in needed — State Zero shadow day {day_number}/7 ({run_date}). Open the separate VPS Flow profile and rerun zero-credit preflight. API fallback is off.")
+        elif stage == "preflight":
+            _alert(f"🚨 Flow editor needs attention — State Zero shadow day {day_number}/7 ({run_date}): {preflight_status}. Inspect the private preflight report; no media was submitted.")
         else:
             failure_class = attempts[-1].get("status", stage) if attempts else stage
             _alert(f"🚨 State Zero Flow shadow day {day_number}/7 failed: {failure_class} ({run_date}). Inspect the private report; API fallback is off and this date will not run again automatically.")
@@ -311,4 +334,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception:
+        _alert("🚨 State Zero Flow shadow stopped unexpectedly. Check the separate service logs and submit markers before any retry.")
+        raise

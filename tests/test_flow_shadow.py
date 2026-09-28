@@ -171,6 +171,25 @@ class FlowProviderTests(unittest.TestCase):
 
 
 class ShadowGuardTests(unittest.TestCase):
+    def test_preflight_allows_both_browser_checks_to_finish(self):
+        import flow_shadow_run
+
+        result = subprocess.CompletedProcess([], 0, stdout="Flow shadow preflight: ready")
+        with patch.object(flow_shadow_run.subprocess, "run", return_value=result) as command:
+            self.assertTrue(flow_shadow_run._preflight())
+            self.assertEqual(command.call_args.kwargs["timeout"], 240)
+
+    def test_preflight_retries_transient_browser_failure_once(self):
+        import flow_shadow_run
+
+        responses = [
+            subprocess.CompletedProcess([], 3, stdout="Flow shadow preflight: browser_error"),
+            subprocess.CompletedProcess([], 0, stdout="Flow shadow preflight: ready"),
+        ]
+        with patch.object(flow_shadow_run.subprocess, "run", side_effect=responses) as command:
+            self.assertTrue(flow_shadow_run._preflight())
+            self.assertEqual(command.call_count, 2)
+
     def test_shadow_image_runs_chrome_as_non_root(self):
         dockerfile = (ROOT / "Dockerfile.flow-shadow").read_text(encoding="utf-8")
         self.assertIn("USER shadow", dockerfile)
@@ -197,11 +216,20 @@ class ShadowGuardTests(unittest.TestCase):
                 "SHADOW_TRIAL_START_DATE": "2026-09-27",
                 "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
-            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_alert"):
-                with patch.object(flow_shadow_run, "_preflight", return_value=False):
+            def failed_gate():
+                if os.environ["PIPELINE_DATE"] == "2026-09-28":
+                    (root / "runtime/state/flow_shadow/preflight.json").write_text('{"status":"reauth_required"}')
+                return False
+
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_alert") as alert:
+                with patch.object(flow_shadow_run, "_preflight", side_effect=failed_gate):
                     with patch.object(flow_shadow_run, "_run_logged") as pipeline:
                         self.assertEqual(flow_shadow_run.main(), 1)
                         pipeline.assert_not_called()
+                        self.assertIn("Flow editor needs attention", alert.call_args.args[0])
+                        os.environ["PIPELINE_DATE"] = "2026-09-28"
+                        self.assertEqual(flow_shadow_run.main(), 1)
+                        self.assertIn("Flow sign-in needed", alert.call_args.args[0])
             self.assertTrue((root / "runtime/state/flow_shadow/2026-09-27.json").exists())
 
     def test_preflight_classifies_editor_without_generating(self):
