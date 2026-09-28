@@ -12,6 +12,8 @@ Configuration:
 """
 
 import os
+import signal
+import threading
 import time
 import requests
 from typing import Optional
@@ -170,8 +172,24 @@ class OpenRouterClient:
             OpenRouterError: If API call fails
             LLMProviderError: If both primary and fallback fail
         """
+        deadline = int(os.getenv("OPENROUTER_CALL_DEADLINE_SECONDS", "0"))
+        if deadline and threading.current_thread() is not threading.main_thread():
+            raise ValueError("OpenRouter call deadline requires the main thread")
+        def on_deadline(_signum, _frame):
+            raise TimeoutError()
         try:
-            return self._call_openrouter(prompt, system_prompt)
+            if deadline:
+                previous_handler = signal.getsignal(signal.SIGALRM)
+                signal.signal(signal.SIGALRM, on_deadline)
+                signal.setitimer(signal.ITIMER_REAL, deadline)
+            try:
+                return self._call_openrouter(prompt, system_prompt)
+            except TimeoutError as exc:
+                raise OpenRouterError(f"Call exceeded {deadline} seconds") from exc
+            finally:
+                if deadline:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                    signal.signal(signal.SIGALRM, previous_handler)
         except OpenRouterError as e:
             print(f"⚠️  OpenRouter failed: {e}")
             if self.fallback_api_key:

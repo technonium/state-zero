@@ -325,5 +325,18 @@ class ShadowGuardTests(unittest.TestCase):
                 gate.assert_not_called()
 
 
+class PromptFallbackTests(unittest.TestCase):
+    def test_stalled_openrouter_call_reaches_prompt_only_gemini_fallback(self):
+        import time
+        from openrouter_client import OpenRouterClient
+
+        client = OpenRouterClient(api_key="unused", fallback_api_key="unused")
+        with patch.dict(os.environ, {"OPENROUTER_CALL_DEADLINE_SECONDS": "1"}):
+            with patch.object(client, "_call_openrouter", side_effect=lambda *_: time.sleep(3)):
+                with patch.object(client, "_call_google_gemini", return_value="fallback-ok") as fallback:
+                    self.assertEqual(client.generate("check"), "fallback-ok")
+                    fallback.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

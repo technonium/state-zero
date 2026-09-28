@@ -45,11 +45,15 @@ PIPELINE_TIMEZONE=Asia/Kolkata
 GFLOW_CLI_HEADLESS=false
 GFLOW_CLI_HISTORY_PROMPTS=redacted
 OPENROUTER_API_KEY=<separate or existing key; this experiment calls OpenRouter>
+PROMPT_GOOGLE_API_KEY=<Gemini key for prompt-only fallback; never used for media>
+OPENROUTER_CALL_DEADLINE_SECONDS=150
 WHOOP_CLIENT_ID=<shadow OAuth app ID>
 WHOOP_CLIENT_SECRET=<shadow OAuth app secret>
 ```
 
 The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. The runner's atomic per-date marker independently blocks repeated attempts, including failures and concurrent invocations. It refuses dates outside the seven-day window.
+
+`PROMPT_GOOGLE_API_KEY` is for Gemini prompt fallback only; it does not enable API media generation. The OpenRouter deadline applies to each prompt call and sends a timed-out call to that fallback. Run only one Chrome or gflow process against the persistent profile at a time. When moving the same profile volume between containers, verify the previous Chrome process is gone before clearing stale `Singleton*` links.
 
 Copy only `natal.yaml` and `dasha_periods.yaml` into `$STATE_ZERO_PRIVATE_ROOT/astrology/`. The shadow WHOOP grant must be separate because WHOOP rotates refresh tokens. Prefer a separate WHOOP developer app with `http://localhost:8888/callback`; authorize the same WHOOP user through that app. The existing `ops/auth_whoop.py` writes to `$STATE_ZERO_PRIVATE_ROOT/runtime/state/whoop_token_state.json`. Run it in a one-off container on the Linux server with the shadow private mount, `--network host`, and only the shadow WHOOP environment. Tunnel `localhost:8888` over SSH to complete its callback in your local browser. Inspect that the token file landed **only** in the shadow volume. Never copy the production refresh token.
 
