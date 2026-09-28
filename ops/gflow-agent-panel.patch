@@ -1,0 +1,47 @@
+diff --git a/src/gflow_cli/api/transports/migrated_composer.py b/src/gflow_cli/api/transports/migrated_composer.py
+index 5f8a8635..6993c853 100644
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -1153,12 +1153,8 @@ class MigratedComposer:
+         own exception, so the caller can chain it instead of truncating it into a warning
+         nobody reads.
+         """
+-        if not await cls._agent_chip_pressed(page):
+-            return "absent", None
+-
+-        # Some accounts leave the Agent panel expanded over the chip. Close only the
+-        # structural panel close button; the pressed-state chip has already been
+-        # confirmed above, so this cannot click a healthy composer into agent mode.
++        # Some accounts remove the chip while the Agent panel is expanded.
++        # Close only the structural panel close button before probing the chip.
+         panel_close = (
+             page.locator("flow-agent-panel button").filter(has=_ligature(page, "close")).first
+         )
+@@ -1169,6 +1165,11 @@ class MigratedComposer:
+         except Exception as e:  # noqa: BLE001 - best-effort panel cleanup
+             log.warning("migrated.agent_panel_close_failed", error=str(e)[:200])
+ 
++        # The expanded panel can remove the chip from the DOM. Probe after closing
++        # it, and only click a confirmed pressed chip.
++        if not await cls._agent_chip_pressed(page):
++            return "absent", None
++
+         try:
+             await page.locator(AGENT_MODE_CHIP).first.click(timeout=5000)
+         except Exception as e:  # noqa: BLE001 - the caller decides what it means
+@@ -2900,7 +2901,14 @@ class MigratedComposer:
+                 ),
+                 route="batchexecute:as29s",
+             )
+-        body = await self._fetch_mp4(page, record)
++        try:
++            body = await self._fetch_mp4(page, record)
++        except (WireFormatError, OSError):
++            # Recover the same already-submitted clip; never generate another one.
++            from gflow_cli.api.transports.migrated_recover import recover_clip
++            recovered = await recover_clip(page, project_id=record.project_id,
++                media_id=record.media_id, out_dir=out_dir or Path.cwd())
++            return recovered.path
+         target_dir = out_dir or Path.cwd()
+         target_dir.mkdir(parents=True, exist_ok=True)
+         path = target_dir / f"{record.media_id}.mp4"

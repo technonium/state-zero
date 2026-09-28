@@ -21,7 +21,14 @@ RUN pip install --no-cache-dir "playwright==1.61.0" \
     "gflow-cli @ git+https://github.com/ffroliva/gflow-cli.git@${GFLOW_COMMIT}"
 
 COPY . .
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-agent-panel.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-media-recovery.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-submit-boundary.patch
+RUN useradd --create-home --uid 10001 --gid shadow --shell /bin/sh shadow \
+ && mkdir -p /opt/state-zero-flow-shadow /opt/state-zero-flow-profile \
+ && chown -R shadow:shadow /opt/state-zero-flow-shadow /opt/state-zero-flow-profile /app
 ENV PYTHONUNBUFFERED=1 \
+    HOME=/home/shadow \
     GFLOW_CLI_HEADLESS=false \
     GFLOW_CLI_UPDATE_CHECK=0 \
     GFLOW_CLI_HISTORY_PROMPTS=redacted \
@@ -34,8 +41,12 @@ ENV PYTHONUNBUFFERED=1 \
     PORTFOLIO_MEDIA_ENABLED=true \
     MEDIA_GENERATION_PROVIDER=flow \
     FLOW_API_FALLBACK_ENABLED=false \
+    FLOW_VIDEO_EXPLICIT_DURATION=false \
+    FLOW_IMAGE_UPSCALE_2K=false \
+    FLOW_VIDEO_UPSCALE_1080P=true \
     GOOGLE_API_FALLBACK_ENABLED=false \
     PIPELINE_TIMEZONE=Asia/Kolkata
 
 # Dokploy's Application Schedule Job execs the runner in this live container.
+USER shadow
 CMD ["sleep", "infinity"]

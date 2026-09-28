@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import sys
@@ -35,7 +36,8 @@ class FlowProviderTests(unittest.TestCase):
         self.assertEqual(command[command.index("--model") + 1], "veo-fast")
         self.assertEqual(command[command.index("--aspect") + 1], "9:16")
         self.assertEqual(command[command.index("--count") + 1], "1")
-        self.assertEqual(command[command.index("--duration") + 1], "8")
+        self.assertEqual(command[command.index("--out-dir") + 1], "/shadow")
+        self.assertNotIn("--duration", command)
         self.assertNotIn("t2v", command)
 
     def test_flow_validation_does_not_require_google_api_key(self):
@@ -91,6 +93,46 @@ class FlowProviderTests(unittest.TestCase):
             diagnostics = (Path(tmpdir) / "flow_image_diagnostics.json").read_text()
             self.assertIn('"original_file": "flow_art.jpg"', diagnostics)
 
+    def test_migrated_flow_can_omit_image_model_attribution(self):
+        from flow_media_client import FlowMediaClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original = Path(tmpdir) / "flow_art.jpg"
+            Image.new("RGB", (768, 1024), "white").save(original, "JPEG")
+            payload = {"status": "ok", "count": 1, "model": "NARWHAL", "images": [{"local_path": str(original), "model_name_type": None}]}
+            with patch.dict(os.environ, {"FLOW_IMAGE_UPSCALE_2K": "false"}):
+                with patch.object(FlowMediaClient, "_run_json", return_value=payload):
+                    FlowMediaClient().generate_image({"scene": "cloud"}, Path(tmpdir) / "generated_art.png")
+            diagnostics = json.loads((Path(tmpdir) / "flow_image_diagnostics.json").read_text())
+            self.assertIsNone(diagnostics["wire_model"])
+            self.assertFalse(diagnostics["model_attribution_confirmed"])
+
+    def test_explicit_failed_video_submits_at_most_twice(self):
+        from flow_media_client import FlowCommandError, FlowMediaClient
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            art = root / "art.png"
+            Image.new("RGB", (768, 1024), "white").save(art)
+            calls = []
+
+            def fail(_command, _timeout, marker):
+                marker.touch()
+                calls.append(marker)
+                raise FlowCommandError("video", "generation_failed", media_id=f"media-{len(calls)}", retryable=True)
+
+            with patch.object(FlowMediaClient, "_run_json", side_effect=fail), patch.object(
+                FlowMediaClient, "_catalog_position", return_value=0
+            ), patch.object(FlowMediaClient, "_catalog_video_since", return_value={}), patch(
+                "flow_media_client.time.sleep"
+            ):
+                with self.assertRaises(FlowCommandError):
+                    FlowMediaClient().generate_video("move", art, root / "generated_video.mp4")
+            self.assertEqual(len(calls), 2)
+            report = json.loads((root / "flow_video_diagnostics.json").read_text())
+            self.assertEqual(report["submissions_estimated"], 2)
+            self.assertEqual([attempt["media_id"] for attempt in report["attempts"]], ["media-1", "media-2"])
+
     def test_flow_api_fallback_is_stage_specific_when_enabled(self):
         from image_gen import ImageGenerator
         from pipeline import WHOOPPipeline
@@ -116,6 +158,59 @@ class FlowProviderTests(unittest.TestCase):
 
 
 class ShadowGuardTests(unittest.TestCase):
+    def test_shadow_image_runs_chrome_as_non_root(self):
+        dockerfile = (ROOT / "Dockerfile.flow-shadow").read_text(encoding="utf-8")
+        self.assertIn("USER shadow", dockerfile)
+        self.assertIn("useradd", dockerfile)
+
+    def test_failed_preflight_claims_date_without_running_pipeline(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "shadow"
+            profile = Path(tmpdir) / "profile"
+            root.mkdir()
+            profile.mkdir()
+            (root / ".state-zero-flow-shadow-private").touch()
+            (profile / ".state-zero-flow-shadow-profile").touch()
+            env = {
+                "STATE_ZERO_PRIVATE_ROOT": str(root), "GFLOW_CLI_HOME": str(profile),
+                "FLOW_PREFLIGHT_PROJECT_ID": "id-existing", "PIPELINE_DATE": "2026-09-27",
+                "PIPELINE_MODE": "automatic", "PIPELINE_POST_TO_INSTAGRAM": "false",
+                "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
+                "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
+                "PIPELINE_MEDIA_MODE": "local_test",
+                "SHADOW_TRIAL_START_DATE": "2026-09-27",
+                "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_alert"):
+                with patch.object(flow_shadow_run, "_preflight", return_value=False):
+                    with patch.object(flow_shadow_run, "_run_logged") as pipeline:
+                        self.assertEqual(flow_shadow_run.main(), 1)
+                        pipeline.assert_not_called()
+            self.assertTrue((root / "runtime/state/flow_shadow/2026-09-27.json").exists())
+
+    def test_preflight_classifies_editor_without_generating(self):
+        from flow_shadow_preflight import classify_editor
+
+        self.assertEqual(classify_editor("https://flow.google.com/about", False, False, False, None, False), "reauth_required")
+        self.assertEqual(classify_editor("https://flow.google.com/project/id-good", True, True, True, False, False), "ready")
+        self.assertEqual(classify_editor("https://flow.google.com/project/id-good", True, False, True, True, True), "agent_toggle_on")
+        self.assertEqual(classify_editor("https://flow.google.com/project/id-good", True, False, False, None, True), "agent_panel_only")
+        self.assertEqual(classify_editor("https://flow.google.com/project/id-good", True, False, False, None, False), "unsupported_agent_view")
+        self.assertEqual(classify_editor("https://flow.google.com/project/id-good", False, False, False, None, False), "unknown_editor")
+
+    def test_preflight_reports_missing_project_without_opening_browser(self):
+        import flow_shadow_preflight
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": tmpdir}, clear=True):
+                with patch.object(flow_shadow_preflight, "inspect_editor") as browser:
+                    self.assertEqual(flow_shadow_preflight.main(), 3)
+                    browser.assert_not_called()
+            report = json.loads((Path(tmpdir) / "runtime/state/flow_shadow/preflight.json").read_text())
+            self.assertEqual(report["status"], "project_id_missing")
+
     def test_shadow_rejects_publish_credentials_and_missing_isolation(self):
         from flow_shadow_run import validate_shadow_environment
 
@@ -136,6 +231,7 @@ class ShadowGuardTests(unittest.TestCase):
                 "GOOGLE_API_FALLBACK_ENABLED": "false",
                 "PORTFOLIO_MEDIA_ENABLED": "true",
                 "PIPELINE_MEDIA_MODE": "local_test",
+                "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
             with patch.dict(os.environ, env, clear=True):
                 validate_shadow_environment()
@@ -183,13 +279,37 @@ class ShadowGuardTests(unittest.TestCase):
                 "PORTFOLIO_MEDIA_ENABLED": "true",
                 "PIPELINE_MEDIA_MODE": "local_test",
                 "PIPELINE_DATE": "2026-09-27",
+                "SHADOW_TRIAL_START_DATE": "2026-09-27",
+                "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
-            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None):
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_preflight", return_value=True), patch.object(flow_shadow_run, "_alert"):
                 with patch.object(flow_shadow_run, "_run_logged", side_effect=RuntimeError("private failure")) as called:
                     self.assertEqual(flow_shadow_run.main(), 1)
                     self.assertEqual(flow_shadow_run.main(), 2)
                     self.assertEqual(called.call_count, 1)
             self.assertTrue((root / "runtime/state/flow_shadow/2026-09-27.json").exists())
+
+    def test_eighth_date_cannot_generate(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root, profile = Path(tmpdir) / "shadow", Path(tmpdir) / "profile"
+            root.mkdir()
+            profile.mkdir()
+            (root / ".state-zero-flow-shadow-private").touch()
+            (profile / ".state-zero-flow-shadow-profile").touch()
+            env = {
+                "STATE_ZERO_PRIVATE_ROOT": str(root), "GFLOW_CLI_HOME": str(profile),
+                "PIPELINE_MODE": "automatic", "PIPELINE_POST_TO_INSTAGRAM": "false",
+                "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
+                "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
+                "PIPELINE_MEDIA_MODE": "local_test", "SHADOW_TRIAL_START_DATE": "2026-09-27",
+                "PIPELINE_DATE": "2026-10-04", "SHADOW_ALERT_BOT_TOKEN": "test",
+                "SHADOW_ALERT_CHAT_ID": "test",
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_preflight") as gate:
+                self.assertEqual(flow_shadow_run.main(), 0)
+                gate.assert_not_called()
 
 
 if __name__ == "__main__":

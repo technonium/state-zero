@@ -40,6 +40,9 @@ PORTFOLIO_FRAME_DARK = ASSETS_DIR / "portfolio_frame_dark.png"
 ART_X, ART_Y = 80, 364
 ART_W, ART_BOTTOM_BAND = 920, 80
 ART_H = PORTFOLIO_H - ART_Y - ART_BOTTOM_BAND
+# The normal Flow/API sources sit full-width behind the Figma aperture.
+# Their padded video begins showing image content about 237 px from its top.
+SOURCE_IMAGE_Y, SOURCE_VIDEO_Y = 317, 80
 DATE_X, DATE_Y, DATE_W, DATE_H = 80, 80, 279, 71
 ARC_Y = 80
 SPARK_X, SPARK_Y, SPARK_SIZE = 929, 80, 71
@@ -149,11 +152,17 @@ def render_still(source_path: Path, output_path: Path, data: dict, theme: str, *
     background, _color = _theme(theme)
     with Image.open(source_path) as source:
         art_source = _fallback_image_art(source.convert("RGB")) if fallback_card else source.convert("RGB")
-    art = resize_cover(art_source, ART_W, ART_H)
+    if fallback_card:
+        art = resize_cover(art_source, ART_W, ART_H)
+        position = (ART_X, ART_Y)
+    else:
+        height = round(art_source.height * PORTFOLIO_W / art_source.width)
+        art = art_source.resize((PORTFOLIO_W, height), Image.Resampling.LANCZOS)
+        position = (0, SOURCE_IMAGE_Y)
     canvas = Image.new("RGB", (PORTFOLIO_W, PORTFOLIO_H), background)
     # Deliberately let media extend below the Figma frame; the exact exported
     # frame performs the final crop and prevents edge seams in both themes.
-    canvas.paste(art, (ART_X, ART_Y))
+    canvas.paste(art, position)
     overlay = _draw_ui(theme, data)
     canvas.paste(overlay, (0, 0), overlay)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,16 +171,20 @@ def render_still(source_path: Path, output_path: Path, data: dict, theme: str, *
 
 def _video_filter(theme: str, fallback_card: bool) -> str:
     background, _color = _theme(theme)
-    prefix = ""
-    input_label = "0:v"
     if fallback_card:
-        prefix = f"[0:v]crop={FALLBACK_ART_W}:{FALLBACK_ART_H}:{FALLBACK_ART_X}:{FALLBACK_ART_Y}[fallback];"
-        input_label = "fallback"
+        media = (
+            f"[0:v]crop={FALLBACK_ART_W}:{FALLBACK_ART_H}:{FALLBACK_ART_X}:{FALLBACK_ART_Y},"
+            f"scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase,"
+            f"crop={ART_W}:{ART_H}[art];"
+        )
+        x, y = ART_X, ART_Y
+    else:
+        media = f"[0:v]scale={PORTFOLIO_W}:1920[art];"
+        x, y = 0, SOURCE_VIDEO_Y
     return (
-        f"{prefix}[{input_label}]scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase,"
-        f"crop={ART_W}:{ART_H}[art];"
+        media +
         f"color=c={background}:s={PORTFOLIO_W}x{PORTFOLIO_H}[base];"
-        f"[base][art]overlay={ART_X}:{ART_Y}[card];"
+        f"[base][art]overlay={x}:{y}[card];"
         # Do not impose a delivery frame rate: the portfolio video keeps the
         # source cadence (the supplied fallback is 25 fps).
         f"[card][1:v]overlay=0:0,scale={PORTFOLIO_VIDEO_W}:{PORTFOLIO_VIDEO_H},format=yuv420p[v]"

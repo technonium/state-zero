@@ -1,0 +1,61 @@
+diff --git a/src/gflow_cli/api/transports/migrated_recover.py b/src/gflow_cli/api/transports/migrated_recover.py
+index 48bba42a..12c7fe1b 100644
+--- a/src/gflow_cli/api/transports/migrated_recover.py
++++ b/src/gflow_cli/api/transports/migrated_recover.py
+@@ -81,6 +81,14 @@ async def _await_signed_record(
+     never persisted in the catalog.
+     """
+     found: dict[str, Any] = {}
++    video_urls: dict[str, str] = {}
++
++    def on_request(request: Any) -> None:
++        url = str(getattr(request, "url", ""))
++        parsed = urlsplit(url)
++        # Observe the app's original-video request, never synthesize a transcode.
++        if parsed.scheme == "https" and parsed.hostname == "flow-content.google" and parsed.path.startswith("/video/"):
++            video_urls[parsed.path.removeprefix("/video/")] = url
+ 
+     async def on_response(response: Any) -> None:
+         if found or "batchexecute" not in str(getattr(response, "url", "")):
+@@ -92,6 +100,7 @@ async def _await_signed_record(
+         _collect(text, media_id=media_id, into=found)
+ 
+     page.on("response", on_response)
++    page.on("request", on_request)
+     try:
+         log.info("migrated.recover_navigate", project_id=project_id, media_id=media_id)
+         await page.goto(
+@@ -99,10 +108,32 @@ async def _await_signed_record(
+         )
+         loop = asyncio.get_running_loop()
+         deadline = loop.time() + wait_s
+-        while not found and loop.time() < deadline:
++        download_requested = False
++        while loop.time() < deadline:
++            workflow_id = found.get("workflow_id")
++            if workflow_id in video_urls:
++                found["url"] = video_urls[workflow_id]
++                break
++            if found and urlsplit(str(found["url"])).hostname == "flow-content.google" and urlsplit(str(found["url"])).path == f"/video/{workflow_id}":
++                break
++            if found and not download_requested:
++                download_requested = True
++                # New accounts expose the original URL only when the user asks
++                # for the original 720p file. This downloads, never generates.
++                from gflow_cli.api.transports.migrated_composer import _ligature
++                control = page.locator("button").filter(has=_ligature(page, "download")).first
++                await control.wait_for(state="visible", timeout=10000)
++                await control.click(timeout=5000)
++                option = page.get_by_text("720p", exact=True)
++                if await option.count() != 1:
++                    raise WireFormatError(detail="Original 720p download option is ambiguous or missing", route=_ROUTE)
++                await option.click(timeout=5000)
+             await page.wait_for_timeout(500)
++        else:
++            found.clear()
+     finally:
+         page.remove_listener("response", on_response)
++        page.remove_listener("request", on_request)
+ 
+     if not found:
+         # #877: the class-default remediation on WireFormatError is written for
