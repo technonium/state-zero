@@ -29,12 +29,15 @@ def validate_shadow_environment() -> Path:
         "GOOGLE_API_FALLBACK_ENABLED": "false",
         "PORTFOLIO_MEDIA_ENABLED": "true",
         "PIPELINE_MEDIA_MODE": "local_test",
+        "OPENROUTER_CALL_DEADLINE_SECONDS": "200",
     }
     for key, expected in required.items():
         if os.getenv(key, "").strip().lower() != expected:
             raise ValueError(f"Shadow requires {key}={expected}")
     if not os.getenv("SHADOW_ALERT_BOT_TOKEN", "").strip() or not os.getenv("SHADOW_ALERT_CHAT_ID", "").strip():
         raise ValueError("Shadow alert bot token and chat ID are required")
+    if os.getenv("PROMPT_GOOGLE_API_KEY", "").strip() in {"", "mock"}:
+        raise ValueError("Shadow requires a prompt-only Gemini fallback key")
     forbidden = [key for key, value in os.environ.items() if value and key.startswith(("INSTAGRAM_", "VPS_", "TELEGRAM_", "GOOGLE_API_KEY_"))]
     if forbidden:
         raise ValueError(f"Shadow must not receive publishing or API keys: {', '.join(sorted(forbidden))}")

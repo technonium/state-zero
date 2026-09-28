@@ -4,7 +4,7 @@ This branch is an isolated experiment. Production `main` keeps its current sched
 
 ## Deploy the separate service
 
-On the **other VPS**, create a new Dokploy application from branch `codex/flow-shadow-experiment`, using `Dockerfile.flow-shadow`. Do not replace or redeploy the current production application or use its VPS. The image's `sleep infinity` command keeps the container running because Dokploy Application Schedule Jobs execute commands inside a running application container. Do not expose a domain, ports, or auto-deploy for this experiment. Use an `amd64` host; this Dockerfile installs Google's `amd64` Chrome package. The old production SSH key remains read-only for `/opt/state-zero-private/runtime/output/$RUN_DATE/` and is not used for this deployment.
+On the **other VPS**, create a new Dokploy **Docker Compose** service from branch `codex/flow-shadow-experiment` with Compose Path `./compose.flow-shadow.yml`. Do not replace or redeploy the current production application or use its VPS. The Compose file builds `Dockerfile.flow-shadow`, keeps the container running for Dokploy Compose Schedule Jobs, gives Chrome 512 MB shared memory, and applies the browser's seccomp profile to the actual daily container. The previous local failure occurred when those Chrome settings were used only for the one-off sign-in container. Do not expose a domain, ports, or auto-deploy for this experiment. Use an `amd64` host; this Dockerfile installs Google's `amd64` Chrome package. The old production SSH key remains read-only for `/opt/state-zero-private/runtime/output/$RUN_DATE/` and is not used for this deployment.
 
 The image pins gflow to commit `88ff5371c25551af28ab748691f70d32e33ab37c` and Playwright to 1.61.0. Google's apt repository supplies current Chrome at build time, so a rebuilt image needs the live gate repeated before use. On Apple Silicon, build with `docker build --platform linux/amd64 -f Dockerfile.flow-shadow -t state-zero-flow-shadow:local .`.
 The image applies `ops/gflow-agent-panel.patch`: close the expanded Agent session panel before checking for its mode chip, then click only a confirmed pressed chip. The zero-credit preflight uses that same recovery and waits for the settings control to become visible. Closing the panel manually on the actual account revealed the standard Nano Banana 2 image controls (3:4 and one output) and Veo 3.1 Fast video controls; a fresh browser launch passed the ready gate. Auth cookies alone are still insufficient.
@@ -12,16 +12,16 @@ The composer patch also recovers an existing clip after a download failure. `ops
 `ops/gflow-submit-boundary.patch` writes a private per-attempt marker immediately before the submit click. The adapter retries a transient error only when that marker is absent. It can download an already submitted media ID again, and submits a replacement Veo clip only after Flow explicitly reports generation failure. At most two video submit markers are allowed per date.
 Chrome and the pipeline run as the unprivileged `shadow` user (UID 10001). Both mounted directories must be writable by UID 10001. Prepare only the new shadow directories or volumes; do not run sign-in or scheduled jobs as root.
 
-Mount two new, persistent, private host directories (or equivalent isolated volumes):
+Create two new, persistent, private host directories before deploying; set `SHADOW_PRIVATE_HOST_DIR` and `SHADOW_PROFILE_HOST_DIR` to their absolute paths in the Dokploy Compose environment. The Compose file refuses missing host paths:
 
 | New private host directory | Container path | Contains |
 | --- | --- | --- |
 | `<SHADOW_PRIVATE_HOST_DIR>` | `/opt/state-zero-flow-shadow` | astrology files, WHOOP token, logs, outputs, shadow SQLite |
 | `<SHADOW_PROFILE_HOST_DIR>` | `/opt/state-zero-flow-profile` | Flow Chrome cookies, gflow catalog, incidents |
 
-Create both with owner-only permissions. Put an empty `.state-zero-flow-shadow-private` file in the private directory and an empty `.state-zero-flow-shadow-profile` file in the profile directory before starting the application. The runner requires both markers, so a missing volume fails before any generation. Never mount production runtime directories, production SQLite, or the production browser profile. The build excludes `.env` and runtime data via `.dockerignore`; the runner refuses a checkout `.env` and publishing/API credentials.
+Create both with owner-only permissions. Put an empty `.state-zero-flow-shadow-private` file in the private directory and an empty `.state-zero-flow-shadow-profile` file in the profile directory before starting the service. The runner requires both markers, so a missing volume fails before any generation. Never mount production runtime directories, production SQLite, or the production browser profile. The build excludes `.env` and runtime data via `.dockerignore`; the runner refuses a checkout `.env` and publishing/API credentials.
 
-Set these environment values on the **new application only**:
+Set these environment values on the **new Compose service only**. Dokploy writes its environment to a Compose-side `.env`; `compose.flow-shadow.yml` explicitly passes only the needed variables into the container:
 
 ```text
 STATE_ZERO_PRIVATE_ROOT=/opt/state-zero-flow-shadow
@@ -46,14 +46,14 @@ GFLOW_CLI_HEADLESS=false
 GFLOW_CLI_HISTORY_PROMPTS=redacted
 OPENROUTER_API_KEY=<separate or existing key; this experiment calls OpenRouter>
 PROMPT_GOOGLE_API_KEY=<Gemini key for prompt-only fallback; never used for media>
-OPENROUTER_CALL_DEADLINE_SECONDS=150
+OPENROUTER_CALL_DEADLINE_SECONDS=200
 WHOOP_CLIENT_ID=<shadow OAuth app ID>
 WHOOP_CLIENT_SECRET=<shadow OAuth app secret>
 ```
 
 The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. The runner's atomic per-date marker independently blocks repeated attempts, including failures and concurrent invocations. It refuses dates outside the seven-day window.
 
-`PROMPT_GOOGLE_API_KEY` is for Gemini prompt fallback only; it does not enable API media generation. The OpenRouter deadline applies to each prompt call and sends a timed-out call to that fallback. Run only one Chrome or gflow process against the persistent profile at a time. When moving the same profile volume between containers, verify the previous Chrome process is gone before clearing stale `Singleton*` links.
+`PROMPT_GOOGLE_API_KEY` is for Gemini prompt fallback only; it does not enable API media generation. The runner requires this key and the 200-second OpenRouter deadline. A timed-out prompt call is retried once on OpenRouter; a second timeout goes to Gemini. Other OpenRouter errors go directly to Gemini. Run only one Chrome or gflow process against the persistent profile at a time. When moving the same profile volume between containers, verify the previous Chrome process is gone before clearing stale `Singleton*` links.
 
 Copy only `natal.yaml` and `dasha_periods.yaml` into `$STATE_ZERO_PRIVATE_ROOT/astrology/`. The shadow WHOOP grant must be separate because WHOOP rotates refresh tokens. Prefer a separate WHOOP developer app with `http://localhost:8888/callback`; authorize the same WHOOP user through that app. The existing `ops/auth_whoop.py` writes to `$STATE_ZERO_PRIVATE_ROOT/runtime/state/whoop_token_state.json`. Run it in a one-off container on the Linux server with the shadow private mount, `--network host`, and only the shadow WHOOP environment. Tunnel `localhost:8888` over SSH to complete its callback in your local browser. Inspect that the token file landed **only** in the shadow volume. Never copy the production refresh token.
 
@@ -107,7 +107,7 @@ With the login window closed, run `xvfb-run -a python3 /app/ops/flow_shadow_pref
 
 Before generating a new clip, test `ops/flow_video_upscale.py` against one of the two **existing** Flow clip IDs recorded in the local review files. Run it under `xvfb-run` with the signed-in profile, the project ID, and a path in the new shadow private volume. It clicks Download → 1080p only if that option is visible. A status of `not_offered` is expected after Pro access ends; `download_unavailable` needs visual inspection before scheduling. No generation button is used. Validate the resulting file with `ffprobe` for 1080×1920, eight seconds, and audio. The trial adapter repeats this attempt per clip and falls back to local 720p scaling when it cannot validate a Flow 1080p file.
 
-Before adding a schedule, invoke the new application's command once:
+Before adding a schedule, invoke the new Compose service's command once:
 
 ```text
 xvfb-run -a python3 -u /app/ops/flow_shadow_run.py

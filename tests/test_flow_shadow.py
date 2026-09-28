@@ -193,6 +193,7 @@ class ShadowGuardTests(unittest.TestCase):
                 "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
                 "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
                 "PIPELINE_MEDIA_MODE": "local_test",
+                "OPENROUTER_CALL_DEADLINE_SECONDS": "200", "PROMPT_GOOGLE_API_KEY": "test",
                 "SHADOW_TRIAL_START_DATE": "2026-09-27",
                 "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
@@ -244,10 +245,16 @@ class ShadowGuardTests(unittest.TestCase):
                 "GOOGLE_API_FALLBACK_ENABLED": "false",
                 "PORTFOLIO_MEDIA_ENABLED": "true",
                 "PIPELINE_MEDIA_MODE": "local_test",
+                "OPENROUTER_CALL_DEADLINE_SECONDS": "200", "PROMPT_GOOGLE_API_KEY": "test",
                 "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
             with patch.dict(os.environ, env, clear=True):
                 validate_shadow_environment()
+            env.pop("PROMPT_GOOGLE_API_KEY")
+            with patch.dict(os.environ, env, clear=True):
+                with self.assertRaisesRegex(ValueError, "prompt-only Gemini"):
+                    validate_shadow_environment()
+            env["PROMPT_GOOGLE_API_KEY"] = "test"
             env["INSTAGRAM_ACCESS_TOKEN"] = "accidental"
             with patch.dict(os.environ, env, clear=True):
                 with self.assertRaises(ValueError):
@@ -291,6 +298,7 @@ class ShadowGuardTests(unittest.TestCase):
                 "GOOGLE_API_FALLBACK_ENABLED": "false",
                 "PORTFOLIO_MEDIA_ENABLED": "true",
                 "PIPELINE_MEDIA_MODE": "local_test",
+                "OPENROUTER_CALL_DEADLINE_SECONDS": "200", "PROMPT_GOOGLE_API_KEY": "test",
                 "PIPELINE_DATE": "2026-09-27",
                 "SHADOW_TRIAL_START_DATE": "2026-09-27",
                 "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
@@ -317,6 +325,7 @@ class ShadowGuardTests(unittest.TestCase):
                 "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
                 "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
                 "PIPELINE_MEDIA_MODE": "local_test", "SHADOW_TRIAL_START_DATE": "2026-09-27",
+                "OPENROUTER_CALL_DEADLINE_SECONDS": "200", "PROMPT_GOOGLE_API_KEY": "test",
                 "PIPELINE_DATE": "2026-10-04", "SHADOW_ALERT_BOT_TOKEN": "test",
                 "SHADOW_ALERT_CHAT_ID": "test",
             }
@@ -326,15 +335,27 @@ class ShadowGuardTests(unittest.TestCase):
 
 
 class PromptFallbackTests(unittest.TestCase):
-    def test_stalled_openrouter_call_reaches_prompt_only_gemini_fallback(self):
+    def test_first_timeout_retries_openrouter_before_gemini(self):
+        from openrouter_client import OpenRouterClient, OpenRouterTimeoutError
+
+        client = OpenRouterClient(api_key="unused", fallback_api_key="unused")
+        with patch.dict(os.environ, {"OPENROUTER_CALL_DEADLINE_SECONDS": "200"}):
+            with patch.object(client, "_call_openrouter", side_effect=[OpenRouterTimeoutError("timeout"), "retry-ok"]) as openrouter:
+                with patch.object(client, "_call_google_gemini") as fallback:
+                    self.assertEqual(client.generate("check"), "retry-ok")
+                    self.assertEqual(openrouter.call_count, 2)
+                    fallback.assert_not_called()
+
+    def test_two_stalled_calls_reach_prompt_only_gemini_fallback(self):
         import time
         from openrouter_client import OpenRouterClient
 
         client = OpenRouterClient(api_key="unused", fallback_api_key="unused")
         with patch.dict(os.environ, {"OPENROUTER_CALL_DEADLINE_SECONDS": "1"}):
-            with patch.object(client, "_call_openrouter", side_effect=lambda *_: time.sleep(3)):
+            with patch.object(client, "_call_openrouter", side_effect=lambda *_: time.sleep(3)) as openrouter:
                 with patch.object(client, "_call_google_gemini", return_value="fallback-ok") as fallback:
                     self.assertEqual(client.generate("check"), "fallback-ok")
+                    self.assertEqual(openrouter.call_count, 2)
                     fallback.assert_called_once()
 
 

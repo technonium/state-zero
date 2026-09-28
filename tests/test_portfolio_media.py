@@ -16,6 +16,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from emergency_fallback_manager import EmergencyFallbackManager
+from composite import process_video_card
 from pipeline import WHOOPPipeline
 from portfolio_media import (
     PORTFOLIO_H,
@@ -98,7 +99,7 @@ class PortfolioMediaTests(unittest.TestCase):
                 probe = subprocess.run(
                     [
                         "ffprobe", "-v", "error", "-show_entries",
-                        "stream=codec_name,codec_type,width,height,r_frame_rate,pix_fmt", "-of", "json", str(mp4),
+                        "stream=codec_name,codec_type,width,height,r_frame_rate,pix_fmt,color_range,color_space,color_transfer,color_primaries", "-of", "json", str(mp4),
                     ],
                     capture_output=True,
                     text=True,
@@ -111,6 +112,10 @@ class PortfolioMediaTests(unittest.TestCase):
                 self.assertEqual((video["width"], video["height"]), (PORTFOLIO_VIDEO_W, PORTFOLIO_VIDEO_H))
                 self.assertEqual(video["r_frame_rate"], source_fps)
                 self.assertEqual(video["pix_fmt"], "yuv420p")
+                self.assertEqual(
+                    tuple(video[k] for k in ("color_range", "color_space", "color_transfer", "color_primaries")),
+                    ("tv", "bt709", "iec61966-2-1", "bt709"),
+                )
                 self.assertEqual(audio["codec_name"], "aac")
                 frame_path = root / f"{theme}-frame.png"
                 subprocess.run(
@@ -120,11 +125,30 @@ class PortfolioMediaTests(unittest.TestCase):
                     stderr=subprocess.DEVNULL,
                 )
                 frame = Image.open(frame_path).convert("RGB")
+                if theme == "dark":
+                    self.assertEqual(frame.getpixel((0, 0)), (13, 13, 13))
                 edge_pixel = frame.getpixel((667, 303))
                 if theme == "light":
                     self.assertGreater(sum(edge_pixel), 700)
                 else:
                     self.assertLess(sum(edge_pixel), 60)
+
+    def test_full_card_video_has_explicit_srgb_color_tags(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source, output = root / "source.mp4", root / "card.mp4"
+            self._make_video(source)
+            process_video_card(source, {"date": "28 SEP 2026", "title": "THRESHOLD", "description": "A short scene."}, output)
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                 "stream=color_range,color_space,color_transfer,color_primaries", "-of", "json", str(output)],
+                capture_output=True, text=True, check=True,
+            )
+            video = json.loads(probe.stdout)["streams"][0]
+            self.assertEqual(
+                tuple(video[k] for k in ("color_range", "color_space", "color_transfer", "color_primaries")),
+                ("tv", "bt709", "iec61966-2-1", "bt709"),
+            )
 
     def test_fallback_sidecars_copy_to_date_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
