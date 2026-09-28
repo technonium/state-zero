@@ -403,9 +403,11 @@ def process_video_card(video_path: Path, data: dict, output_path: Path):
             "-crf", "18",
             "-pix_fmt", "yuv420p",
             "-movflags", "+faststart",
+            "-color_range", "tv",
             "-colorspace", "bt709",
-            "-color_trc", "bt709",
+            "-color_trc", "iec61966-2-1",
             "-color_primaries", "bt709",
+            "-bsf:v", "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1",
             "-threads", "4",
             # Copy original audio if it exists
             "-c:a", "copy",

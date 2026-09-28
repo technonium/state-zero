@@ -187,7 +187,7 @@ def _video_filter(theme: str, fallback_card: bool) -> str:
         f"[base][art]overlay={x}:{y}[card];"
         # Do not impose a delivery frame rate: the portfolio video keeps the
         # source cadence (the supplied fallback is 25 fps).
-        f"[card][1:v]overlay=0:0,scale={PORTFOLIO_VIDEO_W}:{PORTFOLIO_VIDEO_H},format=yuv420p[v]"
+        f"[card][1:v]overlay=0:0:format=rgb,scale={PORTFOLIO_VIDEO_W}:{PORTFOLIO_VIDEO_H},format=yuv420p[v]"
     )
 
 
@@ -207,6 +207,9 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
                 "-map", "[v]", "-map", "0:a?", "-shortest",
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p",
+                "-color_range", "tv", "-colorspace", "bt709",
+                "-color_trc", "iec61966-2-1", "-color_primaries", "bt709",
+                "-bsf:v", "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1",
                 "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(candidate),
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
