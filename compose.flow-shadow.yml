@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.flow-shadow
-    platform: linux/amd64
+    platform: linux/arm64
     shm_size: 512m
     security_opt:
       - seccomp:./ops/flow_chrome_seccomp.json
