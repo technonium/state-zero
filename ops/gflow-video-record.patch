@@ -1,0 +1,19 @@
+--- a/src/gflow_cli/api/transports/batchexecute.py
++++ b/src/gflow_cli/api/transports/batchexecute.py
+@@ -134,8 +134,15 @@
+ 
+ 
+ def _is_record(node: list[Any]) -> bool:
+-    if len(node) < 6 or node[3] != "CAE":
++    if len(node) < 6:
+         return False
++    if node[3] != "CAE":
++        # Migrated Flow replies observed 2026-10-03 omit the CAE marker.
++        # Require the video generation model at its measured nested path;
++        # uploaded images and generated images also have three UUIDs.
++        model = _at(node, 5, 6, 1, 0, 0)
++        if node[3] is not None or not isinstance(model, str) or not model.startswith("veo_"):
++            return False
+     return all(isinstance(node[i], str) and _UUID_RE.match(node[i]) for i in (0, 1, 2))
+ 
+ 

@@ -1,0 +1,102 @@
+--- a/src/gflow_cli/api/transports/migrated_recover.py
++++ b/src/gflow_cli/api/transports/migrated_recover.py
+@@ -22,10 +22,10 @@
+ silently is the failure class of #281, so a mismatch is a hard error here, never a
+ warning.
+ 
+-This module deliberately touches no DOM: no selector, no menu, no tile. Flow's grid is
+-virtualized (~13 rendered tiles against 183 records on the measured project), so a
+-tile-based approach cannot reach an older clip at all, and every text label it would
+-need is locale-dependent.
++The shadow patch uses the exact per-clip editor's Original 720p menu for
++browser-native downloads. Migrated accounts can expose a Flow-origin blob instead
++of a CDN URL. The resulting MP4 must still match the exact clip record's byte count.
++
+ """
+ 
+ from __future__ import annotations
+@@ -108,7 +108,6 @@
+         )
+         loop = asyncio.get_running_loop()
+         deadline = loop.time() + wait_s
+-        download_requested = False
+         while loop.time() < deadline:
+             workflow_id = found.get("workflow_id")
+             if workflow_id in video_urls:
+@@ -116,18 +115,10 @@
+                 break
+             if found and urlsplit(str(found["url"])).hostname == "flow-content.google" and urlsplit(str(found["url"])).path == f"/video/{workflow_id}":
+                 break
+-            if found and not download_requested:
+-                download_requested = True
+-                # New accounts expose the original URL only when the user asks
+-                # for the original 720p file. This downloads, never generates.
+-                from gflow_cli.api.transports.migrated_composer import _ligature
+-                control = page.locator("button").filter(has=_ligature(page, "download")).first
+-                await control.wait_for(state="visible", timeout=10000)
+-                await control.click(timeout=5000)
+-                option = page.get_by_text("720p", exact=True)
+-                if await option.count() != 1:
+-                    raise WireFormatError(detail="Original 720p download option is ambiguous or missing", route=_ROUTE)
+-                await option.click(timeout=5000)
++            if found:
++                # The exact clip record is sufficient for native download.
++                # Attach expect_download before clicking the original option.
++                break
+             await page.wait_for_timeout(500)
+         else:
+             found.clear()
+@@ -219,6 +210,40 @@
+     return body
+ 
+ 
++def _is_original_download_url(url: str) -> bool:
++    parts = urlsplit(url)
++    if parts.scheme == "blob":
++        origin = urlsplit(parts.path)
++        return origin.scheme == "https" and origin.hostname == "flow.google.com"
++    from gflow_cli.api.transports.ui_automation import _is_allowed_download_host
++    return _is_allowed_download_host(url)
++
++
++async def _download_original_verified(page: Page, *, expected: int | None, media_id: str) -> bytes:
++    """Capture the original transfer from the exact clip editor and verify it."""
++    import re
++    import tempfile
++
++    if not isinstance(expected, int) or expected <= 0:
++        raise WireFormatError(detail="Original clip byte count is missing; refusing unverified download", route=_ROUTE)
++    await page.get_by_role("button", name="Download media", exact=True).click(timeout=10000)
++    option = page.get_by_role("menuitem", name=re.compile(r"720p", re.I))
++    if await option.count() != 1:
++        raise WireFormatError(detail="Original 720p download option is ambiguous or missing", route=_ROUTE)
++    async with page.expect_download(timeout=120000) as event:
++        await option.click(timeout=5000)
++    download = await event.value
++    if not _is_original_download_url(download.url):
++        await download.cancel()
++        raise WireFormatError(detail="Original download is not on an allowed Google host", route=_ROUTE)
++    with tempfile.TemporaryDirectory() as directory:
++        path = Path(directory) / "original.mp4"
++        await download.save_as(path)
++        body = path.read_bytes()
++    _verify(body, expected=expected, media_id=media_id)
++    return body
++
++
+ async def recover_clip(
+     page: Page,
+     *,
+@@ -236,8 +261,10 @@
+     found = await _await_signed_record(
+         page, media_id=media_id, project_id=project_id, wait_s=wait_s
+     )
+-    body = await _fetch_verified(
+-        page, url=str(found["url"]), expected=found.get("size"), media_id=media_id
++    # Migrated accounts expose an editor-created blob download. Capture it in
++    # the browser instead of requesting the blob through APIRequestContext.
++    body = await _download_original_verified(
++        page, expected=found.get("size"), media_id=media_id
+     )
+ 
+     out_dir.mkdir(parents=True, exist_ok=True)
