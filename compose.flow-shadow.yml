@@ -20,12 +20,12 @@ services:
         max-file: "3"
     volumes:
       - type: bind
-        source: ${SHADOW_PRIVATE_HOST_DIR:?Set an isolated private directory}
+        source: ${SHADOW_PRIVATE_HOST_DIR:-/opt/state-zero-flow-shadow/private}
         target: /opt/state-zero-flow-shadow
         bind:
           create_host_path: false
       - type: bind
-        source: ${SHADOW_PROFILE_HOST_DIR:?Set an isolated profile directory}
+        source: ${SHADOW_PROFILE_HOST_DIR:-/opt/state-zero-flow-shadow/profile}
         target: /opt/state-zero-flow-profile
         bind:
           create_host_path: false
