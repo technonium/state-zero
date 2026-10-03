@@ -5,9 +5,19 @@ services:
       dockerfile: Dockerfile.flow-shadow
     platform: linux/arm64
     shm_size: 512m
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
     security_opt:
       - seccomp:./ops/flow_chrome_seccomp.json
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
     volumes:
       - type: bind
         source: ${SHADOW_PRIVATE_HOST_DIR:?Set an isolated private directory}
@@ -20,12 +30,12 @@ services:
         bind:
           create_host_path: false
     environment:
-      FLOW_PREFLIGHT_PROJECT_ID: ${FLOW_PREFLIGHT_PROJECT_ID:?Set the saved Flow project ID}
-      SHADOW_TRIAL_START_DATE: ${SHADOW_TRIAL_START_DATE:?Set the first trial date}
-      SHADOW_ALERT_BOT_TOKEN: ${SHADOW_ALERT_BOT_TOKEN:?Set the shadow alert token}
-      SHADOW_ALERT_CHAT_ID: ${SHADOW_ALERT_CHAT_ID:?Set the shadow alert chat ID}
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set the prompt API key}
-      PROMPT_GOOGLE_API_KEY: ${PROMPT_GOOGLE_API_KEY:?Set the prompt fallback key}
+      FLOW_PREFLIGHT_PROJECT_ID: ${FLOW_PREFLIGHT_PROJECT_ID:-}
+      SHADOW_TRIAL_START_DATE: ${SHADOW_TRIAL_START_DATE:-}
+      SHADOW_ALERT_BOT_TOKEN: ${SHADOW_ALERT_BOT_TOKEN:-}
+      SHADOW_ALERT_CHAT_ID: ${SHADOW_ALERT_CHAT_ID:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      PROMPT_GOOGLE_API_KEY: ${PROMPT_GOOGLE_API_KEY:-}
       OPENROUTER_CALL_DEADLINE_SECONDS: "200"
-      WHOOP_CLIENT_ID: ${WHOOP_CLIENT_ID:?Set the shadow WHOOP client ID}
-      WHOOP_CLIENT_SECRET: ${WHOOP_CLIENT_SECRET:?Set the shadow WHOOP client secret}
+      WHOOP_CLIENT_ID: ${WHOOP_CLIENT_ID:-}
+      WHOOP_CLIENT_SECRET: ${WHOOP_CLIENT_SECRET:-}
