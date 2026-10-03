@@ -171,6 +171,107 @@ class FlowProviderTests(unittest.TestCase):
 
 
 class ShadowGuardTests(unittest.TestCase):
+    def test_whoop_readiness_classifies_pending_transient_auth_and_terminal(self):
+        import flow_shadow_run
+
+        self.assertEqual(flow_shadow_run.classify_whoop_readiness(2, "score_state is PENDING"), "waiting_for_whoop")
+        self.assertEqual(flow_shadow_run.classify_whoop_readiness(3, "WHOOP server error"), "retryable_whoop_error")
+        self.assertEqual(flow_shadow_run.classify_whoop_readiness(3, "Auth error (401)"), "reauth_required")
+        self.assertEqual(flow_shadow_run.classify_whoop_readiness(4, "astrology file missing"), "terminal_configuration_error")
+
+    def test_schedule_windows_admit_window_and_final_checks_only(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        import flow_shadow_run
+
+        tz = ZoneInfo("Asia/Kolkata")
+        self.assertTrue(flow_shadow_run.schedule_allows_run(False, datetime(2026, 10, 3, 10, 0, tzinfo=tz)))
+        self.assertTrue(flow_shadow_run.schedule_allows_run(False, datetime(2026, 10, 3, 15, 0, tzinfo=tz)))
+        self.assertFalse(flow_shadow_run.schedule_allows_run(False, datetime(2026, 10, 3, 15, 30, tzinfo=tz)))
+        self.assertTrue(flow_shadow_run.schedule_allows_run(True, datetime(2026, 10, 3, 15, 15, tzinfo=tz)))
+        self.assertFalse(flow_shadow_run.schedule_allows_run(True, datetime(2026, 10, 3, 15, 0, tzinfo=tz)))
+        utc = ZoneInfo("UTC")
+        self.assertFalse(flow_shadow_run.schedule_allows_run(False, datetime(2026, 10, 3, 4, 0, tzinfo=utc)))
+        self.assertTrue(flow_shadow_run.schedule_allows_run(False, datetime(2026, 10, 3, 4, 30, tzinfo=utc)))
+        self.assertTrue(flow_shadow_run.schedule_allows_run(True, datetime(2026, 10, 3, 9, 45, tzinfo=utc)))
+
+    def test_runner_lock_blocks_overlapping_cron_invocations(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = Path(tmpdir)
+            owner = flow_shadow_run._acquire_runner_lock(state)
+            self.assertIsNotNone(owner)
+            self.assertIsNone(flow_shadow_run._acquire_runner_lock(state))
+            owner.close()
+            next_owner = flow_shadow_run._acquire_runner_lock(state)
+            self.assertIsNotNone(next_owner)
+            next_owner.close()
+
+    def test_failed_telegram_alert_is_queued_and_retried(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = Path(tmpdir)
+            with patch.object(flow_shadow_run, "_alert", side_effect=[False, True]) as alert:
+                self.assertFalse(flow_shadow_run._alert_once(state, "2026-10-04", "final_missed", "WHOOP not ready"))
+                queued = json.loads((state / "alerts/2026-10-04.json").read_text())
+                self.assertTrue(queued["final_missed"]["pending"])
+                flow_shadow_run._retry_pending_alerts(state)
+                delivered = json.loads((state / "alerts/2026-10-04.json").read_text())
+                self.assertIn("sent_at", delivered["final_missed"])
+            self.assertEqual(alert.call_count, 2)
+
+    def test_memory_sampler_persists_an_oom_survivable_evidence_file(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            evidence = Path(tmpdir) / "memory_samples.jsonl"
+            sampler = flow_shadow_run.MemorySampler(evidence)
+            sampler.start()
+            summary = sampler.stop()
+            samples = [json.loads(line) for line in evidence.read_text().splitlines()]
+            self.assertGreaterEqual(len(samples), 2)
+            self.assertIn("oom_events", samples[-1])
+            self.assertIn("oom_events_delta", summary)
+
+    def test_whoop_readiness_history_records_pending_retry_and_ready_checks(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output = Path(tmpdir)
+            outcomes = [
+                subprocess.CompletedProcess([], 2, stdout="sleep unscored", stderr=""),
+                subprocess.CompletedProcess([], 3, stdout="WHOOP server error", stderr=""),
+                subprocess.CompletedProcess([], 0, stdout="WHOOP ready", stderr=""),
+            ]
+
+            def lookup(*_args, **_kwargs):
+                result = outcomes.pop(0)
+                if result.returncode == 0:
+                    (output / "daily_data.json").write_text(json.dumps({"date": "2026-10-04"}))
+                return result
+
+            with patch.object(flow_shadow_run.subprocess, "run", side_effect=lookup):
+                statuses = [flow_shadow_run._probe_whoop("2026-10-04", output)[0] for _ in range(3)]
+
+            self.assertEqual(statuses, ["waiting_for_whoop", "retryable_whoop_error", "ready"])
+            history = [json.loads(line) for line in (output / "whoop_readiness.jsonl").read_text().splitlines()]
+            self.assertEqual([entry["status"] for entry in history], statuses)
+
+    def test_summary_is_sent_once_after_seven_dates_and_day_eight_is_unbounded(self):
+        from datetime import date
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state = Path(tmpdir)
+            start = date(2026, 9, 27)
+            with patch.object(flow_shadow_run, "_alert", return_value=True) as alert:
+                self.assertTrue(flow_shadow_run.maybe_send_trial_summary(state, start, date(2026, 10, 4)))
+                self.assertFalse(flow_shadow_run.maybe_send_trial_summary(state, start, date(2026, 10, 5)))
+            alert.assert_called_once()
+            self.assertEqual(flow_shadow_run.trial_day_number(start, date(2026, 10, 4)), 8)
+
     def test_preflight_allows_both_browser_checks_to_finish(self):
         import flow_shadow_run
 
@@ -207,7 +308,7 @@ class ShadowGuardTests(unittest.TestCase):
             (profile / ".state-zero-flow-shadow-profile").touch()
             env = {
                 "STATE_ZERO_PRIVATE_ROOT": str(root), "GFLOW_CLI_HOME": str(profile),
-                "FLOW_PREFLIGHT_PROJECT_ID": "id-existing", "PIPELINE_DATE": "2026-09-27",
+                "FLOW_PREFLIGHT_PROJECT_ID": "id-existing", "PIPELINE_DATE": "2026-09-28",
                 "PIPELINE_MODE": "automatic", "PIPELINE_POST_TO_INSTAGRAM": "false",
                 "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
                 "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
@@ -217,20 +318,16 @@ class ShadowGuardTests(unittest.TestCase):
                 "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
             def failed_gate():
-                if os.environ["PIPELINE_DATE"] == "2026-09-28":
-                    (root / "runtime/state/flow_shadow/preflight.json").write_text('{"status":"reauth_required"}')
+                (root / "runtime/state/flow_shadow/preflight.json").write_text('{"status":"reauth_required"}')
                 return False
 
-            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_alert") as alert:
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "schedule_allows_run", return_value=True), patch.object(flow_shadow_run, "_probe_whoop", return_value=("ready", 0, "")), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_alert") as alert:
                 with patch.object(flow_shadow_run, "_preflight", side_effect=failed_gate):
                     with patch.object(flow_shadow_run, "_run_logged") as pipeline:
-                        self.assertEqual(flow_shadow_run.main(), 1)
+                        self.assertEqual(flow_shadow_run.main([]), 1)
                         pipeline.assert_not_called()
-                        self.assertIn("Flow editor needs attention", alert.call_args.args[0])
-                        os.environ["PIPELINE_DATE"] = "2026-09-28"
-                        self.assertEqual(flow_shadow_run.main(), 1)
                         self.assertIn("Flow sign-in needed", alert.call_args.args[0])
-            self.assertTrue((root / "runtime/state/flow_shadow/2026-09-27.json").exists())
+            self.assertTrue((root / "runtime/state/flow_shadow/2026-09-28.json").exists())
 
     def test_preflight_classifies_editor_without_generating(self):
         from flow_shadow_preflight import classify_editor
@@ -331,14 +428,14 @@ class ShadowGuardTests(unittest.TestCase):
                 "SHADOW_TRIAL_START_DATE": "2026-09-27",
                 "SHADOW_ALERT_BOT_TOKEN": "test", "SHADOW_ALERT_CHAT_ID": "test",
             }
-            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_preflight", return_value=True), patch.object(flow_shadow_run, "_alert"):
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "schedule_allows_run", return_value=True), patch.object(flow_shadow_run, "_probe_whoop", return_value=("ready", 0, "")), patch.object(flow_shadow_run, "_flow_credits", return_value=None), patch.object(flow_shadow_run, "_preflight", return_value=True), patch.object(flow_shadow_run, "_alert"):
                 with patch.object(flow_shadow_run, "_run_logged", side_effect=RuntimeError("private failure")) as called:
-                    self.assertEqual(flow_shadow_run.main(), 1)
-                    self.assertEqual(flow_shadow_run.main(), 2)
+                    self.assertEqual(flow_shadow_run.main([]), 1)
+                    self.assertEqual(flow_shadow_run.main([]), 2)
                     self.assertEqual(called.call_count, 1)
             self.assertTrue((root / "runtime/state/flow_shadow/2026-09-27.json").exists())
 
-    def test_eighth_date_cannot_generate(self):
+    def test_eighth_date_is_not_blocked_by_trial_length(self):
         import flow_shadow_run
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -357,9 +454,87 @@ class ShadowGuardTests(unittest.TestCase):
                 "PIPELINE_DATE": "2026-10-04", "SHADOW_ALERT_BOT_TOKEN": "test",
                 "SHADOW_ALERT_CHAT_ID": "test",
             }
-            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "_preflight") as gate:
-                self.assertEqual(flow_shadow_run.main(), 0)
-                gate.assert_not_called()
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "schedule_allows_run", return_value=True), patch.object(flow_shadow_run, "_probe_whoop", return_value=("ready", 0, "")), patch.object(flow_shadow_run, "_alert", return_value=True):
+                with patch.object(flow_shadow_run, "_preflight", return_value=False) as gate:
+                    self.assertEqual(flow_shadow_run.main([]), 1)
+                    gate.assert_called_once()
+            marker = json.loads((root / "runtime/state/flow_shadow/2026-10-04.json").read_text())
+            self.assertEqual(marker["status"], "failed")
+
+    def test_pending_whoop_does_not_claim_date_and_final_check_records_miss_once(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root, profile = Path(tmpdir) / "shadow", Path(tmpdir) / "profile"
+            root.mkdir()
+            profile.mkdir()
+            (root / ".state-zero-flow-shadow-private").touch()
+            (profile / ".state-zero-flow-shadow-profile").touch()
+            env = {
+                "STATE_ZERO_PRIVATE_ROOT": str(root), "GFLOW_CLI_HOME": str(profile),
+                "PIPELINE_MODE": "automatic", "PIPELINE_POST_TO_INSTAGRAM": "false",
+                "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
+                "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
+                "PIPELINE_MEDIA_MODE": "local_test", "SHADOW_TRIAL_START_DATE": "2026-09-27",
+                "OPENROUTER_CALL_DEADLINE_SECONDS": "200", "PROMPT_GOOGLE_API_KEY": "test",
+                "PIPELINE_DATE": "2026-10-04", "SHADOW_ALERT_BOT_TOKEN": "test",
+                "SHADOW_ALERT_CHAT_ID": "test",
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "schedule_allows_run", return_value=True), patch.object(flow_shadow_run, "_probe_whoop", return_value=("waiting_for_whoop", 2, "pending")) as lookup, patch.object(flow_shadow_run, "_preflight") as browser, patch.object(flow_shadow_run, "_alert", return_value=True) as alert:
+                self.assertEqual(flow_shadow_run.main([]), 0)
+                self.assertFalse((root / "runtime/state/flow_shadow/2026-10-04.json").exists())
+                self.assertEqual(flow_shadow_run.main(["--final-check"]), 0)
+                marker = json.loads((root / "runtime/state/flow_shadow/2026-10-04.json").read_text())
+                self.assertEqual(marker["status"], "missed")
+                self.assertEqual(flow_shadow_run.main(["--final-check"]), 2)
+            self.assertEqual(lookup.call_count, 2)
+            browser.assert_not_called()
+            self.assertEqual(alert.call_count, 2)  # final-miss alert plus the seven-date summary
+
+    def test_interrupted_generation_is_marked_uncertain_and_never_retried(self):
+        import flow_shadow_run
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root, profile = Path(tmpdir) / "shadow", Path(tmpdir) / "profile"
+            root.mkdir()
+            profile.mkdir()
+            (root / ".state-zero-flow-shadow-private").touch()
+            (profile / ".state-zero-flow-shadow-profile").touch()
+            state = root / "runtime/state/flow_shadow"
+            state.mkdir(parents=True)
+            (state / "2026-09-27.json").write_text(json.dumps({"date": "2026-09-27", "status": "started"}))
+            env = {
+                "STATE_ZERO_PRIVATE_ROOT": str(root), "GFLOW_CLI_HOME": str(profile),
+                "PIPELINE_MODE": "automatic", "PIPELINE_POST_TO_INSTAGRAM": "false",
+                "MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "false",
+                "GOOGLE_API_FALLBACK_ENABLED": "false", "PORTFOLIO_MEDIA_ENABLED": "true",
+                "PIPELINE_MEDIA_MODE": "local_test", "SHADOW_TRIAL_START_DATE": "2026-09-27",
+                "OPENROUTER_CALL_DEADLINE_SECONDS": "200", "PROMPT_GOOGLE_API_KEY": "test",
+                "PIPELINE_DATE": "2026-09-27", "SHADOW_ALERT_BOT_TOKEN": "test",
+                "SHADOW_ALERT_CHAT_ID": "test",
+            }
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, "schedule_allows_run", return_value=True), patch.object(flow_shadow_run, "_alert", return_value=True) as alert, patch.object(flow_shadow_run, "_probe_whoop") as lookup:
+                self.assertEqual(flow_shadow_run.main([]), 2)
+                self.assertEqual(flow_shadow_run.main([]), 2)
+            marker = json.loads((state / "2026-09-27.json").read_text())
+            self.assertEqual(marker["status"], "uncertain")
+            self.assertEqual(alert.call_count, 1)
+            lookup.assert_not_called()
+
+    def test_pipeline_uses_the_exact_whoop_snapshot_that_passed_shadow_readiness(self):
+        import pipeline
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            payload = {"date": "2026-10-04", "strain": 5.0}
+            (root / "daily_data.json").write_text(json.dumps(payload))
+            instance = object.__new__(pipeline.WHOOPPipeline)
+            instance.output_dir = root
+            instance.run_date = "2026-10-04"
+            with patch.dict(os.environ, {"FLOW_SHADOW_WHOOP_PREFETCHED": "true"}, clear=True):
+                with patch("pipeline.subprocess.run") as lookup:
+                    self.assertEqual(instance.step_2_3_lookups(), payload)
+                    lookup.assert_not_called()
 
 
 class PromptFallbackTests(unittest.TestCase):

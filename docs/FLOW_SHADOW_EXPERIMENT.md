@@ -51,7 +51,7 @@ WHOOP_CLIENT_ID=<shadow OAuth app ID>
 WHOOP_CLIENT_SECRET=<shadow OAuth app secret>
 ```
 
-The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. The runner's atomic per-date marker independently blocks repeated attempts, including failures and concurrent invocations. It refuses dates outside the seven-day window.
+The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. A nonblocking runner lock serializes schedule ticks; WHOOP readiness checks do not claim the date. Once ready data is confirmed, the atomic per-date marker blocks repeated generation after complete, failed, or uncertain attempts. The seven-day summary is a review checkpoint; dates continue after day seven.
 
 `PROMPT_GOOGLE_API_KEY` is for Gemini prompt fallback only; it does not enable API media generation. The runner requires this key and the 200-second OpenRouter deadline. A timed-out prompt call is retried once on OpenRouter; a second timeout goes to Gemini. Other OpenRouter errors go directly to Gemini. Run only one Chrome or gflow process against the persistent profile at a time. When moving the same profile volume between containers, verify the previous Chrome process is gone before clearing stale `Singleton*` links.
 
@@ -107,13 +107,13 @@ With the login window closed, run `xvfb-run -a python3 /app/ops/flow_shadow_pref
 
 Before generating a new clip, test `ops/flow_video_upscale.py` against one of the two **existing** Flow clip IDs recorded in the local review files. Run it under `xvfb-run` with the signed-in profile, the project ID, and a path in the new shadow private volume. It clicks Download → 1080p only if that option is visible. A status of `not_offered` is expected after Pro access ends; `download_unavailable` needs visual inspection before scheduling. No generation button is used. Validate the resulting file with `ffprobe` for 1080×1920, eight seconds, and audio. The trial adapter repeats this attempt per clip and falls back to local 720p scaling when it cannot validate a Flow 1080p file.
 
-Before adding a schedule, invoke the new Compose service's command once:
+After credentials and the fresh-container preflight are ready, run one supervised smoke generation from the existing service. The `--manual` option only bypasses the schedule-time gate; it does not bypass WHOOP readiness, the browser preflight, or the one-attempt-per-date guard:
 
 ```text
-xvfb-run -a python3 -u /app/ops/flow_shadow_run.py
+xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual
 ```
 
-The runner claims the day's attempt marker, then repeats the zero-credit preflight. A failed preflight records that date as failed and sends a sign-in alert; it does not generate. When it passes, the run requests one `nano2` 3:4 image and one `veo-fast` 9:16 image-to-video clip using the local 1080×1920 black-padded frame and `--count 1`. This account has no duration control, so the command omits `--duration`; the adapter still rejects a clip outside 7.5–8.5 seconds. **Do not blindly resubmit an uncertain generation.**
+The runner checks WHOOP first, then claims the date and repeats the zero-credit preflight. A failed preflight records that date as failed and sends a sign-in alert; it does not generate. When it passes, the run requests one `nano2` 3:4 image and one `veo-fast` 9:16 image-to-video clip using the local 1080×1920 black-padded frame and `--count 1`. This account has no duration control, so the command omits `--duration`; the adapter still rejects a clip outside 7.5–8.5 seconds. **Do not blindly resubmit an uncertain generation.**
 
 For the smoke result, inspect `$STATE_ZERO_PRIVATE_ROOT/runtime/output/YYYY-MM-DD/shadow_report.json` and the private `shadow_pipeline.log`, then view:
 
@@ -124,7 +124,7 @@ For the smoke result, inspect `$STATE_ZERO_PRIVATE_ROOT/runtime/output/YYYY-MM-D
 
 The CLI's 2K image upscale is conditional on `FLOW_IMAGE_UPSCALE_2K=true`. It is off for this migrated account because both earlier images were 896×1200 and no usable 2K export was available. The original remains and the report marks `flow_2k_upscaled=false`. Do not mistake local resizing for restored detail. If the original is too soft in the card, reject this replacement or change the image source deliberately.
 
-## Seven-day schedule and review
+## Daily schedule and seven-day review
 
 ### Local gate evidence — September 27
 
@@ -144,8 +144,27 @@ The original September 28 portfolio MP4s had unknown colour tags. Zero-credit re
 
 The edited Dockerfile built as `linux/arm64` on Apple Silicon Docker Desktop. Inside the unprivileged container, `uname -m` reported `aarch64`, Google Chrome 154.0.8037.97 installed at `/opt/google/chrome/chrome`, and gflow selected its `chrome` profile channel. Headed Playwright launched Chrome under Xvfb with the Compose seccomp profile, opened `https://flow.google.com/about` (HTTP 200), and reported `navigator.webdriver=false`. The focused gflow patch and shadow tests passed (4 and 21 tests). This zero-credit check did not authenticate, open a project editor, or generate media; repeat the sign-in and full pipeline gates on the Oracle VPS before scheduling.
 
-After the first **fresh WHOOP** full run validates, create one Dokploy Compose Schedule Job on the new service with command `xvfb-run -a python3 -u /app/ops/flow_shadow_run.py`. Set it to **15:15 Asia/Kolkata** after confirming the scheduler's timezone on that VPS (09:45 UTC if its cron is UTC). Do not change `COMPOSE_PROJECT_NAME`; Dokploy uses it to identify the job's container. Keep the production schedule as is. The first fresh full run is day one; the two archived local days do not count. Each of the next six dates gets one attempt. A failure remains in the seven-day evidence. Reconcile its Flow media ID and credits before any manual intervention; never automatically delete a date marker. On day seven the runner sends a Telegram summary, and subsequent scheduled invocations generate nothing. Review at least three dates after the account actually loses Pro access.
+After Oracle credentials and browser sign-in are ready, create these **two Dokploy Compose Schedule Jobs** targeting the existing `flow-shadow` service. Create both **disabled**. Compose jobs use `docker exec` in the running target container, so preserve Dokploy's `COMPOSE_PROJECT_NAME`; do not create host/server jobs or a second pipeline container. No Telegram manual-image job is needed: `PIPELINE_MODE=automatic` generates directly and `PIPELINE_POST_TO_INSTAGRAM=false` prevents posting.
 
-Inspect seven scheduled runs, including at least three after the account actually loses Pro access. Compare each day's image, video, full card, and portfolio variants with the current API results. The pass criteria are correct image-to-video binding, one usable clip per day with at most two submitted attempts, usable image sharpness, acceptable watermark, correct 1080×1920 card and smaller portfolio layouts, successful downloads and private archive, and no production posting or data changes. A failed date remains a trial finding and prevents acceptance until fixed and retested. Keep the report, artifacts, and private logs for each date; do not send prompts, WHOOP data, cookies, or signed media URLs to ordinary logs.
+| Job | Command | Kolkata cron | UTC cron |
+| --- | --- | --- | --- |
+| Flow Daily Window | `xvfb-run -a python3 -u /app/ops/flow_shadow_run.py` | `0,30 10-15 * * *` | `0,30 4-9 * * *` |
+| Flow Final Check | `xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --final-check` | `15 15 * * *` | `45 9 * * *` |
+
+Confirm the Dokploy scheduler timezone before setting either expression. Its schedule API supports a per-job `timezone`; select `Asia/Kolkata` when available. If the Dokploy UI only accepts cron, inspect the host's timezone and use the matching column above. The daily cron includes a 15:30 boundary tick, but the runner permits WHOOP/network access only from 10:00 through 15:00 IST, so that extra tick exits immediately. The final checker accepts only 15:15–15:44 IST. Check both jobs' displayed next-run times before activation.
+
+Before enabling either job, complete the separate WHOOP authorization, set the shadow-only OpenRouter, prompt-only Gemini fallback, Flow project, and Telegram alert values, and pass the fresh-container Flow editor preflight. Then manually invoke one supervised fresh full run from the running service:
+
+```sh
+xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual
+```
+
+`--manual` bypasses only the schedule clock check; it still requires ready WHOOP data, passes preflight, claims the date once, and uses Flow only. Inspect its private report, complete cards and portfolio variants, media IDs, and Oracle-only SQLite archive. If it completes, enable both jobs and confirm their next executions. If it fails or the submission status is uncertain, keep the jobs disabled and inspect the private media IDs before any manual recovery. Never delete a date marker to force a retry.
+
+At each window tick, the runner calls the existing WHOOP lookup and checks for today's scored sleep, recovery matching that sleep, and the completed prior strain cycle. Pending/unscored data and transient WHOOP/network errors are recorded in `whoop_readiness.jsonl` and retried at the next half-hour without opening Flow, starting prompts, or reserving the generation date. A WHOOP authentication failure sends one reauthorization alert; terminal setup errors stop and alert. At 15:15 the final checker performs one last lookup. If data is still unavailable it marks that date `missed`, sends one actionable alert, and never generates late for that date. Failed Telegram alerts are retained privately and retried on a later tick.
+
+The runner lock prevents overlapping cron executions from refreshing WHOOP tokens or controlling Chrome at the same time. A ready date is claimed before Flow preflight and pipeline work. Complete, failed, and interrupted/uncertain runs block later schedule ticks for that date; uncertain submission is never blindly regenerated. API media fallback remains disabled. Prompt-only Gemini fallback does not generate media.
+
+The first completed or missed date is day one; the two archived local days do not count. The runner sends a single seven-day summary with each date's outcome after day seven (including missing and failed dates), then continues the daily pipeline on day eight and beyond. Review the first seven outcomes together and include at least three after the account loses Pro access. Compare each day's image, video, full card, and portfolio variants with the current API results. The pass criteria are correct image-to-video binding, one usable clip per day with at most two explicitly failed video submissions, usable image sharpness, acceptable watermark, correct 1080×1920 card and smaller portfolio layouts, successful downloads and private archive, and no production posting or data changes. A failed date remains a trial finding to fix and retest. Keep reports, artifacts, readiness histories, memory/OOM evidence, and private logs; do not send prompts, WHOOP data, cookies, or signed media URLs to ordinary logs.
 
 Only after review should the provider change be merged with `google_api` still the default. A separate later production configuration can choose `flow` and `FLOW_API_FALLBACK_ENABLED=true`; that switch uses the existing Google API step for the failed media stage, while `GOOGLE_API_FALLBACK_ENABLED` continues to mean the secondary Google API key. Keep the former API provider configuration ready for immediate rollback.
