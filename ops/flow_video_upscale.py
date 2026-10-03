@@ -39,7 +39,9 @@ async def download_existing(project_id: str, media_id: str, output: Path) -> str
                 choice = page.get_by_role("menuitem", name=re.compile(r"1080p", re.I)).first
                 if not await choice.count():
                     choice = page.get_by_role("button", name=re.compile(r"1080p", re.I)).first
-                if not await choice.count() or not await choice.is_visible():
+                if (not await choice.count() or not await choice.is_visible()
+                        or not await choice.is_enabled()
+                        or "upgrade" in (await choice.inner_text()).lower()):
                     return "not_offered"
                 async with page.expect_download(timeout=180000) as event:
                     await choice.click()

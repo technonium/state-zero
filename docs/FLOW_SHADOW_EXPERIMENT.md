@@ -168,3 +168,18 @@ The runner lock prevents overlapping cron executions from refreshing WHOOP token
 The first completed or missed date is day one; the two archived local days do not count. The runner sends a single seven-day summary with each date's outcome after day seven (including missing and failed dates), then continues the daily pipeline on day eight and beyond. Review the first seven outcomes together and include at least three after the account loses Pro access. Compare each day's image, video, full card, and portfolio variants with the current API results. The pass criteria are correct image-to-video binding, one usable clip per day with at most two explicitly failed video submissions, usable image sharpness, acceptable watermark, correct 1080×1920 card and smaller portfolio layouts, successful downloads and private archive, and no production posting or data changes. A failed date remains a trial finding to fix and retest. Keep reports, artifacts, readiness histories, memory/OOM evidence, and private logs; do not send prompts, WHOOP data, cookies, or signed media URLs to ordinary logs.
 
 Only after review should the provider change be merged with `google_api` still the default. A separate later production configuration can choose `flow` and `FLOW_API_FALLBACK_ENABLED=true`; that switch uses the existing Google API step for the failed media stage, while `GOOGLE_API_FALLBACK_ENABLED` continues to mean the secondary Google API key. Keep the former API provider configuration ready for immediate rollback.
+
+## Oracle live findings — 2026-10-03
+
+The first supervised date generated one image and one video, then stopped because
+the migrated video record omitted the old `CAE` marker. The decoder patch accepts
+that form only when its nested model identifies a Veo video; image records remain
+excluded. Original download recovery opens the exact media editor, captures its
+720p menu download, and verifies MP4 magic and the record's byte count. Flow-origin
+blob downloads are allowed; foreign blob origins are rejected. Recovery never
+submits generation. The original failed report is retained separately from the
+manual recovery report. This supervised recovery is not evidence of an unattended
+scheduled success.
+
+The account offered 1080p only with an Upgrade label. That option is skipped, and
+the original 720p clip is preserved alongside the locally scaled 1080p input.

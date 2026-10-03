@@ -38,6 +38,41 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recover.call_args.kwargs["media_id"], "media")
         self.assertEqual(recover.call_args.kwargs["project_id"], "project")
 
+    async def test_original_download_allows_only_flow_blob_origin(self):
+        from gflow_cli.api.transports.migrated_recover import _is_original_download_url
+        self.assertTrue(_is_original_download_url("blob:https://flow.google.com/123"))
+        self.assertFalse(_is_original_download_url("blob:https://evil.example/123"))
+        self.assertFalse(_is_original_download_url("blob:https://flow.google.com.evil.example/123"))
+
+    async def test_original_download_refuses_missing_record_size(self):
+        from gflow_cli.api.transports.migrated_recover import _download_original_verified
+        from gflow_cli.exceptions import WireFormatError
+        page = MagicMock()
+        with self.assertRaises(WireFormatError):
+            await _download_original_verified(page, expected=None, media_id="media")
+        page.get_by_role.assert_not_called()
+
+    async def test_original_download_rejects_wrong_size(self):
+        from gflow_cli.api.transports.migrated_recover import _verify
+        from gflow_cli.exceptions import WireFormatError
+        with self.assertRaises(WireFormatError):
+            _verify(b"0000ftyp00000000", expected=17, media_id="media")
+
+    async def test_recovery_uses_original_menu_without_request_context(self):
+        from types import SimpleNamespace
+        from gflow_cli.api.transports.migrated_recover import recover_clip
+        with tempfile.TemporaryDirectory() as tmpdir, patch(
+            "gflow_cli.api.transports.migrated_recover._await_signed_record",
+            new_callable=AsyncMock, return_value={"url": "https://flow-content.google/video/workflow", "size": 16, "workflow_id": "workflow"}), patch(
+            "gflow_cli.api.transports.migrated_recover._fetch_verified",
+            new_callable=AsyncMock) as request, patch(
+            "gflow_cli.api.transports.migrated_recover._download_original_verified",
+            new_callable=AsyncMock, return_value=b"0000ftyp00000000") as download:
+            result = await recover_clip(MagicMock(), project_id="project", media_id="media", out_dir=Path(tmpdir))
+            self.assertEqual(result.path.read_bytes(), b"0000ftyp00000000")
+            self.assertEqual(download.call_args.kwargs, {"expected": 16, "media_id": "media"})
+            request.assert_not_awaited()
+
     async def test_recovery_uses_original_video_for_the_matching_workflow(self):
         from gflow_cli.api.transports.migrated_recover import _await_signed_record
         callbacks = {}
@@ -89,3 +124,33 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(error)
         panel.click.assert_awaited_once()
         chip.click.assert_awaited_once()
+
+@unittest.skipIf(MigratedComposer is None, "Requires the shadow image's pinned gflow")
+class VideoRecordTest(unittest.TestCase):
+    def record(self, model="veo_3_1_i2v_s_fast_portrait", marker=None):
+        ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"]
+        details = [None] * 14
+        details[6] = [None, [[model, 2, [1], None, 1, 1]]]
+        details[8] = [3]
+        details[13] = 1718989
+        media = [None] * 13
+        media[8] = "https://flow-content.google/video/workflow"
+        media[12] = model
+        return ids + [marker, None, details, None, [media, [None, None, [8]]]]
+
+    def test_null_marker_video_reply_is_decoded(self):
+        from gflow_cli.api.transports.batchexecute import generation_record
+        result = generation_record("as29s", self.record())
+        self.assertEqual(result.status, 3)
+        self.assertEqual(result.size_bytes, 1718989)
+        self.assertEqual(result.video_url, "https://flow-content.google/video/workflow")
+
+    def test_null_marker_without_video_model_is_rejected(self):
+        from gflow_cli.api.transports.batchexecute import generation_record
+        from gflow_cli.exceptions import WireFormatError
+        with self.assertRaises(WireFormatError):
+            generation_record("as29s", self.record(model="image-model"))
+
+    def test_original_cae_reply_still_decodes(self):
+        from gflow_cli.api.transports.batchexecute import generation_record
+        self.assertEqual(generation_record("as29s", self.record(marker="CAE")).status, 3)
