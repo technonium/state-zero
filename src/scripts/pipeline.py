@@ -2187,6 +2187,22 @@ class WHOOPPipeline:
 
     def step_2_3_lookups(self) -> dict:
         # No more --test flag or mock data - always fetch real WHOOP data
+        if env_bool('FLOW_SHADOW_WHOOP_PREFETCHED', default=False):
+            try:
+                with open(self.output_dir / 'daily_data.json', encoding='utf-8') as handle:
+                    daily_data = json.load(handle)
+                if daily_data.get('date') != self.run_date:
+                    raise ValueError('Prefetched WHOOP data date does not match this pipeline run.')
+                print(f"{Fore.GREEN}✅ Using the shadow runner's validated WHOOP snapshot for {self.run_date}{Style.RESET_ALL}")
+                return daily_data
+            except Exception as e:
+                raise PipelineStageError(
+                    stage='Data Retrieve & Dasha Lookups',
+                    message='Validated shadow WHOOP snapshot is unavailable or invalid.',
+                    details=str(e),
+                    fallback_eligible=False,
+                ) from e
+
         args = []
 
         target_date = os.getenv('PIPELINE_DATE')

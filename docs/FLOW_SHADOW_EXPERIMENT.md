@@ -51,7 +51,7 @@ WHOOP_CLIENT_ID=<shadow OAuth app ID>
 WHOOP_CLIENT_SECRET=<shadow OAuth app secret>
 ```
 
-The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. The runner's atomic per-date marker independently blocks repeated attempts, including failures and concurrent invocations. It refuses dates outside the seven-day window.
+The runner rejects `INSTAGRAM_*`, `VPS_*`, `TELEGRAM_*`, and `GOOGLE_API_KEY_*` values. Use only the two `SHADOW_ALERT_*` values for Telegram; the pipeline's normal Telegram variables must remain absent. Do not mount SSH keys. Keep the service's environment and volume access restricted. Disable Docker/Dokploy automatic command retries. A nonblocking runner lock serializes schedule ticks; WHOOP readiness checks do not claim the date. Once ready data is confirmed, the atomic per-date marker blocks repeated generation after complete, failed, or uncertain attempts. The seven-day summary is a review checkpoint; dates continue after day seven.
 
 `PROMPT_GOOGLE_API_KEY` is for Gemini prompt fallback only; it does not enable API media generation. The runner requires this key and the 200-second OpenRouter deadline. A timed-out prompt call is retried once on OpenRouter; a second timeout goes to Gemini. Other OpenRouter errors go directly to Gemini. Run only one Chrome or gflow process against the persistent profile at a time. When moving the same profile volume between containers, verify the previous Chrome process is gone before clearing stale `Singleton*` links.
 
@@ -107,13 +107,13 @@ With the login window closed, run `xvfb-run -a python3 /app/ops/flow_shadow_pref
 
 Before generating a new clip, test `ops/flow_video_upscale.py` against one of the two **existing** Flow clip IDs recorded in the local review files. Run it under `xvfb-run` with the signed-in profile, the project ID, and a path in the new shadow private volume. It clicks Download → 1080p only if that option is visible. A status of `not_offered` is expected after Pro access ends; `download_unavailable` needs visual inspection before scheduling. No generation button is used. Validate the resulting file with `ffprobe` for 1080×1920, eight seconds, and audio. The trial adapter repeats this attempt per clip and falls back to local 720p scaling when it cannot validate a Flow 1080p file.
 
-Before adding a schedule, invoke the new Compose service's command once:
+After credentials and the fresh-container preflight are ready, run one supervised smoke generation from the existing service. The `--manual` option only bypasses the schedule-time gate; it does not bypass WHOOP readiness, the browser preflight, or the one-attempt-per-date guard:
 
 ```text
-xvfb-run -a python3 -u /app/ops/flow_shadow_run.py
+xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual
 ```
 
-The runner claims the day's attempt marker, then repeats the zero-credit preflight. A failed preflight records that date as failed and sends a sign-in alert; it does not generate. When it passes, the run requests one `nano2` 3:4 image and one `veo-fast` 9:16 image-to-video clip using the local 1080×1920 black-padded frame and `--count 1`. This account has no duration control, so the command omits `--duration`; the adapter still rejects a clip outside 7.5–8.5 seconds. **Do not blindly resubmit an uncertain generation.**
+The runner checks WHOOP first, then claims the date and repeats the zero-credit preflight. A failed preflight records that date as failed and sends a sign-in alert; it does not generate. When it passes, the run requests one `nano2` 3:4 image and one `veo-fast` 9:16 image-to-video clip using the local 1080×1920 black-padded frame and `--count 1`. This account has no duration control, so the command omits `--duration`; the adapter still rejects a clip outside 7.5–8.5 seconds. **Do not blindly resubmit an uncertain generation.**
 
 For the smoke result, inspect `$STATE_ZERO_PRIVATE_ROOT/runtime/output/YYYY-MM-DD/shadow_report.json` and the private `shadow_pipeline.log`, then view:
 
@@ -124,4 +124,4 @@ For the smoke result, inspect `$STATE_ZERO_PRIVATE_ROOT/runtime/output/YYYY-MM-D
 
 The CLI's 2K image upscale is conditional on `FLOW_IMAGE_UPSCALE_2K=true`. It is off for this migrated account because both earlier images were 896×1200 and no usable 2K export was available. The original remains and the report marks `flow_2k_upscaled=false`. Do not mistake local resizing for restored detail. If the original is too soft in the card, reject this replacement or change the image source deliberately.
 
-## Seven-day schedule and review
+## Daily schedule and seven-day review
