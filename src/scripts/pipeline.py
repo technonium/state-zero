@@ -33,6 +33,7 @@ from utils import (
     is_terminal_rescue_run as infer_terminal_rescue_run,
     resolve_instagram_publish_strategy,
 )
+from portfolio_metadata import build_metadata, publish_metadata
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
 from daily_run_state import DailyRunStateManager, OwnershipLostError
@@ -1368,7 +1369,7 @@ class WHOOPPipeline:
                 if not finalized:
                     raise RuntimeError(f'Archive/database verification incomplete for {self.run_date}.')
 
-                self._run_portfolio_media_secondary(art_path=art_path, video_path=video_path)
+                self._run_portfolio_media_secondary(art_path=art_path, video_path=video_path, post_result=post_result, title=metadata.get('title'))
 
                 # Send dry-run completion notification if not posting
                 if not self.post_to_instagram:
@@ -2593,19 +2594,46 @@ class WHOOPPipeline:
             )
         return urls
 
+    def _publish_portfolio_metadata(self, *, post_result: dict | None, title: str | None) -> None:
+        if not self.post_to_instagram:
+            return
+        payload = build_metadata(date=self.run_date, title=title, post_result=post_result,
+                                 base_url=os.getenv('VPS_PUBLIC_BASE_URL'))
+        self._ensure_public_urls_reachable((
+            ('video', 'dated portfolio light', payload['lightVideoUrl']),
+            ('video', 'dated portfolio dark', payload['darkVideoUrl']),
+        ))
+        if self.media_mode == 'local_test':
+            publish_metadata(payload, self.local_vps_dir)
+        else:
+            config_error = get_live_vps_config_error()
+            if config_error:
+                raise RuntimeError(config_error)
+            root = Path(os.environ['VPS_SSH_PATH'])
+            if root.exists():
+                publish_metadata(payload, root)
+            else:
+                strict = (os.getenv('STATE_ZERO_SSH_STRICT_HOST_KEY_CHECKING') or 'accept-new').strip()
+                if strict not in {'yes', 'accept-new'}:
+                    strict = 'accept-new'
+                publish_metadata(payload, root,
+                                 target=f"{os.environ['VPS_SSH_USER']}@{os.environ['VPS_SSH_HOST']}",
+                                 ssh_opts=['-o', f'StrictHostKeyChecking={strict}'])
+
     def _run_portfolio_media_secondary(
         self,
         *,
         art_path: Path | None = None,
         video_path: Path | None = None,
         fallback_manager=None,
+        post_result: dict | None = None,
+        title: str | None = None,
     ) -> None:
         """Best-effort portfolio delivery; never affect a completed Instagram post."""
         # A few recovery/test paths construct the pipeline without __init__.
         # Missing state must preserve the public default: feature disabled.
         if not getattr(self, 'portfolio_media_enabled', False):
             return
-        notifier = get_notifier()
         try:
             if fallback_manager is not None:
                 portfolio_dir = fallback_manager.copy_portfolio_to_run_output(self.output_dir)
@@ -2618,6 +2646,7 @@ class WHOOPPipeline:
 
             if self.post_to_instagram:
                 urls = self.step_17_upload_portfolio_vps(portfolio_dir)
+                self._publish_portfolio_metadata(post_result=post_result, title=title)
                 print(f"{Fore.GREEN}✅ Portfolio media ready: {urls['dark.mp4']}{Style.RESET_ALL}")
             else:
                 print(f"{Fore.GREEN}✅ Portfolio media rendered locally: {portfolio_dir}{Style.RESET_ALL}")
@@ -2626,7 +2655,7 @@ class WHOOPPipeline:
             # Notification delivery is also secondary; never let it turn a
             # confirmed Instagram/archive success into a failed pipeline run.
             try:
-                notifier.notify_warning(
+                get_notifier().notify_warning(
                     run_date=self.run_date,
                     step='Portfolio Media',
                     message='Portfolio media failed after the primary Instagram flow completed.',
@@ -3073,7 +3102,7 @@ class WHOOPPipeline:
 
             # The fallback Instagram post is now confirmed. Portfolio sidecars
             # are optional and must never change the fallback's success state.
-            self._run_portfolio_media_secondary(fallback_manager=manager)
+            self._run_portfolio_media_secondary(fallback_manager=manager, post_result=post_result, title=manifest['title'])
 
             return True
         except FallbackUnavailableError as e:
