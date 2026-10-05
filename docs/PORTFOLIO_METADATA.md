@@ -1,16 +1,78 @@
-# Portfolio metadata feed
+# Portfolio media and metadata
 
-After a confirmed Instagram post and successful portfolio upload, State Zero
-publishes `/portfolio/YYYY-MM-DD/metadata.json` and `/portfolio/latest/metadata.json`
-under `VPS_PUBLIC_BASE_URL`. This includes successful emergency fallback posts.
+Set `PORTFOLIO_MEDIA_ENABLED=true` in the private runtime environment to render
+light and dark portfolio variants. The feature is disabled by default.
 
-Schema version 1 contains only `schemaVersion`, `date`, `title`, `instagramUrl`,
-`lightVideoUrl`, and `darkVideoUrl`. Video URLs always point to the dated archive.
-Consumers should fetch latest metadata on their regular refresh, then use its URLs
-together. No additional Instagram lookup is needed.
+## Media files
 
-Both dated videos must be publicly reachable before metadata is published. Files
-are replaced atomically, dated first and latest last. Failed metadata delivery
-retains the previous latest feed and cannot retry or invalidate an Instagram post.
-Posting-disabled runs publish no feed. No new environment variables are needed.
-The first qualifying post after deployment creates the feed; there is no backfill.
+Each run renders from the source artwork and video, keeping the date, metric
+arcs, title, and artwork without the Instagram footer. Files are stored under
+`$STATE_ZERO_PRIVATE_ROOT/runtime/output/YYYY-MM-DD/portfolio/`:
+
+| Files | Format |
+| --- | --- |
+| `light.webp`, `dark.webp` | 1080×1701 stills |
+| `light.mp4`, `dark.mp4` | 720×1134 H.264 videos, at most 1,500,000 bytes each |
+
+Videos retain source audio when present and use `yuv420p`, fast-start playback,
+BT.709 primaries/matrix, sRGB transfer, and limited range.
+
+Posting-enabled runs upload the files to the dated archive and `latest` aliases
+using the existing VPS configuration. Posting-disabled runs keep the renders
+private and publish no metadata. Portfolio rendering, delivery, and notification
+failures cannot retry or invalidate a successful Instagram post.
+
+## Public feed
+
+After confirmed Instagram publication and successful portfolio upload, the
+pipeline publishes these paths under the configured `VPS_PUBLIC_BASE_URL`:
+
+```text
+/portfolio/YYYY-MM-DD/metadata.json
+/portfolio/latest/metadata.json
+```
+
+Schema version 1 contains exactly six fields:
+
+```json
+{
+  "schemaVersion": 1,
+  "date": "YYYY-MM-DD",
+  "title": "Actual artwork title",
+  "instagramUrl": "https://www.instagram.com/p/POST_ID/",
+  "lightVideoUrl": "https://media.example.com/portfolio/YYYY-MM-DD/light.mp4",
+  "darkVideoUrl": "https://media.example.com/portfolio/YYYY-MM-DD/dark.mp4"
+}
+```
+
+The example host is a placeholder; exports use `VPS_PUBLIC_BASE_URL`, including
+any configured path prefix. The title and permalink come from the same published
+run. No additional Instagram lookup or credentials are needed for consumers.
+
+Fetch `latest/metadata.json` on refresh, then use its dated video URLs together
+with its Instagram permalink. Matching WebP posters are available beside those
+videos. Avoid independently combining `latest` media aliases and an Instagram
+link: the aliases may change between requests.
+
+A valid published permalink and both publicly reachable dated videos are
+required before metadata is written. Replacement is atomic per file, dated first
+and latest last. Missing inputs or failed delivery leave the previous latest feed
+intact. The first qualifying post creates the feed; existing dates are not
+backfilled automatically. Only the fields above are public; private inputs and
+runtime state remain outside the repository and public media directory.
+
+## Emergency posts
+
+If prebuilt portfolio sidecars exist under
+`$STATE_ZERO_PRIVATE_ROOT/runtime/fallback/error_404_v1/portfolio/`, a successful
+emergency post copies them into its dated portfolio directory and publishes them
+through the same path. Metadata uses the fallback manifest's actual title and
+the successful post's permalink. Missing sidecars do not prevent the emergency
+Instagram post.
+
+## Implementation
+
+- [Portfolio renderer](../src/scripts/portfolio_media.py)
+- [Metadata validation and atomic delivery](../src/scripts/portfolio_metadata.py)
+- [Pipeline integration](../src/scripts/pipeline.py)
+- [Emergency fallback manager](../src/scripts/emergency_fallback_manager.py)
