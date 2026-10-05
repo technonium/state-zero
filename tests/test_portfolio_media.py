@@ -25,6 +25,7 @@ from portfolio_media import (
     PORTFOLIO_W,
     _source_scale_options,
     render_variants,
+    render_video,
 )
 
 
@@ -54,6 +55,37 @@ class PortfolioMediaTests(unittest.TestCase):
             )
             self.assertEqual(_source_scale_options(untagged), ":in_color_matrix=bt709:in_range=tv")
             self.assertEqual(_source_scale_options(tagged), "")
+
+    def _assert_video_background(self, path: Path, theme: str):
+        expected = (252, 252, 252) if theme == "light" else (13, 13, 13)
+        for timestamp in ("0.2", "1.0", "1.7"):
+            decoded = subprocess.run(
+                ["ffmpeg", "-v", "error", "-ss", timestamp, "-i", str(path),
+                 "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
+                check=True, capture_output=True,
+            )
+            frame = Image.frombytes("RGB", (PORTFOLIO_VIDEO_W, PORTFOLIO_VIDEO_H), decoded.stdout)
+            for point in ((20, 20), (PORTFOLIO_VIDEO_W - 20, 20),
+                          (20, PORTFOLIO_VIDEO_H - 20),
+                          (PORTFOLIO_VIDEO_W - 20, PORTFOLIO_VIDEO_H - 20)):
+                with self.subTest(theme=theme, timestamp=timestamp, point=point):
+                    self.assertEqual(frame.getpixel(point), expected)
+
+    def test_normal_videos_preserve_frame_background_colors(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source = root / "source.mp4"
+            self._make_video(source)
+            tagged_source = root / "tagged-source.mp4"
+            subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", str(source), "-c", "copy", "-bsf:v",
+                 "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1",
+                 str(tagged_source)], check=True,
+            )
+            for theme in ("light", "dark"):
+                output = root / f"{theme}.mp4"
+                render_video(tagged_source, output, {"date": "05 OCT 2026", "title": "COLOR CHECK"}, theme)
+                self._assert_video_background(output, theme)
 
     def test_fallback_variants_are_small_and_keep_audio(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -113,13 +145,15 @@ class PortfolioMediaTests(unittest.TestCase):
                 probe = subprocess.run(
                     [
                         "ffprobe", "-v", "error", "-show_entries",
-                        "stream=codec_name,codec_type,width,height,r_frame_rate,pix_fmt,color_range,color_space,color_transfer,color_primaries", "-of", "json", str(mp4),
+                        "stream=codec_name,codec_type,width,height,r_frame_rate,pix_fmt,color_range,color_space,color_transfer,color_primaries:format=duration", "-of", "json", str(mp4),
                     ],
                     capture_output=True,
                     text=True,
                     check=True,
                 )
-                streams = json.loads(probe.stdout)["streams"]
+                payload = json.loads(probe.stdout)
+                self.assertAlmostEqual(float(payload["format"]["duration"]), 2.0, places=1)
+                streams = payload["streams"]
                 video = next(stream for stream in streams if stream["codec_type"] == "video")
                 audio = next(stream for stream in streams if stream["codec_type"] == "audio")
                 self.assertEqual(video["codec_name"], "h264")
@@ -131,6 +165,7 @@ class PortfolioMediaTests(unittest.TestCase):
                     {"color_range": "tv", "color_space": "bt709", "color_transfer": "iec61966-2-1", "color_primaries": "bt709"},
                 )
                 self.assertEqual(audio["codec_name"], "aac")
+                self._assert_video_background(mp4, theme)
                 frame_path = root / f"{theme}-frame.png"
                 subprocess.run(
                     ["ffmpeg", "-y", "-ss", "0.5", "-i", str(mp4), "-frames:v", "1", str(frame_path)],
