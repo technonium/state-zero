@@ -131,7 +131,6 @@ Everything else is in the docs:
 
 - [`docs/PIPELINE_SPEC.md`](docs/PIPELINE_SPEC.md) - full architecture and pipeline reference
 - [`docs/STATE_ZERO_RULEBOOK.md`](docs/STATE_ZERO_RULEBOOK.md) - the visual and conceptual rules
-- [`docs/PORTFOLIO_METADATA.md`](docs/PORTFOLIO_METADATA.md) - portfolio media formats and public metadata feed
 - [`astrology_generator/ASTROLOGY_GENERATOR.md`](astrology_generator/ASTROLOGY_GENERATOR.md) - astrology setup guide
 
 ---
