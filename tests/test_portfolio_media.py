@@ -47,6 +47,7 @@ class PortfolioMediaTests(unittest.TestCase):
         for timestamp in ("0.2", "1.0", "1.7"):
             decoded = subprocess.run(
                 ["ffmpeg", "-v", "error", "-ss", timestamp, "-i", str(path),
+                 "-vf", "scale=in_color_matrix=bt709:in_range=tv:out_range=pc:flags=accurate_rnd+full_chroma_int",
                  "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"],
                 check=True, capture_output=True,
             )
