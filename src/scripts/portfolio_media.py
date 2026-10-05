@@ -194,7 +194,7 @@ def _video_filter(theme: str, fallback_card: bool, source_scale_options: str = "
         f"[base][art]overlay={ART_X}:{ART_Y}[card];"
         # Do not impose a delivery frame rate: the portfolio video keeps the
         # source cadence (the supplied fallback is 25 fps).
-        f"[card][1:v]overlay=0:0,"
+        f"[card][1:v]overlay=0:0:format=rgb,"
         f"scale={PORTFOLIO_VIDEO_W}:{PORTFOLIO_VIDEO_H}:out_color_matrix=bt709:out_range=tv,"
         "format=yuv420p[v]"
     )
