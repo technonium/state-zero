@@ -155,7 +155,9 @@ class PortfolioMediaTests(unittest.TestCase):
                 self._assert_video_background(mp4, theme)
                 frame_path = root / f"{theme}-frame.png"
                 subprocess.run(
-                    ["ffmpeg", "-y", "-ss", "0.5", "-i", str(mp4), "-frames:v", "1", str(frame_path)],
+                    ["ffmpeg", "-y", "-ss", "0.5", "-i", str(mp4),
+                     "-vf", "scale=in_color_matrix=bt709:in_range=tv:out_range=pc:flags=accurate_rnd+full_chroma_int",
+                     "-frames:v", "1", str(frame_path)],
                     check=True,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
