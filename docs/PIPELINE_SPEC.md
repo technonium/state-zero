@@ -136,7 +136,7 @@ PIPELINE_MODE=telegram    # Mode 2
 
 ### Optional portfolio media
 
-When `PORTFOLIO_MEDIA_ENABLED=true`, a successful run writes these private artifacts and publishes matching VPS date/latest paths without changing the Instagram card:
+When `PORTFOLIO_MEDIA_ENABLED=true`, a successful run writes these private artifacts without changing the Instagram card. Posting-enabled runs also publish matching VPS date/latest media; posting-disabled runs keep them private. See the [portfolio media and metadata contract](PORTFOLIO_METADATA.md) for the public feed and dated consumer URLs:
 
 ```text
 runtime/output/YYYY-MM-DD/portfolio/{light,dark}.{webp,mp4}
@@ -314,8 +314,8 @@ If the fallback package itself is broken or the fallback publish attempt fails, 
    - Dokploy run log / error message
    - any partial Instagram permalink if one exists
 2. If the issue cannot be fixed quickly, manually post the already-hosted fallback assets:
-   - `https://state-zero-media.notanother.in/fallback/error_404_v1/card.mp4`
-   - `https://state-zero-media.notanother.in/fallback/error_404_v1/card.png`
+   - `<VPS_PUBLIC_BASE_URL>/fallback/error_404_v1/card.mp4`
+   - `<VPS_PUBLIC_BASE_URL>/fallback/error_404_v1/card.png`
 3. Use the fixed fallback caption:
 
 ```text
@@ -352,7 +352,7 @@ Important:
 
 ### Data Dependency Hierarchy
 
-This is the exact order in which data feeds into data. The coding agent must not invert any dependency:
+The pipeline follows this dependency order:
 
 ```
 WHOOP: Strain → energy zone (needed before environment prompt)
@@ -517,7 +517,7 @@ python3 src/scripts/lookups.py --output output/daily_data.json
 
 #### ⏰ CRITICAL: Data Timing Logic
 
-**When the pipeline runs** (CRON time TBD, likely daily in India time):
+**At each scheduled pipeline check:**
 
 At the moment you wake up:
 - **TODAY's Strain** = 0 (you just woke up, no activity accumulated yet)
@@ -1344,41 +1344,17 @@ does not reliably renew the publishing token type.
 - `avoid` array items MUST be negative prompts in image generator (if supported), not positive text
 - Material quality is deterministic from environment materials column
 
-Full rulebook: `../STATE_ZERO_RULEBOOK.md`
-
----
-
-## VERSION HISTORY
-
-**v2.0.0 (Current)** — Comprehensive rewrite addressing:
-- Fixed duplicate Step 5c labels
-- **Changed blend option to AI-driven selection** (was deterministic keyword matching, now LLM chooses based on full scene)
-- **Added critical data timing logic:** Strain from YESTERDAY, Recovery/Sleep from TODAY, Dasha for TODAY
-- **Made LLM-agnostic:** Removed hardcoded references to Claude, NanaBananaPro, VEO3 — now generic LLM/image/video generation
-- **Extracted prompt templates to separate files:** Applied hybrid documentation approach
-- Added full prompt template specifications for all 6 AI prompts
-- Emphasized depth keywords (spatial) vs art keywords (atmospheric) distinction
-- Added explicit negative prompts deployment instruction for image generators
-- Added Crystalline environment override note in blend options
-- Filled TBD caption format with concrete example
-- Added SQLite database schema and implementation
-- Added materials column explicit mapping instruction
-- Restructured Step 5 with clearer sub-steps
-- Added error handling for date out of range
-- Strengthened required vs forbidden language enforcement
-- Added card metadata extraction as separate step
-
-**v1.0.0** — Initial pipeline specification
+Full rulebook: [State Zero rulebook](STATE_ZERO_RULEBOOK.md).
 
 ---
 
 ### Deployment Readiness
 
-For standalone deployment, ensure the following directory structure exists at the project root:
+For standalone deployment, keep source files in the repository and supply credentials through private environment settings. Local installations may use an ignored `.env`:
 
 ```text
 /project-root/
-├── .env                         # Required API keys and local config
+├── .env                         # Optional local config; never commit
 ├── docs/
 │   ├── PIPELINE_SPEC.md
 │   └── STATE_ZERO_RULEBOOK.md
