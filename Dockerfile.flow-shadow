@@ -16,9 +16,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Reviewed develop commit, 2026-09-27. Rebuild and repeat the live gate before changing it.
-ARG GFLOW_COMMIT=88ff5371c25551af28ab748691f70d32e33ab37c
-RUN pip install --no-cache-dir "playwright==1.61.0" \
+# Reviewed v0.82.1 release. Rebuild and repeat the live gate before changing it.
+ARG GFLOW_COMMIT=5ea53ddf638d8392907d7ec70c5fdbe58ec5fe41
+RUN pip install --no-cache-dir "playwright==1.61.0" "urllib3>=2.8.0" "PyJWT>=2.15.1" \
     "gflow-cli @ git+https://github.com/ffroliva/gflow-cli.git@${GFLOW_COMMIT}"
 
 COPY . .
@@ -36,6 +36,7 @@ ENV PYTHONUNBUFFERED=1 \
     GFLOW_CLI_HEADLESS=false \
     GFLOW_CLI_UPDATE_CHECK=0 \
     GFLOW_CLI_HISTORY_PROMPTS=redacted \
+    GFLOW_CLI_BROWSER_WINDOW_POSITION=0,0 \
     GFLOW_PROFILE=shadow \
     STATE_ZERO_PRIVATE_ROOT=/opt/state-zero-flow-shadow \
     GFLOW_CLI_HOME=/opt/state-zero-flow-profile \

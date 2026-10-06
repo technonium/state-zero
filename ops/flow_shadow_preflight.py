@@ -30,7 +30,7 @@ def classify_editor(
 
 
 async def inspect_editor(project_id: str, profile: str) -> tuple[str, str | None, str | None]:
-    from gflow_cli.api.image import Aspect as ImageAspect, GenerateImageRequest
+    from gflow_cli.api.image import Aspect as ImageAspect, GenerateImageRequest, Model as ImageModel
     from gflow_cli.api.video import Aspect as VideoAspect, GenerateVideoRequest, Mode, VideoModel
     from gflow_cli.browser_manager import channel_for_profile
     from gflow_cli.config import get_settings
@@ -87,7 +87,7 @@ async def inspect_editor(project_id: str, profile: str) -> tuple[str, str | None
             checks = (
                 ("image_settings", lambda page: MigratedComposer().apply_image_settings(
                     page, GenerateImageRequest(prompt="preflight only",
-                                               aspect=ImageAspect.PORTRAIT_THREE_FOUR, count=1))),
+                                               aspect=ImageAspect.PORTRAIT_THREE_FOUR, model=ImageModel.NARWHAL, count=1))),
                 ("video_settings", lambda page: MigratedComposer().apply_video_settings(
                     page, GenerateVideoRequest(prompt="preflight only", mode=Mode.I2V,
                                                aspect=VideoAspect.PORTRAIT,
@@ -111,10 +111,11 @@ async def inspect_editor(project_id: str, profile: str) -> tuple[str, str | None
 
 def main() -> int:
     os.umask(0o077)
-    private_root = Path(os.environ["STATE_ZERO_PRIVATE_ROOT"]).resolve()
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src/scripts"))
+    from utils import get_state_root
     project_id = os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip()
     profile = os.getenv("GFLOW_PROFILE", "shadow").strip()
-    report_path = private_root / "runtime" / "state" / "flow_shadow" / "preflight.json"
+    report_path = get_state_root() / "flow_shadow" / "preflight.json"
     report_path.parent.mkdir(parents=True, exist_ok=True)
     if not project_id:
         status, failed_check, error_type = "project_id_missing", None, None

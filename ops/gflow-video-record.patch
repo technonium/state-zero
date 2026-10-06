@@ -1,6 +1,8 @@
+diff --git a/src/gflow_cli/api/transports/batchexecute.py b/src/gflow_cli/api/transports/batchexecute.py
+index fc9a11c9..7e17901f 100644
 --- a/src/gflow_cli/api/transports/batchexecute.py
 +++ b/src/gflow_cli/api/transports/batchexecute.py
-@@ -134,8 +134,15 @@
+@@ -185,8 +185,15 @@ def rpc_errors(text: str) -> list[RpcError]:
  
  
  def _is_record(node: list[Any]) -> bool:

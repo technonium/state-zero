@@ -1,6 +1,8 @@
+diff --git a/src/gflow_cli/api/transports/migrated_composer.py b/src/gflow_cli/api/transports/migrated_composer.py
+index 381428f7..f67ed0e9 100644
 --- a/src/gflow_cli/api/transports/migrated_composer.py
 +++ b/src/gflow_cli/api/transports/migrated_composer.py
-@@ -814,29 +814,71 @@
+@@ -921,49 +921,71 @@ def _r2v_body_problem(body: str, rpcid: str, media_ids: tuple[str, ...]) -> str
      return None
  
  
@@ -55,9 +57,23 @@
 -        )
 +        return "migrated host: image submit is missing an uploaded reference"
      return None
-+
-+
-+async def _guard_shadow_image_submit(route: Any, raw_request: Any,
+ 
+ 
+-async def _guard_image_submit(
+-    route: Any,
+-    request: Any,
+-    reference_ids: tuple[str, ...],
+-    model: ImageModel | None,
+-) -> str | None:
+-    """Abort an ``ogiZ0b`` submit that does not carry its references, before Flow acts.
+-
+-    The observer path (``_image_body_problem`` in ``on_request``) only refuses to *report*
+-    such a run: by then Flow has generated it, spent quota and added an image (#913,
+-    SCENARIO #15). Returns the problem when aborted, ``None`` when let through.
+-    """
+-    problem = _image_body_problem(_post_data(request), reference_ids, model)
+-    if problem is not None:
++async def _guard_image_submit(route: Any, raw_request: Any,
 +                                     reference_ids: tuple[str, ...], model: ImageModel | None) -> str | None:
 +    body = _post_data(raw_request)
 +    problem = _image_body_problem(body, reference_ids, model)
@@ -79,7 +95,10 @@
 +            json.dump(evidence, handle)
 +        os.replace(temporary, target)
 +    if problem:
-+        await route.abort()
+         await route.abort()
+-        return problem
+-    await route.continue_()
+-    return None
 +    else:
 +        # Recorded before forwarding: a crash after this point stays uncertain.
 +        await route.continue_()
@@ -87,7 +106,7 @@
  
  
  def _redacted_page_url(page: Any) -> str:
-@@ -1777,7 +1819,14 @@
+@@ -1904,7 +1926,14 @@ class MigratedComposer:
                  remediation_hint="Choose one offered image model or omit --model.",
              )
          await items.nth(hits[0]).click(timeout=4000)
@@ -103,30 +122,29 @@
  
      # --- start frame (i2v) ------------------------------------------------------
  
-@@ -2767,9 +2816,18 @@
-                 return
-             result.set_result(images)
- 
-+        def is_image_submit(url: str) -> bool:
-+            return _rpcid(url) == IMAGE_SUBMIT_RPC
-+
-+        async def guard(route: Any, raw_request: Any) -> None:
-+            problem = await _guard_shadow_image_submit(route, raw_request, reference_ids, request.model)
-+            if problem is not None and not route_error.done():
-+                route_error.set_result(WireFormatError(detail=problem, route=f"batchexecute:{IMAGE_SUBMIT_RPC}"))
-+
+@@ -3044,8 +3073,7 @@ class MigratedComposer:
          page.on("request", on_request)
          page.on("response", on_response)
          try:
+-            if reference_ids:
+-                await page.route(is_image_submit, guard)
 +            await page.route(is_image_submit, guard)
              enable_deadline = time.monotonic() + SUBMIT_ENABLE_BUDGET_S
              while not await submit.is_enabled():
                  if time.monotonic() >= enable_deadline:
-@@ -2804,6 +2862,7 @@
+@@ -3080,11 +3108,10 @@ class MigratedComposer:
                  result.exception()
              page.remove_listener("request", on_request)
              page.remove_listener("response", on_response)
-+            await page.unroute(is_image_submit, guard)
+-            if reference_ids:
+-                try:
+-                    await page.unroute(is_image_submit, guard)
+-                except Exception as exc:  # noqa: BLE001 - must not mask the real outcome
+-                    log.debug("migrated.image_submit_unroute_failed", error=type(exc).__name__)
++            try:
++                await page.unroute(is_image_submit, guard)
++            except Exception as exc:  # noqa: BLE001 - must not mask the real outcome
++                log.debug("migrated.image_submit_unroute_failed", error=type(exc).__name__)
  
      @staticmethod
      async def _await_terminal(

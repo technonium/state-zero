@@ -230,3 +230,15 @@ A later production cutover is separate from this shadow setup. The pipeline's
 API provider remains the default; media fallback and publishing require explicit
 production configuration. Browser automation and Google's account/UI changes
 remain operational risks that require monitoring.
+
+## CLI upgrade validation
+
+The shadow image pins gflow-cli v0.82.1 and Playwright 1.61.0. Local patches preserve Nano Banana 2 request validation, submission evidence, and recovery of an existing clip.
+
+After a CLI upgrade, run one supervised full validation with a unique ID:
+
+```sh
+xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual --validation-id v0821-validation
+```
+
+Files, pipeline state, and the archive use `runtime/validation/<id>/`. The validation shares the daily runner's execution lock, canonical WHOOP token, and Chrome profile. An ID can submit only once across all dates. Existing daily files and claims remain intact. Reports distinguish validation from scheduled runs and record installed versions. Compare five to seven fresh scheduled dates after the upgrade; a supervised validation does not count as an unattended run.
