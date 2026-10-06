@@ -1,8 +1,8 @@
 diff --git a/src/gflow_cli/api/transports/migrated_composer.py b/src/gflow_cli/api/transports/migrated_composer.py
-index 5f8a8635..6993c853 100644
+index 6b253ff3..1cda9409 100644
 --- a/src/gflow_cli/api/transports/migrated_composer.py
 +++ b/src/gflow_cli/api/transports/migrated_composer.py
-@@ -1153,12 +1153,8 @@ class MigratedComposer:
+@@ -1280,12 +1280,8 @@ class MigratedComposer:
          own exception, so the caller can chain it instead of truncating it into a warning
          nobody reads.
          """
@@ -17,7 +17,7 @@ index 5f8a8635..6993c853 100644
          panel_close = (
              page.locator("flow-agent-panel button").filter(has=_ligature(page, "close")).first
          )
-@@ -1169,6 +1165,11 @@ class MigratedComposer:
+@@ -1296,6 +1292,11 @@ class MigratedComposer:
          except Exception as e:  # noqa: BLE001 - best-effort panel cleanup
              log.warning("migrated.agent_panel_close_failed", error=str(e)[:200])
  
@@ -29,7 +29,7 @@ index 5f8a8635..6993c853 100644
          try:
              await page.locator(AGENT_MODE_CHIP).first.click(timeout=5000)
          except Exception as e:  # noqa: BLE001 - the caller decides what it means
-@@ -2900,7 +2901,14 @@ class MigratedComposer:
+@@ -3181,7 +3182,14 @@ class MigratedComposer:
                  ),
                  route="batchexecute:as29s",
              )

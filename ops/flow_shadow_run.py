@@ -25,7 +25,7 @@ LOOKUP_PENDING = 2
 LOOKUP_RETRYABLE = 3
 LOOKUP_TERMINAL = 4
 sys.path.insert(0, str(ROOT / "src" / "scripts"))
-from utils import get_pipeline_run_date_str
+from utils import get_pipeline_run_date_str, get_output_root, get_state_root, get_database_root
 
 
 def validate_shadow_environment() -> Path:
@@ -413,7 +413,7 @@ def _trial_summary(state: Path, start: date) -> str:
 
 
 def maybe_send_trial_summary(state: Path, start: date, current: date) -> bool:
-    if trial_day_number(start, current) < 7:
+    if os.getenv("FLOW_SHADOW_VALIDATION_ID") or trial_day_number(start, current) < 7:
         return False
     marker = state / "trial_summary_sent.json"
     if marker.exists():
@@ -438,7 +438,7 @@ def _record_final_miss(state: Path, run_date: str, status: str) -> None:
     )
 
 
-def _handle_existing_date_marker(state: Path, marker: Path, run_date: str, start: date, current: date, final_check: bool) -> None:
+def _handle_existing_date_marker(state: Path, marker: Path, run_date: str, start: date, current: date, final_check: bool) -> str | None:
     try:
         existing = json.loads(marker.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -460,16 +460,50 @@ def _handle_existing_date_marker(state: Path, marker: Path, run_date: str, start
     if trial_day_number(start, current) >= 7:
         maybe_send_trial_summary(state, start, current)
 
+    return status
+
+
+def _runtime_versions(private_root: Path) -> dict:
+    from importlib.metadata import distribution, version, PackageNotFoundError
+    values = {}
+    for name in ("gflow-cli", "playwright"):
+        try:
+            values[name] = version(name)
+        except PackageNotFoundError:
+            values[name] = "unavailable"
+    try:
+        direct = json.loads(distribution("gflow-cli").read_text("direct_url.json") or "{}")
+        values["gflow_commit"] = direct.get("vcs_info", {}).get("commit_id")
+    except (PackageNotFoundError, ValueError):
+        values["gflow_commit"] = None
+    try:
+        result = subprocess.run(["google-chrome", "--version"], capture_output=True, text=True, timeout=10)
+        values["chrome"] = result.stdout.strip() if result.returncode == 0 else "unavailable"
+    except (OSError, subprocess.TimeoutExpired):
+        values["chrome"] = "unavailable"
+    deployment = private_root / "runtime/state/flow_shadow/deployment_version.json"
+    try:
+        values["state_zero_commit"] = json.loads(deployment.read_text()).get("state_zero_commit")
+    except (OSError, ValueError):
+        values["state_zero_commit"] = None
+    return values
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the isolated Oracle Flow pipeline")
     parser.add_argument("--final-check", action="store_true", help="record a missed date if WHOOP data is still unavailable")
+    parser.add_argument("--validation-id", help="one supervised full run with isolated artifacts and archive")
     parser.add_argument("--manual", action="store_true", help="run outside the scheduled IST window for supervised validation")
     parser.add_argument("--recover-date", help="supervised media-only recovery using saved inputs; preserves original failure evidence")
     parser.add_argument("--replace-image", action="store_true", help="authorize one replacement after reconciling prior image submissions")
     args = parser.parse_args(argv)
     if args.replace_image and not args.recover_date:
         parser.error("--replace-image requires --recover-date")
+    if args.validation_id and (not args.manual or args.recover_date or args.final_check):
+        parser.error("--validation-id requires --manual and cannot recover or finalize a daily run")
+    os.environ.pop("FLOW_SHADOW_VALIDATION_ID", None)
+    if args.validation_id:
+        os.environ["FLOW_SHADOW_VALIDATION_ID"] = args.validation_id
     os.umask(0o077)
     private_root = validate_shadow_environment()
     run_date = args.recover_date or get_pipeline_run_date_str()
@@ -486,11 +520,13 @@ def main(argv: list[str] | None = None) -> int:
     if day_number < 1:
         print(f"Shadow date {run_date} is before the configured start date; no generation")
         return 0
-    output = private_root / "runtime" / "output" / run_date
-    state = private_root / "runtime" / "state" / "flow_shadow"
+    output = get_output_root() / run_date
+    state = get_state_root() / "flow_shadow"
     state.mkdir(parents=True, exist_ok=True)
-    marker = state / f"{run_date}.json"
-    lock_file = _acquire_runner_lock(state)
+    marker = state / ("validation.json" if args.validation_id else f"{run_date}.json")
+    canonical_state = private_root / "runtime" / "state" / "flow_shadow"
+    canonical_state.mkdir(parents=True, exist_ok=True)
+    lock_file = _acquire_runner_lock(canonical_state)
     if lock_file is None:
         print("Another Flow shadow check or run is active; skipping this schedule tick")
         return 0
@@ -526,9 +562,9 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
     if day_number > 7:
         maybe_send_trial_summary(state, start, current)
     if marker.exists():
-        _handle_existing_date_marker(state, marker, run_date, start, current, args.final_check)
+        existing_status = _handle_existing_date_marker(state, marker, run_date, start, current, args.final_check)
         print(f"Shadow date {run_date} already has a terminal or claimed status; no second full run")
-        return 2
+        return 0 if existing_status == "complete" else 2
     output.mkdir(parents=True, exist_ok=True)
 
     readiness = "ready"
@@ -566,10 +602,13 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
             json.dump({"date": run_date, "status": "started", "started_at": datetime.now(timezone.utc).isoformat()}, handle)
     except FileExistsError:
         print(f"Shadow date {run_date} was claimed by another invocation; no second full run")
-        return 2
+        return 0
 
     report = {
         "date": run_date, "trial_day": day_number, "status": "running", "provider": "flow", "recovery": recovery,
+        "run_origin": "validation" if args.validation_id else "recovery" if recovery else "manual" if args.manual else "scheduled",
+        "validation_id": args.validation_id,
+        "versions": _runtime_versions(private_root),
         "credits_estimate_basis": "20 per Veo Fast submit marker; upper bound, failed generations may be uncharged",
         "stages": {"preflight": "pending", "pipeline": "pending", "artifacts": "pending", "archive": "pending"},
         "stage_times": {},
@@ -642,7 +681,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         report["stage_times"][stage] = {"started_at": datetime.now(timezone.utc).isoformat()}
         _run_logged([sys.executable, str(ROOT / "src" / "scripts" / "database_manager.py"),
                      "--insert", "--file", str(payload)], log)
-        database = private_root / "runtime" / "database" / "cards.db"
+        database = get_database_root() / "cards.db"
         with sqlite3.connect(database) as connection:
             found = connection.execute("SELECT 1 FROM cards WHERE date = ?", (run_date,)).fetchone()
         if not found:

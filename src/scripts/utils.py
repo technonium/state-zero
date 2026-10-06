@@ -1,5 +1,6 @@
 import os
 import posixpath
+import re
 from ipaddress import ip_address
 from datetime import date as date_cls, datetime, timedelta
 from pathlib import Path
@@ -111,15 +112,28 @@ def get_astrology_root() -> Path:
     return private_root / "astrology"
 
 
+def get_run_storage_root() -> Path:
+    """Keep supervised validation artifacts separate from daily runtime state."""
+    validation_id = os.getenv("FLOW_SHADOW_VALIDATION_ID", "").strip()
+    if validation_id:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", validation_id):
+            raise ValueError("Invalid Flow validation ID")
+        if (os.getenv("MEDIA_GENERATION_PROVIDER") != "flow" or
+                os.getenv("PIPELINE_POST_TO_INSTAGRAM") != "false"):
+            raise ValueError("Flow validation requires non-posting Flow mode")
+        return get_runtime_root() / "validation" / validation_id
+    return get_runtime_root()
+
+
 def get_output_root() -> Path:
-    return get_runtime_root() / "output"
+    return get_run_storage_root() / "output"
 
 def get_database_root() -> Path:
-    return get_runtime_root() / "database"
+    return get_run_storage_root() / "database"
 
 
 def get_state_root() -> Path:
-    return get_runtime_root() / "state"
+    return get_run_storage_root() / "state"
 
 
 def get_local_vps_root() -> Path:

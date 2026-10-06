@@ -12,6 +12,7 @@ services:
           memory: 4G
     security_opt:
       - seccomp:./ops/flow_chrome_seccomp.json
+    init: true
     restart: unless-stopped
     logging:
       driver: json-file

@@ -173,14 +173,14 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_guard_aborts_mismatch_before_forwarding(self):
         from gflow_cli.api.image import Model
-        from gflow_cli.api.transports.migrated_composer import _guard_shadow_image_submit
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
         route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
         raw = MagicMock(post_data=self.body('GEM_PIX_2'))
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / 'submit'
             marker.write_text('submit_attempted\n')
             with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
-                self.assertIsNotNone(await _guard_shadow_image_submit(route, raw, (), Model.NARWHAL))
+                self.assertIsNotNone(await _guard_image_submit(route, raw, (), Model.NARWHAL))
             import json
             self.assertEqual(json.loads(marker.read_text())['state'], 'blocked_before_submission')
         route.abort.assert_awaited_once()
@@ -188,14 +188,53 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_guard_records_forwarded_before_continuing(self):
         from gflow_cli.api.image import Model
-        from gflow_cli.api.transports.migrated_composer import _guard_shadow_image_submit
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
         route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
         raw = MagicMock(post_data=self.body('BELUGA'))
         with tempfile.TemporaryDirectory() as tmp:
             marker=Path(tmp)/'submit';marker.write_text('submit_attempted\n')
             with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
-                self.assertIsNone(await _guard_shadow_image_submit(route,raw,(),Model.NARWHAL))
+                self.assertIsNone(await _guard_image_submit(route,raw,(),Model.NARWHAL))
             import json
             self.assertEqual(json.loads(marker.read_text())['state'],'forwarded')
         route.continue_.assert_awaited_once()
         route.abort.assert_not_awaited()
+
+    async def test_wrong_aspect_or_count_is_aborted_before_forwarding(self):
+        import json
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
+        for aspect, count in ((1, 1), (4, 2)):
+            row = [None, None, None, 123, aspect, 'BELUGA', None, None, [[['cloud']]]]
+            body = 'f.req=' + json.dumps([[['ogiZ0b', json.dumps([None, [row], count]), None, 'generic']]])
+            route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+            self.assertIsNotNone(await _guard_image_submit(route, MagicMock(post_data=body), (), Model.NARWHAL))
+            route.abort.assert_awaited_once()
+            route.continue_.assert_not_awaited()
+
+    async def test_text_to_image_registers_guard_and_blocks_wrong_model(self):
+        import json
+        from gflow_cli.api.image import Model, GenerateImageRequest
+        from gflow_cli.exceptions import WireFormatError
+        handlers = {}
+        page = MagicMock(route=AsyncMock(), unroute=AsyncMock())
+        async def register(predicate, callback):
+            handlers['guard'] = callback
+        page.route.side_effect = register
+        submit = MagicMock(is_enabled=AsyncMock(return_value=True))
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        async def click(*args, **kwargs):
+            self.assertIn('guard', handlers, 'T2I must install the network guard before clicking')
+            await handlers['guard'](route, MagicMock(post_data=self.body('GEM_PIX_2')))
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+            'GFLOW_SHADOW_SUBMIT_MARKER': str(Path(tmp) / 'submit')
+        }), patch.object(MigratedComposer, '_pre_submit_gate', new=AsyncMock(return_value=submit)), patch.object(
+            MigratedComposer, '_click', new=AsyncMock(side_effect=click)):
+            with self.assertRaises(WireFormatError):
+                await MigratedComposer().submit_images_and_observe(page,
+                    GenerateImageRequest(prompt='NARWHAL BELUGA', model=Model.NARWHAL))
+            state = json.loads((Path(tmp) / 'submit').read_text())
+            self.assertEqual(state['state'], 'blocked_before_submission')
+        route.abort.assert_awaited_once()
+        route.continue_.assert_not_awaited()
+        page.unroute.assert_awaited_once()

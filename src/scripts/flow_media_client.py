@@ -203,7 +203,16 @@ class FlowMediaClient:
             raise RuntimeError("Flow did not return exactly one image")
         item = images[0]
         wire_model = item.get("model_name_type")
-        if payload.get("model") != "NARWHAL" or wire_model not in (None, "NARWHAL"):
+        try:
+            submission = json.loads(marker.read_text()) if marker.exists() else {}
+        except (OSError, ValueError):
+            submission = {}
+        beluga_confirmed = (submission.get("state") == "forwarded" and
+                            submission.get("expected_model") == "NARWHAL" and
+                            submission.get("actual_model") == "BELUGA")
+        if (payload.get("model") != "NARWHAL" or
+                wire_model not in (None, "NARWHAL", "BELUGA") or
+                (wire_model == "BELUGA" and not beluga_confirmed)):
             raise RuntimeError("Flow image model conflicts with Nano Banana 2 request")
         source = self._owned_path(item["local_path"], output_path.parent)
         original = source.name
@@ -234,7 +243,7 @@ class FlowMediaClient:
         self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"), {
             "provider": "flow", "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
-            "model": "nano2", "wire_model": wire_model, "model_attribution_confirmed": wire_model == "NARWHAL",
+            "model": "nano2", "wire_model": wire_model, "model_attribution_confirmed": wire_model == "NARWHAL" or beluga_confirmed,
             "aspect": "3:4", "source_width": width,
             "source_height": height, "flow_2k_upscaled": upscaled,
             "media_id": item.get("media_name"), "project_id": payload.get("project_id"),

@@ -629,3 +629,93 @@ class RecoveryReconciliationTests(unittest.TestCase):
             out=Path(tmp)
             (out/'flow_image_attempt_1.submit').write_text('{"state":"blocked_before_submission"}')
             validate_recovery_inputs(out)
+
+class UpgradeValidationTests(unittest.TestCase):
+    def test_validation_paths_isolate_state_archive_and_outputs_but_not_whoop(self):
+        from utils import get_output_root, get_state_root, get_database_root
+        from whoop_token_manager import WHOOPTokenManager
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+            'STATE_ZERO_PRIVATE_ROOT': tmp, 'FLOW_SHADOW_VALIDATION_ID': 'v0821-test',
+            'MEDIA_GENERATION_PROVIDER': 'flow', 'PIPELINE_POST_TO_INSTAGRAM': 'false'
+        }, clear=True):
+            root = Path(tmp)
+            validation = root / 'runtime' / 'validation' / 'v0821-test'
+            self.assertEqual(get_output_root(), validation / 'output')
+            self.assertEqual(get_state_root(), validation / 'state')
+            self.assertEqual(get_database_root(), validation / 'database')
+            self.assertEqual(WHOOPTokenManager().state_file, root / 'runtime/state/whoop_token_state.json')
+
+    def test_beluga_result_requires_confirmed_nano2_submission(self):
+        from flow_media_client import FlowMediaClient
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            original = root / 'flow_art.jpg'
+            Image.new('RGB', (896, 1200), 'white').save(original)
+            payload = {'status': 'ok', 'count': 1, 'model': 'NARWHAL',
+                       'images': [{'local_path': str(original), 'model_name_type': 'BELUGA'}]}
+            with patch.dict(os.environ, {'FLOW_IMAGE_UPSCALE_2K': 'false'}), patch.object(
+                FlowMediaClient, '_run_json', return_value=payload):
+                with self.assertRaises(RuntimeError):
+                    FlowMediaClient().generate_image({}, root / 'generated_art.png')
+                def confirmed(command, timeout, marker):
+                    marker.write_text(json.dumps({'state': 'forwarded', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
+                    return payload
+                with patch.object(FlowMediaClient, '_run_json', side_effect=confirmed):
+                    FlowMediaClient().generate_image({}, root / 'generated_art.png')
+            self.assertTrue((root / 'generated_art.png').is_file())
+
+    def test_validation_has_own_claim_and_obeys_the_canonical_lock(self):
+        import flow_shadow_run
+        with tempfile.TemporaryDirectory() as tmp:
+            root, profile = Path(tmp) / 'private', Path(tmp) / 'profile'
+            root.mkdir(); profile.mkdir()
+            (root / '.state-zero-flow-shadow-private').touch()
+            (profile / '.state-zero-flow-shadow-profile').touch()
+            state = root / 'runtime/state/flow_shadow'; state.mkdir(parents=True)
+            daily = state / '2026-10-06.json'
+            daily.write_text('{"status":"complete"}')
+            env = {'STATE_ZERO_PRIVATE_ROOT': str(root), 'GFLOW_CLI_HOME': str(profile),
+                'PIPELINE_MODE': 'automatic', 'PIPELINE_POST_TO_INSTAGRAM': 'false',
+                'MEDIA_GENERATION_PROVIDER': 'flow', 'FLOW_API_FALLBACK_ENABLED': 'false',
+                'GOOGLE_API_FALLBACK_ENABLED': 'false', 'PORTFOLIO_MEDIA_ENABLED': 'true',
+                'PIPELINE_MEDIA_MODE': 'local_test', 'OPENROUTER_CALL_DEADLINE_SECONDS': '200',
+                'PROMPT_GOOGLE_API_KEY': 'test', 'SHADOW_ALERT_BOT_TOKEN': 'test',
+                'SHADOW_ALERT_CHAT_ID': 'test', 'PIPELINE_DATE': '2026-10-06',
+                'SHADOW_TRIAL_START_DATE': '2026-10-03'}
+            with patch.dict(os.environ, env, clear=True), patch.object(flow_shadow_run, '_probe_whoop',
+                    return_value=('ready', 0, '')) as lookup, patch.object(flow_shadow_run, '_preflight',
+                    return_value=True), patch.object(flow_shadow_run, '_flow_credits', return_value=None), patch.object(
+                    flow_shadow_run, '_alert', return_value=True), patch.object(flow_shadow_run,
+                    '_run_logged', side_effect=RuntimeError('test pipeline failure')) as pipeline:
+                lock = flow_shadow_run._acquire_runner_lock(state)
+                try:
+                    self.assertEqual(flow_shadow_run.main(['--manual', '--validation-id', 'v0821-test']), 0)
+                    lookup.assert_not_called()
+                finally:
+                    lock.close()
+                self.assertEqual(flow_shadow_run.main(['--manual', '--validation-id', 'v0821-test']), 1)
+                self.assertEqual(flow_shadow_run.main(['--manual', '--validation-id', 'v0821-test']), 2)
+                with patch.dict(os.environ, {'PIPELINE_DATE': '2026-10-07'}):
+                    self.assertEqual(flow_shadow_run.main(['--manual', '--validation-id', 'v0821-test']), 2)
+                self.assertEqual(pipeline.call_count, 1)
+                self.assertEqual(flow_shadow_run.main(['--manual']), 0)
+            self.assertEqual(daily.read_text(), '{"status":"complete"}')
+            report = json.loads((root / 'runtime/validation/v0821-test/output/2026-10-06/shadow_report.json').read_text())
+            self.assertEqual(report['run_origin'], 'validation')
+            self.assertEqual(report['validation_id'], 'v0821-test')
+            self.assertIn('gflow-cli', report['versions'])
+
+    def test_new_recaptcha_error_retries_only_before_submission(self):
+        from flow_media_client import FlowMediaClient, FlowCommandError
+        payload = {'status': 'fail', 'error': {'class': 'RecaptchaMintError',
+            'type': 'https://example/errors/recaptcha-mint', 'retryable': True}}
+        result = subprocess.CompletedProcess([], 1, stdout=json.dumps(payload), stderr='')
+        with tempfile.TemporaryDirectory() as tmp, patch('flow_media_client.subprocess.run', return_value=result):
+            marker = Path(tmp) / 'submit'
+            with self.assertRaises(FlowCommandError) as pre:
+                FlowMediaClient._run_json(['gflow', 'image', 't2i'], 1, marker)
+            self.assertEqual(pre.exception.category, 'pre_submit_transient')
+            marker.write_text('{"state":"forwarded"}')
+            with self.assertRaises(FlowCommandError) as post:
+                FlowMediaClient._run_json(['gflow', 'image', 't2i'], 1, marker)
+            self.assertEqual(post.exception.category, 'post_submit_error')
