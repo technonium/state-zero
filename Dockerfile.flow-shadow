@@ -27,6 +27,7 @@ RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-m
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-submit-boundary.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-video-record.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-original-download.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-image-submit.patch
 RUN useradd --create-home --uid 10001 --gid shadow --shell /bin/sh shadow \
  && mkdir -p /opt/state-zero-flow-shadow /opt/state-zero-flow-profile \
  && chown -R shadow:shadow /opt/state-zero-flow-shadow /opt/state-zero-flow-profile /app

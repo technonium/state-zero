@@ -154,3 +154,48 @@ class VideoRecordTest(unittest.TestCase):
     def test_original_cae_reply_still_decodes(self):
         from gflow_cli.api.transports.batchexecute import generation_record
         self.assertEqual(generation_record("as29s", self.record(marker="CAE")).status, 3)
+
+@unittest.skipIf(MigratedComposer is None, 'Requires pinned gflow')
+class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
+    @staticmethod
+    def body(model, prompt='cloud'):
+        import json
+        row = [None, None, None, 123, 4, model, None, None, [[[prompt]]]]
+        return 'f.req=' + json.dumps([[['ogiZ0b', json.dumps([None, [row], 1]), None, 'generic']]])
+
+    def test_model_is_validated_at_request_field_not_in_prompt(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _image_body_problem
+        for model in ('NARWHAL', 'BELUGA'):
+            self.assertIsNone(_image_body_problem(self.body(model), (), Model.NARWHAL))
+        for body in (self.body('GEM_PIX_2', 'NARWHAL BELUGA'), '', 'NARWHAL', self.body('UNKNOWN')):
+            self.assertIsNotNone(_image_body_problem(body, (), Model.NARWHAL))
+
+    async def test_guard_aborts_mismatch_before_forwarding(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_shadow_image_submit
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        raw = MagicMock(post_data=self.body('GEM_PIX_2'))
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / 'submit'
+            marker.write_text('submit_attempted\n')
+            with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
+                self.assertIsNotNone(await _guard_shadow_image_submit(route, raw, (), Model.NARWHAL))
+            import json
+            self.assertEqual(json.loads(marker.read_text())['state'], 'blocked_before_submission')
+        route.abort.assert_awaited_once()
+        route.continue_.assert_not_awaited()
+
+    async def test_guard_records_forwarded_before_continuing(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_shadow_image_submit
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        raw = MagicMock(post_data=self.body('BELUGA'))
+        with tempfile.TemporaryDirectory() as tmp:
+            marker=Path(tmp)/'submit';marker.write_text('submit_attempted\n')
+            with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
+                self.assertIsNone(await _guard_shadow_image_submit(route,raw,(),Model.NARWHAL))
+            import json
+            self.assertEqual(json.loads(marker.read_text())['state'],'forwarded')
+        route.continue_.assert_awaited_once()
+        route.abort.assert_not_awaited()
