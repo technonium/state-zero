@@ -133,6 +133,8 @@ class Notifier:
     def _send_message(self, text: str, parse_mode: str = None) -> bool:
         """Send text message to Telegram with retry logic."""
         if not self._is_enabled():
+            if os.getenv("FLOW_SHADOW_ALERTS_OWNED_BY_RUNNER") == "true":
+                return False
             LOCAL_LOG.warning(f"Telegram not configured. Message: {text[:200]}")
             return False
         
@@ -155,7 +157,8 @@ class Notifier:
     def _send_document(self, file_path: Path, caption: str = None) -> bool:
         """Send document to Telegram with retry logic."""
         if not self._is_enabled():
-            LOCAL_LOG.warning(f"Telegram not configured. Would send document: {file_path}")
+            if os.getenv("FLOW_SHADOW_ALERTS_OWNED_BY_RUNNER") != "true":
+                LOCAL_LOG.warning(f"Telegram not configured. Would send document: {file_path}")
             return False
         
         if not file_path.exists():

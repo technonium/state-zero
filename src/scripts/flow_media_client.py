@@ -18,7 +18,10 @@ from google_video_client import GoogleVideoClient
 
 
 class FlowCommandError(RuntimeError):
-    def __init__(self, stage: str, category: str, *, error_class: str = "", media_id: str = "", retryable: bool = False):
+    def __init__(self, stage: str, category: str, *, error_class: str = "", media_id: str = "", retryable: bool = False, detail: str = "", operation_id: str = "", submission_state: str = ""):
+        self.detail = detail
+        self.operation_id = operation_id
+        self.submission_state = submission_state
         self.category = category
         self.error_class = error_class
         self.media_id = media_id
@@ -75,6 +78,24 @@ class FlowMediaClient:
             reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("class", ""))).upper()
             policy_or_quota = any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "QUOTA", "CREDIT"))
             clicked = bool(marker and marker.exists())
+            submission_state = "attempted" if clicked else "not_attempted"
+            if clicked:
+                try:
+                    submission_state = json.loads(marker.read_text()).get("state", "attempted")
+                except (ValueError, OSError):
+                    pass
+            detail = str(error.get("detail") or "")
+            for value in command[2:]:
+                if len(value) > 10 and not value.startswith("--"):
+                    detail = detail.replace(value, "[redacted]")
+            detail = re.sub(r"https?://\S+|Bearer\s+\S+|(?:SAPISID|SID|Cookie)\s*[:=]\s*\S+|sk-or-v1-[\w-]+|AIza[\w-]+", "[redacted]", detail, flags=re.I)[:500]
+            for key, value in env.items():
+                if any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")) and len(value) >= 8:
+                    detail = detail.replace(value, "[redacted]")
+            operation_id = str(payload.get("operation_id") or "")
+            if not operation_id:
+                catalog = FlowMediaClient._catalog_error(command[1], env.get("GFLOW_PROFILE", "shadow"))
+                operation_id = catalog.get("operation_id", "")
             auth_error = error_class in {
                 "AuthExpiredError", "AisandboxAuthError", "AuthMissingError",
                 "AuthLoginTimeoutError", "IdentityRecheckPendingError", "FlowAccountChooserError",
@@ -83,6 +104,8 @@ class FlowMediaClient:
                 category = "generation_failed"
             elif auth_error:
                 category = "auth_required"
+            elif submission_state == "blocked_before_submission":
+                category = "blocked_before_submission"
             elif clicked:
                 category = "post_submit_error"
             elif bool(error.get("retryable")):
@@ -90,8 +113,21 @@ class FlowMediaClient:
             else:
                 category = "pre_submit_terminal"
             raise FlowCommandError(command[1], category, error_class=error_class,
-                                   media_id=media_id, retryable=failed and not policy_or_quota)
+                                   media_id=media_id, retryable=failed and not policy_or_quota,
+                                   detail=detail, operation_id=operation_id, submission_state=submission_state)
         return payload
+
+    @staticmethod
+    def _catalog_error(stage: str, profile: str) -> dict:
+        try:
+            from gflow_cli.config import get_settings
+            db = get_settings().resolved_db_path()
+            with sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True) as connection:
+                row = connection.execute("SELECT id FROM operations WHERE profile_name=? AND command=? ORDER BY rowid DESC LIMIT 1",
+                                         (profile, "image t2i" if stage == "image" else "video i2v")).fetchone()
+            return {"operation_id": row[0]} if row else {}
+        except (ImportError, OSError, sqlite3.Error):
+            return {}
 
     @staticmethod
     def _owned_path(raw: str, directory: Path) -> Path:
@@ -139,7 +175,10 @@ class FlowMediaClient:
         started_at = datetime.now(timezone.utc).isoformat()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         attempts = []
-        for number in (1, 2):
+        previous = list(output_path.parent.glob("flow_image_attempt_*.submit"))
+        first = 1 + max((int(p.stem.rsplit("_", 1)[-1]) for p in previous), default=0)
+        for offset in range(2):
+            number = first + offset
             marker = output_path.with_name(f"flow_image_attempt_{number}.submit")
             try:
                 payload = self._run_json(self.image_command(prompt_json, output_path.with_name("flow_art.png")), 600, marker)
@@ -150,10 +189,14 @@ class FlowMediaClient:
             except FlowCommandError as exc:
                 attempts.append({"number": number, "submit_attempted": marker.exists(), "status": exc.category,
                                  "ended_at": datetime.now(timezone.utc).isoformat(),
-                                 "error_class": exc.error_class, "media_id": exc.media_id})
+                                 "error_class": exc.error_class, "media_id": exc.media_id,
+                                 "detail": exc.detail, "operation_id": exc.operation_id,
+                                 "expected_model": "NARWHAL", "submission_state": exc.submission_state})
                 self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"),
                                         {"provider": "flow", "started_at": started_at, "attempts": attempts})
-                if number == 2 or exc.category not in {"pre_submit_transient", "pre_submit_timeout"} or marker.exists():
+                if offset == 1 or exc.category not in {"pre_submit_transient", "pre_submit_timeout", "blocked_before_submission"}:
+                    raise
+                if marker.exists() and exc.submission_state != "blocked_before_submission":
                     raise
         images = payload.get("images") or []
         if payload.get("count") != 1 or len(images) != 1:

@@ -1,0 +1,132 @@
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -814,29 +814,71 @@
+     return None
+ 
+ 
++def _image_submit_payload(body: str) -> list[Any] | None:
++    """Read the measured ogiZ0b payload, never search prompt text for a model."""
++    try:
++        outer, _ = json.JSONDecoder().raw_decode(body.split("f.req=", 1)[1])
++        rows = [row for group in outer for row in group if row[0] == IMAGE_SUBMIT_RPC]
++        if len(rows) != 1:
++            return None
++        payload = json.loads(rows[0][1])
++        if not isinstance(payload, list) or len(payload) < 3 or not isinstance(payload[1], list) or not payload[1]:
++            return None
++        if any(not isinstance(row, list) or len(row) <= 5 for row in payload[1]):
++            return None
++        return payload
++    except (ValueError, TypeError, IndexError, KeyError):
++        return None
++
++
+ def _image_body_problem(
+     body: str,
+     reference_ids: tuple[str, ...],
+     model: ImageModel | None = None,
+ ) -> str | None:
+-    """Why an ``ogiZ0b`` request is not the image run the caller asked for."""
+-    if not body:
+-        return (
+-            "migrated host: the image submit body could not be read, so the request "
+-            "could not be confirmed before Flow acted on it"
+-        )
+-    if model is not None and model.value not in body:
+-        return (
+-            f"migrated host: the image submit body does not carry requested model "
+-            f"{model.value} — refusing to report a generation made with persisted settings"
+-        )
++    """Why an ogiZ0b request is not the image run the caller asked for."""
++    payload = _image_submit_payload(body)
++    if payload is None:
++        return "migrated host: image submit model field could not be read"
++    if model is not None:
++        # Oracle capture 2026-10-06: explicitly selected Nano Banana 2 sends BELUGA
++        # at requests[*][5]; older captured requests send NARWHAL at the same field.
++        accepted = {model.value, "BELUGA"} if model is ImageModel.NARWHAL else {model.value}
++        if any(not isinstance(row[5], str) or row[5] not in accepted for row in payload[1]):
++            return f"migrated host: image submit model differs from requested {model.value}"
+     missing = [media_id for media_id in reference_ids if media_id not in body]
+     if missing:
+-        return (
+-            "migrated host: the image submit body is missing uploaded reference(s) "
+-            f"{', '.join(missing[:4])} — refusing to report a text-only generation as i2i"
+-        )
++        return "migrated host: image submit is missing an uploaded reference"
+     return None
++
++
++async def _guard_shadow_image_submit(route: Any, raw_request: Any,
++                                     reference_ids: tuple[str, ...], model: ImageModel | None) -> str | None:
++    body = _post_data(raw_request)
++    problem = _image_body_problem(body, reference_ids, model)
++    payload = _image_submit_payload(body)
++    if not problem and model is ImageModel.NARWHAL and (
++        len(payload[1]) != 1 or payload[2] != 1 or payload[1][0][4] != 4
++    ):
++        problem = "migrated host: image submit differs from requested 3:4 and count 1"
++    marker = os.getenv("GFLOW_SHADOW_SUBMIT_MARKER")
++    if marker:
++        evidence = {"state": "blocked_before_submission" if problem else "forwarded",
++                    "expected_model": model.value if model else None,
++                    "actual_model": payload[1][0][5] if payload and isinstance(payload[1][0][5], str) and payload[1][0][5] in
++                        {"NARWHAL", "BELUGA", "GEM_PIX_2", "HARBOR_SEAL"} else "unknown",
++                    "reason": problem}
++        target = Path(marker)
++        temporary = target.with_suffix(target.suffix + ".tmp")
++        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
++            json.dump(evidence, handle)
++        os.replace(temporary, target)
++    if problem:
++        await route.abort()
++    else:
++        # Recorded before forwarding: a crash after this point stays uncertain.
++        await route.continue_()
++    return problem
+ 
+ 
+ def _redacted_page_url(page: Any) -> str:
+@@ -1777,7 +1819,14 @@
+                 remediation_hint="Choose one offered image model or omit --model.",
+             )
+         await items.nth(hits[0]).click(timeout=4000)
+-        log.info("migrated.image_model_selected", model=offered[hits[0]], requested=model.value)
++        deadline = time.monotonic() + 5
++        while time.monotonic() < deadline:
++            current = (await button.text_content() or "").strip()
++            if matcher.matches(current):
++                log.info("migrated.image_model_selected", model=current, requested=model.value)
++                return
++            await asyncio.sleep(0.1)
++        raise UiSelectorDriftError(detail="migrated host: image model did not become selected")
+ 
+     # --- start frame (i2v) ------------------------------------------------------
+ 
+@@ -2767,9 +2816,18 @@
+                 return
+             result.set_result(images)
+ 
++        def is_image_submit(url: str) -> bool:
++            return _rpcid(url) == IMAGE_SUBMIT_RPC
++
++        async def guard(route: Any, raw_request: Any) -> None:
++            problem = await _guard_shadow_image_submit(route, raw_request, reference_ids, request.model)
++            if problem is not None and not route_error.done():
++                route_error.set_result(WireFormatError(detail=problem, route=f"batchexecute:{IMAGE_SUBMIT_RPC}"))
++
+         page.on("request", on_request)
+         page.on("response", on_response)
+         try:
++            await page.route(is_image_submit, guard)
+             enable_deadline = time.monotonic() + SUBMIT_ENABLE_BUDGET_S
+             while not await submit.is_enabled():
+                 if time.monotonic() >= enable_deadline:
+@@ -2804,6 +2862,7 @@
+                 result.exception()
+             page.remove_listener("request", on_request)
+             page.remove_listener("response", on_response)
++            await page.unroute(is_image_submit, guard)
+ 
+     @staticmethod
+     async def _await_terminal(

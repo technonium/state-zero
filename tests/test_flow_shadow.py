@@ -564,3 +564,68 @@ class PromptFallbackTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SubmissionEvidenceTests(unittest.TestCase):
+    def test_blocked_request_is_retryable_but_forwarded_request_is_not(self):
+        from flow_media_client import FlowMediaClient, FlowCommandError
+        with tempfile.TemporaryDirectory() as tmp:
+            marker=Path(tmp)/'submit'
+            result=subprocess.CompletedProcess([],7,stdout=json.dumps({'status':'fail','error':{'class':'WireFormatError','detail':'migrated host: image submit model differs from requested NARWHAL'}}),stderr='')
+            for state,expected in [('blocked_before_submission','blocked_before_submission'),('forwarded','post_submit_error')]:
+                marker.write_text(json.dumps({'state':state}))
+                with patch('flow_media_client.subprocess.run',return_value=result):
+                    with self.assertRaises(FlowCommandError) as failure:
+                        FlowMediaClient._run_json(['gflow','image','t2i','private prompt'],1,marker)
+                self.assertEqual(failure.exception.category,expected)
+                self.assertIn('requested NARWHAL',failure.exception.detail)
+
+    def test_private_error_detail_redacts_prompt_and_signed_url(self):
+        from flow_media_client import FlowMediaClient, FlowCommandError
+        prompt='private WHOOP prompt';payload={'status':'fail','error':{'class':'WireFormatError','detail':prompt+' https://example.com/?Signature=secret Bearer secret'}}
+        result=subprocess.CompletedProcess([],7,stdout=json.dumps(payload),stderr='')
+        with patch('flow_media_client.subprocess.run',return_value=result):
+            with self.assertRaises(FlowCommandError) as failure:
+                FlowMediaClient._run_json(['gflow','image','t2i',prompt],1)
+        self.assertNotIn(prompt,failure.exception.detail)
+        self.assertNotIn('secret',failure.exception.detail)
+
+class SavedInputRecoveryTests(unittest.TestCase):
+    def test_recovery_uses_saved_inputs_and_only_remaining_media_stages(self):
+        import flow_shadow_recover
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);out=root/'runtime/output/2026-10-06';out.mkdir(parents=True)
+            for name,value in {'daily_data.json':{'date':'2026-10-06'},'card_metadata.json':{'title':'Test'},'image_prompt.json':{'scene':'cloud'}}.items():
+                (out/name).write_text(json.dumps(value))
+            (out/'video_prompt.txt').write_text('move clouds')
+            from unittest.mock import MagicMock
+            pipeline=MagicMock();pipeline.output_dir=out;pipeline.post_to_instagram=False
+            pipeline.step_7_generate_image.return_value=out/'generated_art.png'
+            pipeline.step_9_generate_video.return_value=out/'generated_video.mp4'
+            flow_shadow_recover.recover_media(pipeline)
+            pipeline.step_7_generate_image.assert_called_once()
+            pipeline.step_9_generate_video.assert_called_once()
+            pipeline.step_10a_render_image.assert_called_once()
+            pipeline.step_16_render_portfolio_media.assert_called_once()
+            pipeline.run.assert_not_called()
+
+class RecoveryReconciliationTests(unittest.TestCase):
+    def test_missing_media_requires_reconciliation(self):
+        from flow_shadow_recover import validate_recovery_inputs
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp)
+            (out/'flow_image_attempt_1.submit').write_text('attempted')
+            with self.assertRaises(ValueError):
+                validate_recovery_inputs(out)
+            validate_recovery_inputs(out, True)
+            (out/'flow_video_attempt_1.submit').write_text('{"state":"forwarded"}')
+            with self.assertRaises(ValueError):
+                validate_recovery_inputs(out, True)
+            (out/'generated_video.mp4').touch()
+            validate_recovery_inputs(out, True)
+
+    def test_blocked_submission_is_safe_to_retry(self):
+        from flow_shadow_recover import validate_recovery_inputs
+        with tempfile.TemporaryDirectory() as tmp:
+            out=Path(tmp)
+            (out/'flow_image_attempt_1.submit').write_text('{"state":"blocked_before_submission"}')
+            validate_recovery_inputs(out)

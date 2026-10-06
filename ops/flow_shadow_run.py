@@ -465,10 +465,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the isolated Oracle Flow pipeline")
     parser.add_argument("--final-check", action="store_true", help="record a missed date if WHOOP data is still unavailable")
     parser.add_argument("--manual", action="store_true", help="run outside the scheduled IST window for supervised validation")
+    parser.add_argument("--recover-date", help="supervised media-only recovery using saved inputs; preserves original failure evidence")
+    parser.add_argument("--replace-image", action="store_true", help="authorize one replacement after reconciling prior image submissions")
     args = parser.parse_args(argv)
+    if args.replace_image and not args.recover_date:
+        parser.error("--replace-image requires --recover-date")
     os.umask(0o077)
     private_root = validate_shadow_environment()
-    run_date = get_pipeline_run_date_str()
+    run_date = args.recover_date or get_pipeline_run_date_str()
+    if args.recover_date:
+        os.environ["PIPELINE_DATE"] = run_date
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", run_date):
         raise ValueError("PIPELINE_DATE must be YYYY-MM-DD")
     current = date.fromisoformat(run_date)
@@ -496,7 +502,24 @@ def main(argv: list[str] | None = None) -> int:
 
 def _run_locked(args, private_root: Path, run_date: str, current: date, start: date, day_number: int, output: Path, state: Path, marker: Path) -> int:
     now = datetime.now(ZoneInfo(os.getenv("PIPELINE_TIMEZONE", "Asia/Kolkata")))
-    if not args.manual and not schedule_allows_run(args.final_check, now):
+    recovery = bool(getattr(args, "recover_date", None))
+    original_marker = marker
+    report_name = "shadow_recovery_report.json" if recovery else "shadow_report.json"
+    if recovery:
+        original = json.loads(marker.read_text()) if marker.exists() else {}
+        if original.get("status") != "failed":
+            raise ValueError("Recovery requires an existing failed date")
+        marker = state / "recoveries" / f"{run_date}.json"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        original_evidence = marker.with_suffix(".original.json")
+        if not original_evidence.exists():
+            _write_private_json(original_evidence, original)
+        from flow_shadow_recover import validate_recovery_inputs
+        validate_recovery_inputs(output, getattr(args, "replace_image", False))
+        required_inputs = ("daily_data.json", "card_metadata.json", "image_prompt.json", "video_prompt.txt")
+        if any(not (output / name).is_file() for name in required_inputs):
+            raise ValueError("Recovery requires all saved inputs")
+    if not recovery and not args.manual and not schedule_allows_run(args.final_check, now):
         print("Flow shadow schedule tick is outside its IST window; no WHOOP or Flow request")
         return 0
     _retry_pending_alerts(state)
@@ -508,7 +531,9 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         return 2
     output.mkdir(parents=True, exist_ok=True)
 
-    readiness, _, _ = _probe_whoop(run_date, output)
+    readiness = "ready"
+    if not recovery:
+        readiness, _, _ = _probe_whoop(run_date, output)
     if readiness != "ready":
         print(f"WHOOP readiness: {readiness}; no Flow request was made")
         if args.final_check:
@@ -529,7 +554,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
 
     generated_names = ("generated_art.png", "generated_video.mp4", "flow_raw_video.mp4", "card_final.png", "card_final.mp4", "last_archived_payload.json")
     submitted = list(output.glob("flow_image_attempt_*.submit")) + list(output.glob("flow_video_attempt_*.submit"))
-    if submitted or any((output / name).exists() for name in generated_names):
+    if not recovery and (submitted or any((output / name).exists() for name in generated_names)):
         _alert_once(
             state, run_date, "output_collision",
             f"🚨 State Zero Flow found existing generation artifacts for {run_date} without a runner claim. It stopped without submitting media; inspect the private output before recovery.",
@@ -544,16 +569,16 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         return 2
 
     report = {
-        "date": run_date, "trial_day": day_number, "status": "running", "provider": "flow",
+        "date": run_date, "trial_day": day_number, "status": "running", "provider": "flow", "recovery": recovery,
         "credits_estimate_basis": "20 per Veo Fast submit marker; upper bound, failed generations may be uncharged",
         "stages": {"preflight": "pending", "pipeline": "pending", "artifacts": "pending", "archive": "pending"},
         "stage_times": {},
         "artifacts": {},
-        "memory_samples_file": "memory_samples.jsonl",
+        "memory_samples_file": "recovery_memory_samples.jsonl" if recovery else "memory_samples.jsonl",
     }
-    memory = MemorySampler(output / "memory_samples.jsonl")
+    memory = MemorySampler(output / report["memory_samples_file"])
     memory.start()
-    log = output / "shadow_pipeline.log"
+    log = output / ("shadow_recovery.log" if recovery else "shadow_pipeline.log")
     report["flow_credits_before"] = _flow_credits()
     stage = "preflight"
     try:
@@ -566,8 +591,10 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         stage = "pipeline"
         report["stage_times"][stage] = {"started_at": datetime.now(timezone.utc).isoformat()}
         _run_logged(
-            [sys.executable, "-u", str(ROOT / "src" / "scripts" / "pipeline.py")], log,
-            {"FLOW_SHADOW_WHOOP_PREFETCHED": "true"},
+            [sys.executable, "-u", str(ROOT / "ops" / "flow_shadow_recover.py" if recovery else ROOT / "src" / "scripts" / "pipeline.py")], log,
+            {"FLOW_SHADOW_WHOOP_PREFETCHED": "true", "FLOW_SHADOW_ALERTS_OWNED_BY_RUNNER": "true",
+             "FLOW_SHADOW_REPLACE_IMAGE": "true" if recovery and getattr(args, "replace_image", False) else "false",
+             "FLOW_SHADOW_RECOVERY_LOCKED": "true" if recovery else "false"},
         )
         report["stages"][stage] = "complete"
         report["stage_times"][stage]["ended_at"] = datetime.now(timezone.utc).isoformat()
@@ -641,7 +668,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         if report["flow_credits_before"] is not None and report["flow_credits_after"] is not None:
             report["flow_credits_observed_change"] = report["flow_credits_before"] - report["flow_credits_after"]
         report["memory"] = memory.stop()
-        _write_private_json(output / "shadow_report.json", report)
+        _write_private_json(output / report_name, report)
         _write_private_json(marker, {"date": run_date, "status": "failed"})
         attempts = [attempt for kind in ("image", "video") for attempt in report.get(kind, {}).get("attempts", [])]
         preflight_status = "unknown"
@@ -655,12 +682,16 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
             attempt.get("status") == "auth_required" for attempt in attempts
         )
         if auth_failure:
-            _alert(f"🚨 Flow sign-in needed — State Zero shadow day {day_number} ({run_date}). Open the separate VPS Flow profile and rerun zero-credit preflight. API fallback is off.")
+            _alert_once(state, run_date, "flow_auth", f"🚨 Flow sign-in needed — State Zero shadow day {day_number} ({run_date}). Open the separate VPS Flow profile and rerun zero-credit preflight. API fallback is off.")
         elif stage == "preflight":
-            _alert(f"🚨 Flow editor needs attention — State Zero shadow day {day_number} ({run_date}): {preflight_status}. Inspect the private preflight report; no media was submitted.")
+            _alert_once(state, run_date, "flow_preflight", f"🚨 Flow editor needs attention — State Zero shadow day {day_number} ({run_date}): {preflight_status}. Inspect the private preflight report; no media was submitted.")
         else:
             failure_class = attempts[-1].get("status", stage) if attempts else stage
-            _alert(f"🚨 State Zero Flow shadow day {day_number} failed: {failure_class} ({run_date}). Inspect the private report; API fallback is off and this date will not run again automatically.")
+            media_stage = next((kind for kind in ("video", "image") if report.get(kind, {}).get("attempts")), stage)
+            reason = "model/settings validation failed" if attempts and "model" in attempts[-1].get("detail", "") else failure_class
+            _alert_once(state, run_date, "pipeline_failure",
+                f"🚨 State Zero Flow day {day_number} ({run_date}): {media_stage} failed — {reason}. "
+                "Inspect the private report and reconcile existing Flow media before recovery. Automatic regeneration is blocked; API fallback is off.")
         maybe_send_trial_summary(state, start, current)
         print(f"Shadow date {run_date} failed; inspect private log and report before manual retry")
         return 1
@@ -669,10 +700,13 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
     if report["flow_credits_before"] is not None and report["flow_credits_after"] is not None:
         report["flow_credits_observed_change"] = report["flow_credits_before"] - report["flow_credits_after"]
     report["memory"] = memory.stop()
-    _write_private_json(output / "shadow_report.json", report)
+    _write_private_json(output / report_name, report)
     _write_private_json(marker, {"date": run_date, "status": "complete"})
+    if recovery:
+        _write_private_json(original_marker, {"date": run_date, "status": "complete", "recovered": True,
+                                            "original_report": "shadow_report.json", "recovery_report": report_name})
     maybe_send_trial_summary(state, start, current)
-    print(f"Shadow date {run_date} completed; private report: {output / 'shadow_report.json'}")
+    print(f"Shadow date {run_date} completed; private report: {output / report_name}")
     return 0
 
 
