@@ -1,8 +1,26 @@
 diff --git a/src/gflow_cli/api/transports/migrated_composer.py b/src/gflow_cli/api/transports/migrated_composer.py
-index 381428f7..f67ed0e9 100644
+index 6b253ff3..339f6f5b 100644
 --- a/src/gflow_cli/api/transports/migrated_composer.py
 +++ b/src/gflow_cli/api/transports/migrated_composer.py
-@@ -921,49 +921,71 @@ def _r2v_body_problem(body: str, rpcid: str, media_ids: tuple[str, ...]) -> str
+@@ -419,7 +419,7 @@ class ModelMenuMatcher:
+ 
+     def matches(self, text: str) -> bool:
+         folded = text.casefold()
+-        if self.contains.casefold() not in folded:
++        if (self.contains == "Nano Banana 2.1" and not re.search(r"\bnano banana 2\.1(?![\d.])\b", folded)) or self.contains.casefold() not in folded:
+             return False
+         if self.excludes is None:
+             return True
+@@ -455,7 +455,7 @@ IMAGE_ASPECT_LIGATURE_MEASURED: frozenset[ImageAspect] = frozenset(IMAGE_ASPECT_
+ IMAGE_MODEL_MENU_MATCHERS: dict[ImageModel, ModelMenuMatcher] = {
+     # Exact enough to exclude the separate "Nano Banana 2 Lite" entry without
+     # depending on the decorative banana glyph that precedes both live labels.
+-    ImageModel.NARWHAL: ModelMenuMatcher("Nano Banana 2", excludes=("Lite",)),
++    ImageModel.NARWHAL: ModelMenuMatcher("Nano Banana 2.1", excludes=("Lite", LOWER_PRIORITY_TAG)),
+     ImageModel.GEM_PIX_2: ModelMenuMatcher("Nano Banana Pro"),
+     ImageModel.HARBOR_SEAL: ModelMenuMatcher("Nano Banana 2 Lite"),
+ }
+@@ -912,49 +912,75 @@ def _r2v_body_problem(body: str, rpcid: str, media_ids: tuple[str, ...]) -> str
      return None
  
  
@@ -44,9 +62,8 @@ index 381428f7..f67ed0e9 100644
 +    if payload is None:
 +        return "migrated host: image submit model field could not be read"
 +    if model is not None:
-+        # Oracle capture 2026-10-06: explicitly selected Nano Banana 2 sends BELUGA
-+        # at requests[*][5]; older captured requests send NARWHAL at the same field.
-+        accepted = {model.value, "BELUGA"} if model is ImageModel.NARWHAL else {model.value}
++        # Oracle 2026-10-07: selected Nano Banana 2.1 sends BELUGA at requests[*][5].
++        accepted = {"BELUGA"} if model is ImageModel.NARWHAL else {model.value}
 +        if any(not isinstance(row[5], str) or row[5] not in accepted for row in payload[1]):
 +            return f"migrated host: image submit model differs from requested {model.value}"
      missing = [media_id for media_id in reference_ids if media_id not in body]
@@ -74,10 +91,14 @@ index 381428f7..f67ed0e9 100644
 -    problem = _image_body_problem(_post_data(request), reference_ids, model)
 -    if problem is not None:
 +async def _guard_image_submit(route: Any, raw_request: Any,
-+                                     reference_ids: tuple[str, ...], model: ImageModel | None) -> str | None:
++                                     reference_ids: tuple[str, ...], model: ImageModel | None, selected_label: str | None = None) -> str | None:
 +    body = _post_data(raw_request)
 +    problem = _image_body_problem(body, reference_ids, model)
 +    payload = _image_submit_payload(body)
++    if not problem and model is ImageModel.NARWHAL and (
++        not selected_label or not IMAGE_MODEL_MENU_MATCHERS[model].matches(selected_label)
++    ):
++        problem = "migrated host: Nano Banana 2.1 selected label was not confirmed"
 +    if not problem and model is ImageModel.NARWHAL and (
 +        len(payload[1]) != 1 or payload[2] != 1 or payload[1][0][4] != 4
 +    ):
@@ -86,6 +107,7 @@ index 381428f7..f67ed0e9 100644
 +    if marker:
 +        evidence = {"state": "blocked_before_submission" if problem else "forwarded",
 +                    "expected_model": model.value if model else None,
++                    "selected_model": "Nano Banana 2.1" if selected_label and IMAGE_MODEL_MENU_MATCHERS[ImageModel.NARWHAL].matches(selected_label) else None,
 +                    "actual_model": payload[1][0][5] if payload and isinstance(payload[1][0][5], str) and payload[1][0][5] in
 +                        {"NARWHAL", "BELUGA", "GEM_PIX_2", "HARBOR_SEAL"} else "unknown",
 +                    "reason": problem}
@@ -106,7 +128,15 @@ index 381428f7..f67ed0e9 100644
  
  
  def _redacted_page_url(page: Any) -> str:
-@@ -1904,7 +1926,14 @@ class MigratedComposer:
+@@ -1877,6 +1903,7 @@ class MigratedComposer:
+                 ) from None
+         current = (await button.text_content() or "").strip()
+         if matcher.matches(current):
++            self._shadow_image_model_label = current
+             log.info("migrated.image_model_already_selected", model=current, requested=model.value)
+             return
+         await button.click(timeout=4000)
+@@ -1894,7 +1921,15 @@ class MigratedComposer:
                  remediation_hint="Choose one offered image model or omit --model.",
              )
          await items.nth(hits[0]).click(timeout=4000)
@@ -115,6 +145,7 @@ index 381428f7..f67ed0e9 100644
 +        while time.monotonic() < deadline:
 +            current = (await button.text_content() or "").strip()
 +            if matcher.matches(current):
++                self._shadow_image_model_label = current
 +                log.info("migrated.image_model_selected", model=current, requested=model.value)
 +                return
 +            await asyncio.sleep(0.1)
@@ -122,7 +153,16 @@ index 381428f7..f67ed0e9 100644
  
      # --- start frame (i2v) ------------------------------------------------------
  
-@@ -3044,8 +3073,7 @@ class MigratedComposer:
+@@ -3019,7 +3054,7 @@ class MigratedComposer:
+             return _rpcid(url) == IMAGE_SUBMIT_RPC
+ 
+         async def guard(route: Any, raw_request: Any) -> None:
+-            problem = await _guard_image_submit(route, raw_request, reference_ids, request.model)
++            problem = await _guard_image_submit(route, raw_request, reference_ids, request.model, getattr(self, "_shadow_image_model_label", None))
+             log.info(
+                 "migrated.image_submit_guarded",
+                 outcome="aborted" if problem else "passed",
+@@ -3033,8 +3068,7 @@ class MigratedComposer:
          page.on("request", on_request)
          page.on("response", on_response)
          try:
@@ -132,7 +172,7 @@ index 381428f7..f67ed0e9 100644
              enable_deadline = time.monotonic() + SUBMIT_ENABLE_BUDGET_S
              while not await submit.is_enabled():
                  if time.monotonic() >= enable_deadline:
-@@ -3080,11 +3108,10 @@ class MigratedComposer:
+@@ -3068,11 +3102,10 @@ class MigratedComposer:
                  result.exception()
              page.remove_listener("request", on_request)
              page.remove_listener("response", on_response)
