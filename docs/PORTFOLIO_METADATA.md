@@ -17,7 +17,10 @@ arcs, title, and artwork without the Instagram footer. Files are stored under
 Videos retain source audio when present and use `yuv420p`, fast-start playback,
 BT.709 primaries/matrix, sRGB transfer, and limited range.
 
-Posting-enabled runs upload the files to the dated archive and `latest` aliases
+Posting-enabled runs upload a staged, immutable pair to
+`/portfolio/YYYY-MM-DD/<revision>/`, where revision is a SHA-256 fingerprint of
+both video files. Existing revision files are never overwritten. Compatibility
+`latest` aliases remain available, but the feed points at the immutable pair
 using the existing VPS configuration. Posting-disabled runs keep the renders
 private and publish no metadata. Portfolio rendering, delivery, and notification
 failures cannot retry or invalidate a successful Instagram post.
@@ -40,8 +43,8 @@ Schema version 1 contains exactly six fields:
   "date": "YYYY-MM-DD",
   "title": "Actual artwork title",
   "instagramUrl": "https://www.instagram.com/p/POST_ID/",
-  "lightVideoUrl": "https://media.example.com/portfolio/YYYY-MM-DD/light.mp4",
-  "darkVideoUrl": "https://media.example.com/portfolio/YYYY-MM-DD/dark.mp4"
+  "lightVideoUrl": "https://media.example.com/portfolio/YYYY-MM-DD/REVISION/light.mp4",
+  "darkVideoUrl": "https://media.example.com/portfolio/YYYY-MM-DD/REVISION/dark.mp4"
 }
 ```
 
@@ -55,11 +58,33 @@ videos. Avoid independently combining `latest` media aliases and an Instagram
 link: the aliases may change between requests.
 
 A valid published permalink and both publicly reachable dated videos are
-required before metadata is written. Replacement is atomic per file, dated first
-and latest last. Missing inputs or failed delivery leave the previous latest feed
+required before metadata is written. The six public fields and schema version
+remain unchanged. A destination filesystem lock serializes comparison and
+replacement, dated first and latest last. The persisted daily claim's start
+time identifies the generation attempt; upload/completion time is never used
+as its ordering key. Later dates win, then later generation starts within a
+date. Equal ordering keys with conflicting media are rejected; retries of the
+same revision finish idempotently. Older runs can archive their own date but
+cannot replace newer dated/latest metadata.
+
+Ordering guards live in `.portfolio-publication/` with private permissions
+(directory 0700, JSON 0600) and contain only date, attempt time and revision.
+They are separate from public feed JSON. The SSH publisher executes the same
+stdlib-only Python 3 code on the destination and uses a kernel file lock, which
+is released automatically when the process exits. Keep that private directory
+on persistent storage and excluded from static serving.
+
+Missing inputs or failed delivery leave the previous latest feed
 intact. The first qualifying post creates the feed; existing dates are not
 backfilled automatically. Only the fields above are public; private inputs and
-runtime state remain outside the repository and public media directory.
+health inputs remain outside the repository and public feed.
+
+During the Oracle trial, **Hostinger main is the sole public feed source**.
+Apply this hardening to both main and `codex/flow-shadow-experiment`, preserving
+their API and Flow paths; Oracle remains private. Commit/push does not authorize
+deployment, generation, publication or feed ownership changes. Later rollout:
+Portfolio's compatible consumer first, selected Hostinger publisher second,
+then Portfolio's prepared refresh schedules.
 
 ## Emergency posts
 
