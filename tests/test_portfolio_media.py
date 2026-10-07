@@ -224,9 +224,9 @@ class PortfolioMediaTests(unittest.TestCase):
             with patch.dict(os.environ, {"VPS_PUBLIC_BASE_URL": "https://media.example.test"}, clear=False):
                 with patch.object(pipeline, "_ensure_public_urls_reachable", return_value=[]):
                     urls = pipeline.step_17_upload_portfolio_vps(portfolio)
-            self.assertEqual((root / "served" / "portfolio" / "2026-07-24" / "light.webp").read_bytes(), b"light.webp")
+            self.assertEqual((root / "served" / "portfolio" / "2026-07-24" / pipeline.portfolio_revision / "light.webp").read_bytes(), b"light.webp")
             self.assertEqual((root / "served" / "portfolio" / "latest" / "dark.mp4").read_bytes(), b"dark.mp4")
-            self.assertEqual(urls["light.webp"], "https://media.example.test/portfolio/latest/light.webp")
+            self.assertEqual(urls["light.webp"], f"https://media.example.test/portfolio/2026-07-24/{pipeline.portfolio_revision}/light.webp")
 
     def test_disabled_secondary_is_a_noop(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
