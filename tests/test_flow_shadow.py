@@ -95,9 +95,12 @@ class FlowProviderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             original = Path(tmpdir) / "flow_art.jpg"
             Image.new("RGB", (768, 1024), "white").save(original, "JPEG")
-            payload = {"status": "ok", "count": 1, "model": "NARWHAL", "project_id": "project", "images": [{"local_path": str(original), "media_name": "media", "model_name_type": "NARWHAL"}]}
+            payload = {"status": "ok", "count": 1, "model": "NARWHAL", "project_id": "project", "images": [{"local_path": str(original), "media_name": "media", "model_name_type": "BELUGA"}]}
             with patch.dict(os.environ, {"FLOW_IMAGE_UPSCALE_2K": "false"}):
-                with patch.object(FlowMediaClient, "_run_json", return_value=payload):
+                def confirmed(command, timeout, marker):
+                    marker.write_text(json.dumps({"state": "forwarded", "expected_model": "NARWHAL", "actual_model": "BELUGA", "selected_model": "Nano Banana 2.1"}))
+                    return payload
+                with patch.object(FlowMediaClient, "_run_json", side_effect=confirmed):
                     target = Path(tmpdir) / "generated_art.png"
                     FlowMediaClient().generate_image({"scene": "cloud"}, target)
             self.assertTrue(original.exists())
@@ -114,11 +117,14 @@ class FlowProviderTests(unittest.TestCase):
             Image.new("RGB", (768, 1024), "white").save(original, "JPEG")
             payload = {"status": "ok", "count": 1, "model": "NARWHAL", "images": [{"local_path": str(original), "model_name_type": None}]}
             with patch.dict(os.environ, {"FLOW_IMAGE_UPSCALE_2K": "false"}):
-                with patch.object(FlowMediaClient, "_run_json", return_value=payload):
+                def confirmed(command, timeout, marker):
+                    marker.write_text(json.dumps({"state": "forwarded", "expected_model": "NARWHAL", "actual_model": "BELUGA", "selected_model": "Nano Banana 2.1"}))
+                    return payload
+                with patch.object(FlowMediaClient, "_run_json", side_effect=confirmed):
                     FlowMediaClient().generate_image({"scene": "cloud"}, Path(tmpdir) / "generated_art.png")
             diagnostics = json.loads((Path(tmpdir) / "flow_image_diagnostics.json").read_text())
             self.assertIsNone(diagnostics["wire_model"])
-            self.assertFalse(diagnostics["model_attribution_confirmed"])
+            self.assertTrue(diagnostics["model_attribution_confirmed"])
 
     def test_explicit_failed_video_submits_at_most_twice(self):
         from flow_media_client import FlowCommandError, FlowMediaClient
@@ -658,7 +664,7 @@ class UpgradeValidationTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     FlowMediaClient().generate_image({}, root / 'generated_art.png')
                 def confirmed(command, timeout, marker):
-                    marker.write_text(json.dumps({'state': 'forwarded', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
+                    marker.write_text(json.dumps({'state': 'forwarded', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA', 'selected_model': 'Nano Banana 2.1'}))
                     return payload
                 with patch.object(FlowMediaClient, '_run_json', side_effect=confirmed):
                     FlowMediaClient().generate_image({}, root / 'generated_art.png')

@@ -209,10 +209,11 @@ class FlowMediaClient:
             submission = {}
         beluga_confirmed = (submission.get("state") == "forwarded" and
                             submission.get("expected_model") == "NARWHAL" and
-                            submission.get("actual_model") == "BELUGA")
+                            submission.get("actual_model") == "BELUGA" and
+                            submission.get("selected_model") == "Nano Banana 2.1")
         if (payload.get("model") != "NARWHAL" or
-                wire_model not in (None, "NARWHAL", "BELUGA") or
-                (wire_model == "BELUGA" and not beluga_confirmed)):
+                wire_model not in (None, "BELUGA") or
+                not beluga_confirmed):
             raise RuntimeError("Flow image model conflicts with Nano Banana 2 request")
         source = self._owned_path(item["local_path"], output_path.parent)
         original = source.name
@@ -243,7 +244,7 @@ class FlowMediaClient:
         self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"), {
             "provider": "flow", "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
-            "model": "nano2", "wire_model": wire_model, "model_attribution_confirmed": wire_model == "NARWHAL" or beluga_confirmed,
+            "model": "Nano Banana 2.1", "selected_model": submission.get("selected_model"), "wire_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
             "aspect": "3:4", "source_width": width,
             "source_height": height, "flow_2k_upscaled": upscaled,
             "media_id": item.get("media_name"), "project_id": payload.get("project_id"),

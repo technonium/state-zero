@@ -166,9 +166,9 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
     def test_model_is_validated_at_request_field_not_in_prompt(self):
         from gflow_cli.api.image import Model
         from gflow_cli.api.transports.migrated_composer import _image_body_problem
-        for model in ('NARWHAL', 'BELUGA'):
+        for model in ('BELUGA',):
             self.assertIsNone(_image_body_problem(self.body(model), (), Model.NARWHAL))
-        for body in (self.body('GEM_PIX_2', 'NARWHAL BELUGA'), '', 'NARWHAL', self.body('UNKNOWN')):
+        for body in (self.body('GEM_PIX_2', 'NARWHAL BELUGA'), '', 'NARWHAL', self.body('UNKNOWN'), self.body('NARWHAL')):
             self.assertIsNotNone(_image_body_problem(body, (), Model.NARWHAL))
 
     async def test_guard_aborts_mismatch_before_forwarding(self):
@@ -180,7 +180,7 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
             marker = Path(tmp) / 'submit'
             marker.write_text('submit_attempted\n')
             with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
-                self.assertIsNotNone(await _guard_image_submit(route, raw, (), Model.NARWHAL))
+                self.assertIsNotNone(await _guard_image_submit(route, raw, (), Model.NARWHAL, "Nano Banana 2.1"))
             import json
             self.assertEqual(json.loads(marker.read_text())['state'], 'blocked_before_submission')
         route.abort.assert_awaited_once()
@@ -194,7 +194,7 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             marker=Path(tmp)/'submit';marker.write_text('submit_attempted\n')
             with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
-                self.assertIsNone(await _guard_image_submit(route,raw,(),Model.NARWHAL))
+                self.assertIsNone(await _guard_image_submit(route,raw,(),Model.NARWHAL,"Nano Banana 2.1"))
             import json
             self.assertEqual(json.loads(marker.read_text())['state'],'forwarded')
         route.continue_.assert_awaited_once()
@@ -208,7 +208,7 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
             row = [None, None, None, 123, aspect, 'BELUGA', None, None, [[['cloud']]]]
             body = 'f.req=' + json.dumps([[['ogiZ0b', json.dumps([None, [row], count]), None, 'generic']]])
             route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
-            self.assertIsNotNone(await _guard_image_submit(route, MagicMock(post_data=body), (), Model.NARWHAL))
+            self.assertIsNotNone(await _guard_image_submit(route, MagicMock(post_data=body), (), Model.NARWHAL, "Nano Banana 2.1"))
             route.abort.assert_awaited_once()
             route.continue_.assert_not_awaited()
 
@@ -238,3 +238,46 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
         route.abort.assert_awaited_once()
         route.continue_.assert_not_awaited()
         page.unroute.assert_awaited_once()
+
+@unittest.skipIf(MigratedComposer is None, 'Requires pinned gflow')
+class NanoBanana21SelectionTests(unittest.TestCase):
+    def test_only_version_21_matches(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import IMAGE_MODEL_MENU_MATCHERS
+        matcher = IMAGE_MODEL_MENU_MATCHERS[Model.NARWHAL]
+        labels = ['Nano Banana 2', '🍌 Nano Banana 2.1 arrow_drop_down', 'Nano Banana 2 Lite', 'Nano Banana 2.1 Lite', 'Nano Banana 2.10', 'Nano Banana 2.1 [Lower Priority]']
+        self.assertEqual([label for label in labels if matcher.matches(label)], [labels[1]])
+
+@unittest.skipIf(MigratedComposer is None, 'Requires pinned gflow')
+class NanoBanana21ReadbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_model_fails_before_submit(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.exceptions import ConfigurationError
+        button = MagicMock(wait_for=AsyncMock(), text_content=AsyncMock(return_value='Nano Banana 2'), click=AsyncMock())
+        pane = MagicMock(); pane.locator.return_value.filter.return_value.first = button
+        items = MagicMock(all_text_contents=AsyncMock(return_value=['Nano Banana 2', 'Nano Banana 2 Lite']))
+        items.first.wait_for = AsyncMock()
+        page = MagicMock(); page.locator.return_value = items; page.keyboard.press = AsyncMock()
+        with self.assertRaises(ConfigurationError):
+            await MigratedComposer()._select_image_model(page, pane, Model.NARWHAL)
+        items.nth.assert_not_called()
+
+    async def test_failed_readback_is_rejected(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.exceptions import UiSelectorDriftError
+        button = MagicMock(wait_for=AsyncMock(), text_content=AsyncMock(return_value='Nano Banana 2'), click=AsyncMock())
+        pane = MagicMock(); pane.locator.return_value.filter.return_value.first = button
+        items = MagicMock(all_text_contents=AsyncMock(return_value=['Nano Banana 2', 'Nano Banana 2.1']))
+        items.first.wait_for = AsyncMock(); items.nth.return_value.click = AsyncMock()
+        page = MagicMock(); page.locator.return_value = items
+        with patch('gflow_cli.api.transports.migrated_composer.time.monotonic', side_effect=[0, 6]):
+            with self.assertRaises(UiSelectorDriftError):
+                await MigratedComposer()._select_image_model(page, pane, Model.NARWHAL)
+        items.nth.assert_called_once_with(1)
+
+    async def test_unconfirmed_label_cannot_forward(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        self.assertIsNotNone(await _guard_image_submit(route, MagicMock(post_data=ImageSubmissionGuardTests.body('BELUGA')), (), Model.NARWHAL))
+        route.abort.assert_awaited_once(); route.continue_.assert_not_awaited()
