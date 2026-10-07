@@ -33,7 +33,7 @@ from utils import (
     is_terminal_rescue_run as infer_terminal_rescue_run,
     resolve_instagram_publish_strategy,
 )
-from portfolio_metadata import build_metadata, publish_metadata
+from portfolio_metadata import build_metadata, publish_metadata, media_revision
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
 from daily_run_state import DailyRunStateManager, OwnershipLostError
@@ -187,6 +187,7 @@ class WHOOPPipeline:
         # Tracks whether media came from API generation or manual Telegram upload.
         self.asset_source = 'auto_api'
         self.run_token = uuid.uuid4().hex[:12]
+        self.generation_started_at = datetime.now(ZoneInfo('UTC')).isoformat()
         self.daily_run = DailyRunStateManager(
             run_date=self.run_date,
             timezone_name=self.pipeline_timezone,
@@ -338,6 +339,7 @@ class WHOOPPipeline:
     def _claim_daily_run_or_exit(self):
         decision, state = self.daily_run.acquire()
         if decision == 'owner':
+            self.generation_started_at = state.get('claimed_at') or getattr(self, 'generation_started_at', None)
             self._set_heartbeat_context(
                 status='STARTING',
                 note=f'Claimed daily run ownership (token {self.run_token}).',
@@ -2499,7 +2501,7 @@ class WHOOPPipeline:
         return portfolio_dir
 
     def step_17_upload_portfolio_vps(self, portfolio_dir: Path) -> dict[str, str]:
-        """Upload a date archive plus predictable portfolio/latest aliases."""
+        """Upload an immutable video-pair revision plus compatibility aliases."""
         filenames = ('light.webp', 'dark.webp', 'light.mp4', 'dark.mp4')
         vps_base = (os.getenv('VPS_PUBLIC_BASE_URL') or '').strip()
         if not vps_base or 'mock' in vps_base:
@@ -2509,15 +2511,31 @@ class WHOOPPipeline:
         if missing:
             raise RuntimeError(f"Portfolio upload inputs are missing or empty: {', '.join(missing)}")
 
-        archive_relative = Path('portfolio') / self.run_date
+        self.portfolio_revision = media_revision(portfolio_dir)
+        archive_relative = Path('portfolio') / self.run_date / self.portfolio_revision
         latest_relative = Path('portfolio') / 'latest'
+        def copy_mounted(root):
+            archive = root / archive_relative
+            latest = root / latest_relative
+            ensure_path(archive.parent)
+            ensure_path(latest)
+            staging = archive.parent / f'.upload-{uuid.uuid4().hex}'
+            ensure_path(staging)
+            try:
+                for local_path, name in uploads:
+                    shutil.copy2(local_path, staging / name)
+                try:
+                    staging.rename(archive)
+                except OSError:
+                    if not archive.is_dir() or media_revision(archive) != self.portfolio_revision:
+                        raise
+                for _path, name in uploads:
+                    shutil.copy2(archive / name, latest / name)
+            finally:
+                if staging.exists(): shutil.rmtree(staging)
         if 'mock' not in vps_base and self.post_to_instagram:
             if self.media_mode == 'local_test':
-                for relative in (archive_relative, latest_relative):
-                    ensure_path(self.local_vps_dir / relative)
-                for local_path, name in uploads:
-                    shutil.copy2(local_path, self.local_vps_dir / archive_relative / name)
-                    shutil.copy2(local_path, self.local_vps_dir / latest_relative / name)
+                copy_mounted(self.local_vps_dir)
             else:
                 ssh_host = (os.getenv('VPS_SSH_HOST') or '').strip()
                 ssh_user = (os.getenv('VPS_SSH_USER') or '').strip()
@@ -2531,34 +2549,38 @@ class WHOOPPipeline:
                 latest_dir = Path(ssh_path) / latest_relative
                 mounted_root = Path(ssh_path)
                 if mounted_root.exists():
-                    ensure_path(archive_dir)
-                    ensure_path(latest_dir)
-                    for local_path, name in uploads:
-                        shutil.copy2(local_path, archive_dir / name)
-                        shutil.copy2(local_path, latest_dir / name)
+                    copy_mounted(mounted_root)
                 else:
                     target = f'{ssh_user}@{ssh_host}'
                     strict_host_key_checking = (os.getenv('STATE_ZERO_SSH_STRICT_HOST_KEY_CHECKING') or 'accept-new').strip()
                     if strict_host_key_checking not in {'yes', 'accept-new'}:
                         strict_host_key_checking = 'accept-new'
                     ssh_opts = ['-o', f'StrictHostKeyChecking={strict_host_key_checking}']
+                    staging_dir = archive_dir.parent / f'.upload-{uuid.uuid4().hex}'
                     mkdir = subprocess.run(
-                        ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(str(archive_dir))} {shlex.quote(str(latest_dir))}"],
+                        ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(str(staging_dir))} {shlex.quote(str(latest_dir))}"],
                         capture_output=True, text=True,
                     )
                     if mkdir.returncode:
                         raise RuntimeError(f'Failed to create portfolio VPS directories: {self._build_subprocess_details_tail(mkdir)}')
-                    for local_path, name in uploads:
-                        for remote_dir in (archive_dir, latest_dir):
+                    try:
+                        for local_path, name in uploads:
                             result = subprocess.run(
-                                ['scp', *ssh_opts, str(local_path), f'{target}:{remote_dir}/{name}'],
+                                ['scp', *ssh_opts, str(local_path), f'{target}:{shlex.quote(str(staging_dir / name))}'],
                                 capture_output=True, text=True,
                             )
                             if result.returncode:
                                 raise RuntimeError(f'Failed to upload portfolio {name}: {self._build_subprocess_details_tail(result)}')
+                        stage = shlex.quote(str(staging_dir)); archive = shlex.quote(str(archive_dir)); latest = shlex.quote(str(latest_dir))
+                        activate = subprocess.run(['ssh', *ssh_opts, target,
+                            f'if [ ! -d {archive} ]; then mv -T {stage} {archive} || [ -d {archive} ]; fi && cp {archive}/* {latest}/'], capture_output=True, text=True)
+                        if activate.returncode:
+                            raise RuntimeError('Failed to activate portfolio revision')
+                    finally:
+                        subprocess.run(['ssh', *ssh_opts, target, f'rm -rf -- {shlex.quote(str(staging_dir))}'], capture_output=True, text=True)
 
         base = vps_base.rstrip('/')
-        urls = {name: f'{base}/portfolio/latest/{name}' for name in filenames}
+        urls = {name: f'{base}/{archive_relative.as_posix()}/{name}' for name in filenames}
         if 'mock' not in vps_base and self.post_to_instagram:
             self._ensure_public_urls_reachable(
                 tuple(('video' if name.endswith('.mp4') else 'image', f'portfolio {name}', url) for name, url in urls.items())
@@ -2569,25 +2591,26 @@ class WHOOPPipeline:
         if not self.post_to_instagram:
             return
         payload = build_metadata(date=self.run_date, title=title, post_result=post_result,
-                                 base_url=os.getenv('VPS_PUBLIC_BASE_URL'))
+                                 base_url=os.getenv('VPS_PUBLIC_BASE_URL'), revision=self.portfolio_revision)
         self._ensure_public_urls_reachable((
             ('video', 'dated portfolio light', payload['lightVideoUrl']),
             ('video', 'dated portfolio dark', payload['darkVideoUrl']),
         ))
         if self.media_mode == 'local_test':
-            publish_metadata(payload, self.local_vps_dir)
+            publish_metadata(payload, self.local_vps_dir, generation_started_at=self.generation_started_at)
         else:
             config_error = get_live_vps_config_error()
             if config_error:
                 raise RuntimeError(config_error)
             root = Path(os.environ['VPS_SSH_PATH'])
             if root.exists():
-                publish_metadata(payload, root)
+                publish_metadata(payload, root, generation_started_at=self.generation_started_at)
             else:
                 strict = (os.getenv('STATE_ZERO_SSH_STRICT_HOST_KEY_CHECKING') or 'accept-new').strip()
                 if strict not in {'yes', 'accept-new'}:
                     strict = 'accept-new'
                 publish_metadata(payload, root,
+                                 generation_started_at=self.generation_started_at,
                                  target=f"{os.environ['VPS_SSH_USER']}@{os.environ['VPS_SSH_HOST']}",
                                  ssh_opts=['-o', f'StrictHostKeyChecking={strict}'])
 
