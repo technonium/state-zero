@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.flow-shadow
+      args:
+        STATE_ZERO_BUILD_COMMIT: ${STATE_ZERO_BUILD_COMMIT:-}
     platform: linux/arm64
     shm_size: 512m
     deploy:

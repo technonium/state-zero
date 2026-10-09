@@ -2299,17 +2299,7 @@ class WHOOPPipeline:
             out_path = self.output_dir / 'generated_video.mp4'
             if provider == 'flow':
                 from flow_media_client import FlowMediaClient
-                out_path.unlink(missing_ok=True)
-                try:
-                    FlowMediaClient().generate_video(prompt_text, art_path, out_path)
-                except Exception:
-                    if not env_bool('FLOW_API_FALLBACK_ENABLED', default=False):
-                        raise
-                    from google_video_client import GoogleVideoClient
-                    GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)
-                    get_notifier().notify_warning(
-                        get_pipeline_run_date_str(), 'flow_video_fallback',
-                        '💸 Flow video failed; paid Google API video generation was used.')
+                FlowMediaClient().generate_video(prompt_text, art_path, out_path)
             else:
                 from google_video_client import GoogleVideoClient
                 GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)

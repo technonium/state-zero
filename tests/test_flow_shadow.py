@@ -123,7 +123,8 @@ class FlowProviderTests(unittest.TestCase):
                 with patch.object(FlowMediaClient, "_run_json", side_effect=confirmed):
                     FlowMediaClient().generate_image({"scene": "cloud"}, Path(tmpdir) / "generated_art.png")
             diagnostics = json.loads((Path(tmpdir) / "flow_image_diagnostics.json").read_text())
-            self.assertIsNone(diagnostics["wire_model"])
+            self.assertEqual(diagnostics["wire_model"], "BELUGA")
+            self.assertIsNone(diagnostics["response_model"])
             self.assertTrue(diagnostics["model_attribution_confirmed"])
 
     def test_explicit_failed_video_submits_at_most_twice(self):
@@ -154,6 +155,7 @@ class FlowProviderTests(unittest.TestCase):
 
     def test_flow_api_fallback_is_stage_specific_when_enabled(self):
         from image_gen import ImageGenerator
+        from flow_media_client import FlowCommandError
         from pipeline import WHOOPPipeline
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -163,15 +165,15 @@ class FlowProviderTests(unittest.TestCase):
             prompt.write_text("Move slowly")
             env = {"MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "true", "GOOGLE_API_KEY_PRIMARY": "test"}
             with patch.dict(os.environ, env, clear=True):
-                with patch("flow_media_client.FlowMediaClient.generate_image", side_effect=RuntimeError("Flow image unavailable")):
-                    with patch("google_image_client.GoogleImageClient.generate_from_json", side_effect=lambda _prompt, path: path.write_bytes(b"image")):
+                with patch("flow_media_client.FlowMediaClient._generate_image", side_effect=FlowCommandError("image", "auth_required", submission_state="not_attempted")):
+                    with patch("google_image_client.GoogleImageClient.generate_from_json", side_effect=lambda _prompt, path: Image.new("RGB", (768, 1024), "white").save(path)):
                         ImageGenerator().generate({"scene": "cloud"}, str(art))
-                self.assertEqual(art.read_bytes(), b"image")
+                self.assertTrue(art.exists())
                 pipeline = object.__new__(WHOOPPipeline)
                 pipeline.output_dir = root
                 pipeline._current_generation_status = lambda: "STARTING"
                 pipeline._set_heartbeat_context = lambda **_kwargs: None
-                with patch("flow_media_client.FlowMediaClient.generate_video", side_effect=RuntimeError("Flow video unavailable")):
+                with patch("flow_media_client.FlowMediaClient._generate_video", side_effect=FlowCommandError("video", "auth_required", submission_state="not_attempted")), patch("flow_media_client.FlowMediaClient._probe_video", return_value=(1080, 1920, 8, True)):
                     with patch("google_video_client.GoogleVideoClient.generate_from_image", side_effect=lambda _prompt, _image, path: path.write_bytes(b"video")):
                         self.assertEqual(pipeline.step_9_generate_video(art, prompt).read_bytes(), b"video")
 
@@ -622,12 +624,12 @@ class RecoveryReconciliationTests(unittest.TestCase):
             (out/'flow_image_attempt_1.submit').write_text('attempted')
             with self.assertRaises(ValueError):
                 validate_recovery_inputs(out)
-            validate_recovery_inputs(out, True)
             (out/'flow_video_attempt_1.submit').write_text('{"state":"forwarded"}')
             with self.assertRaises(ValueError):
-                validate_recovery_inputs(out, True)
+                validate_recovery_inputs(out)
+            (out/'flow_image_attempt_1.submit').unlink()
             (out/'generated_video.mp4').touch()
-            validate_recovery_inputs(out, True)
+            validate_recovery_inputs(out)
 
     def test_blocked_submission_is_safe_to_retry(self):
         from flow_shadow_recover import validate_recovery_inputs
@@ -662,7 +664,7 @@ class UpgradeValidationTests(unittest.TestCase):
             with patch.dict(os.environ, {'FLOW_IMAGE_UPSCALE_2K': 'false'}), patch.object(
                 FlowMediaClient, '_run_json', return_value=payload):
                 with self.assertRaises(RuntimeError):
-                    FlowMediaClient().generate_image({}, root / 'generated_art.png')
+                    FlowMediaClient().generate_image({}, root / 'unconfirmed' / 'generated_art.png')
                 def confirmed(command, timeout, marker):
                     marker.write_text(json.dumps({'state': 'forwarded', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA', 'selected_model': 'Nano Banana 2.1'}))
                     return payload

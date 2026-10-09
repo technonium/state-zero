@@ -1,6 +1,8 @@
 """Narrow adapter from State Zero's media files to the pinned gflow CLI."""
 
 import json
+import fcntl
+import hashlib
 import os
 import re
 import shutil
@@ -32,6 +34,107 @@ class FlowCommandError(RuntimeError):
 class FlowMediaClient:
     def __init__(self, profile: str | None = None):
         self.profile = profile or os.getenv("GFLOW_PROFILE", "shadow")
+
+    @staticmethod
+    def _api_fallback_allowed(error: Exception) -> bool:
+        if not isinstance(error, FlowCommandError):
+            return False
+        reason = (error.error_class + " " + error.detail).upper()
+        if any(word in reason for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT", "MODEL", "SETTING", "RECAPTCHA")):
+            return False
+        if error.category == "generation_failed":
+            return error.retryable
+        return (error.submission_state in ("", "not_attempted") and
+                error.category in {"pre_submit_transient", "pre_submit_timeout", "auth_required"})
+
+    def generate_image(self, prompt_json: dict, output_path: Path) -> Path:
+        return self._generate_guarded("image", prompt_json, output_path,
+                                      lambda result: self._generate_image(prompt_json, output_path, result))
+
+    def generate_video(self, prompt_text: str, image_path: Path, output_path: Path) -> Path:
+        request = {"prompt": prompt_text, "start_frame_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest()}
+        return self._generate_guarded("video", request, output_path,
+                                      lambda result: self._generate_video(prompt_text, image_path, output_path, result), image_path)
+
+    def _generate_guarded(self, stage: str, request: dict, output: Path, generate, image_path: Path | None = None) -> Path:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        diagnostics = output.with_name(f"flow_{stage}_diagnostics.json")
+        identity = {"request": request, "profile": self.profile,
+                    "project": os.getenv("FLOW_PREFLIGHT_PROJECT_ID", ""),
+                    "settings": "Nano Banana 2.1/3:4/x1" if stage == "image" else "veo-fast/i2v/9:16/x1/8s"}
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        with output.with_name(".flow-generation.lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise FlowCommandError(stage, "execution_busy") from None
+            previous = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
+            markers = list(output.parent.glob(f"flow_{stage}_attempt_*.submit"))
+            if (previous or markers or output.exists()) and previous.get("request_hash") != fingerprint:
+                raise FlowCommandError(stage, "request_identity_unverified")
+            if previous.get("output_sha256") and output.is_file():
+                if hashlib.sha256(output.read_bytes()).hexdigest() == previous["output_sha256"]:
+                    # Downstream stale-file checks use timestamps; identity was checked above.
+                    output.touch()
+                    if previous.get("fallback_alert_pending"):
+                        self._notify_api_fallback(stage, diagnostics)
+                    return output
+            if previous.get("api_fallback_state"):
+                raise FlowCommandError(stage, "submission_uncertain", submission_state="api_attempted")
+            result = previous.get("result")
+            self._write_diagnostics(diagnostics, {"request_hash": fingerprint})
+            try:
+                try:
+                    if result is None and (previous.get("failure") or previous.get("generation_started") or markers):
+                        failure = previous.get("failure") or {"category": "submission_uncertain"}
+                        resume = (os.getenv("FLOW_SHADOW_RECOVERY_LOCKED") == "true" and not markers
+                                  and failure.get("submission_state") == "not_attempted"
+                                  and failure.get("category") in {"auth_required", "pre_submit_transient", "pre_submit_timeout"}
+                                  and len(previous.get("attempts", [])) < 2)
+                        if not resume:
+                            raise FlowCommandError(stage, **failure)
+                    self._write_diagnostics(diagnostics, {"generation_started": True})
+                    generate(result)
+                except Exception as error:
+                    if not (os.getenv("FLOW_API_FALLBACK_ENABLED", "false").lower() == "true" and self._api_fallback_allowed(error)):
+                        raise
+                    self._write_diagnostics(diagnostics, {"api_fallback_state": "started", "fallback_reason": error.category})
+                    client = GoogleImageClient() if stage == "image" else GoogleVideoClient()
+                    client.router.retry_ambiguous_calls = False
+                    if stage == "image":
+                        client.generate_from_json(request, output)
+                    else:
+                        client.generate_from_image(request["prompt"], image_path, output)
+                    self._write_diagnostics(diagnostics, {"provider": "google_api", "api_fallback_state": "complete"})
+                    self._notify_api_fallback(stage, diagnostics)
+                if stage == "image":
+                    with Image.open(output) as image:
+                        image.load()
+                        if image.width < 512 or image.height < 512:
+                            raise ValueError("Generated image is too small")
+                else:
+                    width, height, duration, audio = self._probe_video(output)
+                    if (width, height) != (1080, 1920) or not 7.5 <= duration <= 8.5 or not audio:
+                        raise ValueError("Canonical video has invalid dimensions, duration or audio")
+                self._write_diagnostics(diagnostics, {"output_sha256": hashlib.sha256(output.read_bytes()).hexdigest(), "failure": None})
+                return output
+            except Exception as error:
+                failure = {"category": "validation_failed"}
+                if isinstance(error, FlowCommandError):
+                    failure = {key: getattr(error, key) for key in ("category", "error_class", "media_id", "retryable", "submission_state", "detail", "operation_id")}
+                self._write_diagnostics(diagnostics, {"failure": failure})
+                raise
+
+    def _notify_api_fallback(self, stage: str, diagnostics: Path) -> None:
+        from notifier import notify_warning
+        from utils import get_pipeline_run_date_str
+        try:
+            sent = notify_warning(get_pipeline_run_date_str(), f"flow_{stage}_fallback",
+                                  f"💸 Flow {stage} failed; paid Google API {stage} generation was used.")
+        except Exception:
+            sent = False
+        self._write_diagnostics(diagnostics, {"fallback_alert_pending": not sent})
 
     def image_command(self, prompt_json: dict, raw_path: Path) -> list[str]:
         command = [
@@ -65,7 +168,9 @@ class FlowMediaClient:
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=env)
         except subprocess.TimeoutExpired:
-            raise FlowCommandError(command[1], "submission_uncertain" if marker and marker.exists() else "pre_submit_timeout") from None
+            submitted = bool(marker and marker.exists())
+            raise FlowCommandError(command[1], "submission_uncertain" if submitted else "pre_submit_timeout",
+                                   submission_state="uncertain" if submitted else "not_attempted") from None
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
@@ -75,8 +180,8 @@ class FlowMediaClient:
             error_class = re.sub(r"[^A-Za-z0-9_]", "", str(error.get("class", "")))[:80]
             media_id = str(payload.get("media_id") or "")
             failed = payload.get("generation_status") == "MEDIA_GENERATION_STATUS_FAILED" and bool(media_id)
-            reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("class", ""))).upper()
-            policy_or_quota = any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "QUOTA", "CREDIT"))
+            reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("class", "")) + " " + str(error.get("detail", ""))).upper()
+            policy_or_quota = any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT"))
             clicked = bool(marker and marker.exists())
             submission_state = "attempted" if clicked else "not_attempted"
             if clicked:
@@ -102,6 +207,8 @@ class FlowMediaClient:
             }
             if failed:
                 category = "generation_failed"
+            elif policy_or_quota:
+                category = "provider_rejected"
             elif auth_error:
                 category = "auth_required"
             elif submission_state == "blocked_before_submission":
@@ -113,7 +220,7 @@ class FlowMediaClient:
             else:
                 category = "pre_submit_terminal"
             raise FlowCommandError(command[1], category, error_class=error_class,
-                                   media_id=media_id, retryable=failed and not policy_or_quota,
+                                   media_id=media_id, retryable=failed and not policy_or_quota and "RECAPTCHA" not in reasons,
                                    detail=detail, operation_id=operation_id, submission_state=submission_state)
         return payload
 
@@ -138,8 +245,13 @@ class FlowMediaClient:
 
     @staticmethod
     def _write_diagnostics(path: Path, data: dict) -> None:
-        path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-        path.chmod(0o600)
+        previous = json.loads(path.read_text()) if path.exists() else {}
+        staged = path.with_name(path.name + ".tmp")
+        with os.fdopen(os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+            json.dump(previous | data, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        staged.replace(path)
 
     def _catalog_position(self) -> int:
         try:
@@ -171,17 +283,24 @@ class FlowMediaClient:
             pass
         return {}
 
-    def generate_image(self, prompt_json: dict, output_path: Path) -> Path:
+    def _generate_image(self, prompt_json: dict, output_path: Path, recovered: dict | None = None) -> Path:
         started_at = datetime.now(timezone.utc).isoformat()
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        attempts = []
+        diagnostics = output_path.with_name("flow_image_diagnostics.json")
+        saved = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
+        attempts = saved.get("attempts", [])
         previous = list(output_path.parent.glob("flow_image_attempt_*.submit"))
-        first = 1 + max((int(p.stem.rsplit("_", 1)[-1]) for p in previous), default=0)
-        for offset in range(2):
-            number = first + offset
+        marker = max(previous, key=lambda p: int(p.stem.rsplit("_", 1)[-1])) if previous else None
+        payload = recovered
+        first = 1 + max([int(p.stem.rsplit("_", 1)[-1]) for p in previous] +
+                        [item["number"] for item in attempts], default=0)
+        for number in range(first, 3) if recovered is None else ():
             marker = output_path.with_name(f"flow_image_attempt_{number}.submit")
             try:
                 payload = self._run_json(self.image_command(prompt_json, output_path.with_name("flow_art.png")), 600, marker)
+                self._write_diagnostics(diagnostics, {"result": {
+                    "count": payload.get("count"), "model": payload.get("model"), "project_id": payload.get("project_id"),
+                    "images": [{k: image.get(k) for k in ("local_path", "media_name", "model_name_type")} for image in payload.get("images", [])]}})
                 attempts.append({"number": number, "submit_attempted": marker.exists(), "status": "complete"})
                 self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"),
                                         {"provider": "flow", "started_at": started_at, "attempts": attempts})
@@ -194,7 +313,12 @@ class FlowMediaClient:
                                  "expected_model": "NARWHAL", "submission_state": exc.submission_state})
                 self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"),
                                         {"provider": "flow", "started_at": started_at, "attempts": attempts})
-                if offset == 1 or exc.category not in {"pre_submit_transient", "pre_submit_timeout", "blocked_before_submission"}:
+                if exc.category == "post_submit_error" and exc.media_id:
+                    payload = {"count": 1, "model": "NARWHAL", "project_id": os.getenv("FLOW_PREFLIGHT_PROJECT_ID", ""),
+                               "images": [{"local_path": None, "media_name": exc.media_id, "model_name_type": None}]}
+                    self._write_diagnostics(diagnostics, {"result": payload})
+                    break
+                if number == 2 or exc.category not in {"pre_submit_transient", "pre_submit_timeout", "blocked_before_submission"}:
                     raise
                 if marker.exists() and exc.submission_state != "blocked_before_submission":
                     raise
@@ -204,7 +328,7 @@ class FlowMediaClient:
         item = images[0]
         wire_model = item.get("model_name_type")
         try:
-            submission = json.loads(marker.read_text()) if marker.exists() else {}
+            submission = json.loads(marker.read_text()) if marker and marker.exists() else {}
         except (OSError, ValueError):
             submission = {}
         beluga_confirmed = (submission.get("state") == "forwarded" and
@@ -215,10 +339,22 @@ class FlowMediaClient:
                 wire_model not in (None, "BELUGA") or
                 not beluga_confirmed):
             raise RuntimeError("Flow image model conflicts with Nano Banana 2 request")
-        source = self._owned_path(item["local_path"], output_path.parent)
+        try:
+            if not item.get("local_path"):
+                raise FileNotFoundError("Image download missing")
+            source = self._owned_path(item["local_path"], output_path.parent)
+        except FileNotFoundError:
+            if not item.get("media_name"):
+                raise
+            source = self._recover_image(item["media_name"], output_path.parent)
+        source = self._owned_path(str(source), output_path.parent)
         original = source.name
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        if saved.get("original_sha256") and saved["original_sha256"] != source_hash:
+            raise FlowCommandError("image", "original_asset_changed")
+        self._write_diagnostics(diagnostics, {"original_sha256": source_hash})
         upscaled = False
-        if os.getenv("FLOW_IMAGE_UPSCALE_2K", "true").lower() == "true":
+        if os.getenv("FLOW_IMAGE_UPSCALE_2K", "false").lower() == "true":
             media_id, project_id = item.get("media_name"), payload.get("project_id")
             if media_id and project_id:
                 upscale_dir = output_path.parent / "flow_upscale"
@@ -244,7 +380,7 @@ class FlowMediaClient:
         self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"), {
             "provider": "flow", "started_at": started_at,
             "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
-            "model": "Nano Banana 2.1", "selected_model": submission.get("selected_model"), "wire_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
+            "model": "Nano Banana 2.1", "selected_model": submission.get("selected_model"), "wire_model": submission.get("actual_model"), "response_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
             "aspect": "3:4", "source_width": width,
             "source_height": height, "flow_2k_upscaled": upscaled,
             "media_id": item.get("media_name"), "project_id": payload.get("project_id"),
@@ -265,6 +401,29 @@ class FlowMediaClient:
         return (int(stream["width"]), int(stream["height"]), float(payload["format"]["duration"]),
                 any(item["codec_type"] == "audio" for item in payload["streams"]))
 
+    def _recover_image(self, media_id: str, output_dir: Path) -> Path:
+        try:
+            from gflow_cli.config import get_settings
+            db = get_settings().resolved_db_path()
+            with sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True) as connection:
+                rows = connection.execute(
+                    "SELECT l.path, l.sha256 FROM local_files l JOIN assets a ON a.id=l.asset_id "
+                    "WHERE a.profile_name=? AND a.flow_media_id=? AND a.kind='image'",
+                    (self.profile, media_id)).fetchall()
+            for raw, digest in rows:
+                if not raw or not digest:
+                    continue
+                try:
+                    path = self._owned_path(raw, output_dir)
+                    if hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+                        return path
+                except (OSError, RuntimeError):
+                    continue
+        except (ImportError, OSError, sqlite3.Error):
+            pass
+        # Pinned gflow data download supports videos only; never regenerate to recover an image.
+        raise FlowCommandError("image", "image_recovery_unavailable", media_id=media_id)
+
     def _recover_video(self, media_id: str, output_dir: Path) -> Path:
         recovery_dir = output_dir / "flow_recovered"
         recovery_dir.mkdir(exist_ok=True)
@@ -281,7 +440,7 @@ class FlowMediaClient:
                 continue
         raise FlowCommandError("video", "existing_media_download_failed", media_id=media_id)
 
-    def generate_video(self, prompt_text: str, image_path: Path, output_path: Path) -> Path:
+    def _generate_video(self, prompt_text: str, image_path: Path, output_path: Path, recovered: dict | None = None) -> Path:
         started_at = datetime.now(timezone.utc).isoformat()
         if not prompt_text.strip():
             raise ValueError("Video prompt is empty")
@@ -290,16 +449,29 @@ class FlowMediaClient:
         framed, _ = GoogleVideoClient._to_letterboxed_png_bytes(image_path)
         start_frame.write_bytes(framed)
         raw_path = output_path.with_name("flow_raw_video.mp4")
-        attempts = []
-        submitted = 0
-        pre_submit_retries = 0
-        payload = {}
+        diagnostics = output_path.with_name("flow_video_diagnostics.json")
+        saved = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
+        attempts = saved.get("attempts", [])
+        previous = list(output_path.parent.glob("flow_video_attempt_*.submit"))
+        submitted = len(previous)
+        first = 1 + max([int(p.stem.rsplit("_", 1)[-1]) for p in previous] +
+                        [item["number"] for item in attempts], default=0)
+        pre_submit_retries = sum(item.get("status") in {"auth_required", "pre_submit_transient", "pre_submit_timeout"}
+                                 and not item.get("submit_attempted") for item in attempts)
+        payload = recovered or {}
         source = None
-        for number in (1, 2, 3):
+        if recovered:
+            try:
+                source = self._owned_path(payload.get("local_path") or "", output_path.parent)
+            except (FileNotFoundError, RuntimeError):
+                source = self._recover_video(payload["media_id"], output_path.parent)
+        for number in range(first, 4) if recovered is None else ():
             marker = output_path.with_name(f"flow_video_attempt_{number}.submit")
             before = self._catalog_position()
             try:
                 payload = self._run_json(self.video_command(prompt_text, start_frame, raw_path), 1500, marker)
+                self._write_diagnostics(diagnostics, {"result": {k: payload.get(k) for k in ("succeeded", "media_id", "local_path") } | {
+                    "request": {k: (payload.get("request") or {}).get(k) for k in ("count", "model", "mode", "aspect")}}})
                 submitted = len(list(output_path.parent.glob("flow_video_attempt_*.submit")))
                 attempts.append({"number": number, "status": "complete", "submit_attempted": marker.exists(),
                                  "media_id": payload.get("media_id"),
@@ -334,9 +506,10 @@ class FlowMediaClient:
                     time.sleep(60)
                     continue
                 if exc.category == "post_submit_error" and media_id:
-                    source = self._recover_video(media_id, output_path.parent)
                     payload = {"succeeded": True, "media_id": media_id,
                                "request": {"count": 1, "model": "veo_3_1_fast", "mode": "i2v", "aspect": "portrait"}}
+                    self._write_diagnostics(diagnostics, {"result": payload})
+                    source = self._recover_video(media_id, output_path.parent)
                     attempts[-1]["status"] = "recovered_existing_media"
                     break
                 raise
@@ -352,7 +525,11 @@ class FlowMediaClient:
             raise RuntimeError(f"Flow video has invalid size or duration: {width}x{height}, {duration:.2f}s")
         if not has_audio:
             raise RuntimeError("Flow video has no audio stream")
-        if source != raw_path:
+        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        if saved.get("original_sha256") and saved["original_sha256"] != source_hash:
+            raise FlowCommandError("video", "original_asset_changed")
+        self._write_diagnostics(diagnostics, {"original_sha256": source_hash})
+        if source.resolve() != raw_path.resolve():
             shutil.copyfile(source, raw_path)
         selected = source
         upscale_status = "not_needed" if width == 1080 else "disabled"
@@ -375,8 +552,8 @@ class FlowMediaClient:
                             upscale_status = "validated"
                         else:
                             upscale_status = "invalid_media"
-                except (OSError, ValueError, subprocess.TimeoutExpired, KeyError, IndexError):
-                    upscale_status = "unavailable"
+                except (OSError, ValueError, subprocess.SubprocessError, KeyError, IndexError, StopIteration):
+                    upscale_status = "invalid_media" if candidate.exists() else "unavailable"
         staged = output_path.with_name(".generated_video.staged.mp4")
         if selected == source and (width, height) == (720, 1280):
             subprocess.run(

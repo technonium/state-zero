@@ -12,10 +12,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 DISALLOWED_EXACT = {
     ".env",
+    ".env.bak",
+    "docs/STATE_ZERO_ORACLE_MIGRATION_PRIVATE.md",
     ".DS_Store",
 }
 
 DISALLOWED_PREFIXES = (
+    ".superpowers/",
+    "docs/private/",
     ".claude/",
     ".kilocode/",
     ".playwright/",

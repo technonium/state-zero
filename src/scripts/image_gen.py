@@ -31,20 +31,8 @@ class ImageGenerator:
     def generate(self, prompt_json: dict, output_path: str):
         """Generate image from JSON prompt"""
         if self.provider == 'flow':
-            from utils import env_bool
             target = Path(output_path)
-            target.unlink(missing_ok=True)
-            try:
-                return self.client.generate_image(prompt_json, target)
-            except Exception:
-                if not env_bool('FLOW_API_FALLBACK_ENABLED', default=False):
-                    raise
-                result = GoogleImageClient().generate_from_json(prompt_json, target)
-                from notifier import notify_warning
-                from utils import get_pipeline_run_date_str
-                notify_warning(get_pipeline_run_date_str(), 'flow_image_fallback',
-                               '💸 Flow image failed; paid Google API image generation was used.')
-                return result
+            return self.client.generate_image(prompt_json, target)
         if self.mock_mode:
             print(f"⚠️ Falling back to mock image generation: {self._init_error}")
             try:

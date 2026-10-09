@@ -24,6 +24,7 @@ from portfolio_media import (
     PORTFOLIO_VIDEO_MAX_BYTES,
     PORTFOLIO_VIDEO_W,
     PORTFOLIO_W,
+    _source_scale_options,
     render_variants,
     render_video,
 )
@@ -41,6 +42,20 @@ class PortfolioMediaTests(unittest.TestCase):
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    def test_untagged_source_uses_bt709_without_overriding_tagged_source(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            untagged = root / "untagged.mp4"
+            tagged = root / "tagged.mp4"
+            self._make_video(untagged)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(untagged), "-c", "copy", "-bsf:v",
+                 "h264_metadata=matrix_coefficients=6:video_full_range_flag=1", str(tagged)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self.assertEqual(_source_scale_options(untagged), ":in_color_matrix=bt709:in_range=tv")
+            self.assertEqual(_source_scale_options(tagged), "")
 
     def _assert_video_background(self, path: Path, theme: str):
         expected = (252, 252, 252) if theme == "light" else (13, 13, 13)
@@ -148,8 +163,8 @@ class PortfolioMediaTests(unittest.TestCase):
                 self.assertEqual(video["r_frame_rate"], source_fps)
                 self.assertEqual(video["pix_fmt"], "yuv420p")
                 self.assertEqual(
-                    tuple(video[k] for k in ("color_range", "color_space", "color_transfer", "color_primaries")),
-                    ("tv", "bt709", "iec61966-2-1", "bt709"),
+                    {key: video.get(key) for key in ("color_range", "color_space", "color_transfer", "color_primaries")},
+                    {"color_range": "tv", "color_space": "bt709", "color_transfer": "iec61966-2-1", "color_primaries": "bt709"},
                 )
                 self.assertEqual(audio["codec_name"], "aac")
                 self._assert_video_background(mp4, theme)

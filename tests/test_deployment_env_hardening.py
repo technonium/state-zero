@@ -43,6 +43,35 @@ class DeploymentEnvHardeningTests(unittest.TestCase):
             "EMERGENCY_FALLBACK_ENABLED": "false",
         }
 
+    def test_flow_addition_preserves_production_modes_and_credentials(self):
+        from notifier import Notifier
+        from openrouter_client import create_llm_client
+        with tempfile.TemporaryDirectory() as tmp:
+            for mode in ('automatic', 'telegram'):
+                for provider in ('google_api', 'flow'):
+                    env = self._base_live_vps_env() | {
+                        'STATE_ZERO_PRIVATE_ROOT': tmp, 'PIPELINE_MODE': mode,
+                        'MEDIA_GENERATION_PROVIDER': provider, 'FLOW_API_FALLBACK_ENABLED': 'true',
+                        'TELEGRAM_BOT_TOKEN': 'test-bot', 'TELEGRAM_CHAT_ID': 'test-chat',
+                    }
+                    with self.subTest(mode=mode, provider=provider), patch.dict(os.environ, env, clear=True), \
+                            patch.object(Notifier, '_instance', None):
+                        validate.validate_environment(rescue_only=False)
+                        pipeline = WHOOPPipeline()
+                        self.assertEqual(pipeline.mode, mode)
+                        self.assertTrue(pipeline.post_to_instagram)
+                        self.assertEqual(pipeline.media_mode, 'live_vps')
+                        self.assertEqual(pipeline.bot_token, 'test-bot')
+                        self.assertTrue(Notifier()._is_enabled())
+                        self.assertEqual(create_llm_client().fallback_api_key, 'google-primary')
+
+    def test_api_media_remains_the_default(self):
+        from image_gen import ImageGenerator
+        with patch.dict(os.environ, self._base_live_vps_env(), clear=True):
+            generator = ImageGenerator()
+            self.assertEqual(generator.provider, 'google_api')
+            self.assertFalse(generator.mock_mode)
+
     def test_load_project_dotenv_preserves_existing_env_values(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

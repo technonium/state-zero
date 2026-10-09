@@ -58,3 +58,11 @@ prana_cache.json
 *.tmp
 *.temp
 test_out_*
+
+# Internal working notes and private deployment documents
+.superpowers/
+docs/private/
+docs/STATE_ZERO_ORACLE_MIGRATION_PRIVATE.md
+.env.*
+!.env.example
+.build-provenance.json
