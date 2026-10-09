@@ -5,12 +5,22 @@ and video generation, card rendering, and portfolio rendering in an isolated
 service. Outputs and the SQLite archive stay private. Instagram posting, public
 media delivery, and API media fallback are disabled.
 
+The regular pipeline retains `automatic` and `telegram` modes, its existing
+Instagram and Telegram variables, and emergency rescue. Production's API image
+remains the default. Selecting `MEDIA_GENERATION_PROVIDER=flow` requires the
+browser-capable image and a persistent signed-in profile; merging code alone
+does not activate Flow. A production cutover must use the regular pipeline
+entrypoint under Xvfb with production settings, mounts and schedules. The shadow
+runner deliberately rejects publishing credentials. Its `SHADOW_ALERT_*` and
+`PROMPT_GOOGLE_API_KEY` variables are only trial isolation, not replacements for
+production's existing Telegram and Google key settings.
+
 ## Build and storage
 
 Create a Dokploy Compose service from `codex/flow-shadow-experiment` using
 `compose.flow-shadow.yml`. It builds `Dockerfile.flow-shadow` for `linux/arm64`
 with headed Google Chrome, Playwright 1.61.0, and gflow commit
-`88ff5371c25551af28ab748691f70d32e33ab37c`. The container runs as UID 10001,
+`5ea53ddf638d8392907d7ec70c5fdbe58ec5fe41`. The container runs as UID 10001,
 with a 4 GiB memory limit, 512 MiB shared memory, and the browser seccomp profile.
 It stays idle between schedule jobs; no public domain or port is needed.
 
@@ -34,12 +44,18 @@ For a local ARM64 build:
 
 ```sh
 docker build --platform linux/arm64 -f Dockerfile.flow-shadow \
+  --build-arg STATE_ZERO_BUILD_COMMIT="$(git rev-parse HEAD)" \
   -t state-zero-flow-shadow:local .
 ```
 
 Chrome is installed from its APT repository at build time. Repeat the browser and
 editor checks after rebuilding or changing the pinned CLI or browser dependencies.
 Verify `aarch64`, the Chrome executable, and sufficient host memory before use.
+
+For a committed checkout, set `STATE_ZERO_BUILD_COMMIT` to its full commit hash
+in the build arguments. Reports read provenance embedded in the image and always
+include a runtime-source SHA-256. An omitted commit is reported as unavailable;
+a persistent deployment manifest cannot supply or override the installed revision.
 
 ## Environment
 
@@ -150,7 +166,7 @@ xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual
 
 `--manual` bypasses only the schedule clock gate. WHOOP readiness, editor
 preflight, isolation checks, and the one-attempt-per-date claim remain enforced.
-The image request is Nano Banana 2, 3:4, one output. The video request is Veo Fast,
+The image request is Nano Banana 2.1, 3:4, one output. The video request is Veo Fast,
 9:16, one output, using a local 1080×1920 black-padded start frame.
 
 The default `FLOW_VIDEO_EXPLICIT_DURATION=false` omits a duration control that
@@ -233,7 +249,7 @@ remain operational risks that require monitoring.
 
 ## CLI upgrade validation
 
-The shadow image pins gflow-cli v0.82.1 and Playwright 1.61.0. Local patches preserve Nano Banana 2 request validation, submission evidence, and recovery of an existing clip.
+The shadow image pins gflow-cli v0.82.1 and Playwright 1.61.0. Local patches preserve Nano Banana 2.1 request validation, submission evidence, and recovery of an existing clip.
 
 After a CLI upgrade, run one supervised full validation with a unique ID:
 
@@ -242,3 +258,9 @@ xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual --validation-id v082
 ```
 
 Files, pipeline state, and the archive use `runtime/validation/<id>/`. The validation shares the daily runner's execution lock, canonical WHOOP token, and Chrome profile. An ID can submit only once across all dates. Existing daily files and claims remain intact. Reports distinguish validation from scheduled runs and record installed versions. Compare five to seven fresh scheduled dates after the upgrade; a supervised validation does not count as an unattended run.
+
+Existing submissions are never blindly regenerated on later invocations. Verified
+local images and known video IDs can be recovered; the pinned CLI cannot remotely
+download image IDs. If no verified local image copy remains, recovery stops for
+manual reconciliation. Optional paid API fallback does not retry an ambiguous
+generation POST or restart generation after a polling/download error.

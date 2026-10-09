@@ -169,17 +169,32 @@ def render_still(source_path: Path, output_path: Path, data: dict, theme: str, *
     canvas.save(output_path, "WEBP", quality=82, method=6)
 
 
-def _video_filter(theme: str, fallback_card: bool) -> str:
+def _source_scale_options(source_path: Path) -> str:
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+         "stream=color_space,color_range", "-of", "json", str(source_path)],
+        capture_output=True, text=True, check=True,
+    )
+    streams = json.loads(probe.stdout).get("streams", [])
+    if not streams:
+        raise ValueError(f"Video source has no video stream: {source_path}")
+    stream = streams[0]
+    matrix = "" if stream.get("color_space") not in (None, "unknown") else ":in_color_matrix=bt709"
+    color_range = "" if stream.get("color_range") not in (None, "unknown") else ":in_range=tv"
+    return matrix + color_range
+
+
+def _video_filter(theme: str, fallback_card: bool, source_scale_options: str = "") -> str:
     background, _color = _theme(theme)
     if fallback_card:
         media = (
             f"[0:v]crop={FALLBACK_ART_W}:{FALLBACK_ART_H}:{FALLBACK_ART_X}:{FALLBACK_ART_Y},"
-            f"scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase,"
+            f"scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase{source_scale_options},"
             f"crop={ART_W}:{ART_H}[art];"
         )
         x, y = ART_X, ART_Y
     else:
-        media = f"[0:v]scale={PORTFOLIO_W}:1920[art];"
+        media = f"[0:v]scale={PORTFOLIO_W}:1920{source_scale_options}[art];"
         x, y = 0, SOURCE_VIDEO_Y
     return (
         media +
@@ -197,6 +212,7 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
     """Encode a compact portfolio MP4, retaining source audio when available."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     overlay = _draw_ui(theme, data)
+    source_scale_options = _source_scale_options(source_path)
     with tempfile.TemporaryDirectory() as tmpdir:
         overlay_path = Path(tmpdir) / "portfolio_overlay.png"
         overlay.save(overlay_path, "PNG")
@@ -205,7 +221,7 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
             candidate = output_path.with_name(f".{output_path.stem}-crf{crf}.mp4")
             cmd = [
                 "ffmpeg", "-y", "-i", str(source_path), "-loop", "1", "-i", str(overlay_path),
-                "-filter_complex", _video_filter(theme, fallback_card),
+                "-filter_complex", _video_filter(theme, fallback_card, source_scale_options),
                 "-map", "[v]", "-map", "0:a?", "-shortest",
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p",

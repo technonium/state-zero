@@ -22,6 +22,8 @@ RUN pip install --no-cache-dir "playwright==1.61.0" "urllib3>=2.8.0" "PyJWT>=2.1
     "gflow-cli @ git+https://github.com/ffroliva/gflow-cli.git@${GFLOW_COMMIT}"
 
 COPY . .
+ARG STATE_ZERO_BUILD_COMMIT=
+RUN python3 -c 'import sys,json,os,re; sys.path.insert(0,"/app/ops"); from flow_shadow_run import source_revision; revision=os.getenv("STATE_ZERO_BUILD_COMMIT", ""); open("/app/.build-provenance.json","w").write(json.dumps({"state_zero_commit": revision if re.fullmatch("[0-9a-f]{40}", revision) else None, "state_zero_source_sha256": source_revision()}))'
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-agent-panel.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-media-recovery.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-submit-boundary.patch

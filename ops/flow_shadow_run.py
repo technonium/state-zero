@@ -463,6 +463,16 @@ def _handle_existing_date_marker(state: Path, marker: Path, run_date: str, start
     return status
 
 
+def source_revision() -> str:
+    digest = hashlib.sha256()
+    files = [p for folder in (ROOT / "src", ROOT / "ops") for p in folder.rglob("*")
+             if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"]
+    files += [ROOT / name for name in ("requirements.txt", "Dockerfile.flow-shadow", "compose.flow-shadow.yml") if (ROOT / name).is_file()]
+    for path in sorted(files):
+        digest.update(str(path.relative_to(ROOT)).encode() + b"\0" + path.read_bytes())
+    return digest.hexdigest()
+
+
 def _runtime_versions(private_root: Path) -> dict:
     from importlib.metadata import distribution, version, PackageNotFoundError
     values = {}
@@ -481,11 +491,11 @@ def _runtime_versions(private_root: Path) -> dict:
         values["chrome"] = result.stdout.strip() if result.returncode == 0 else "unavailable"
     except (OSError, subprocess.TimeoutExpired):
         values["chrome"] = "unavailable"
-    deployment = private_root / "runtime/state/flow_shadow/deployment_version.json"
     try:
-        values["state_zero_commit"] = json.loads(deployment.read_text()).get("state_zero_commit")
+        values.update(json.loads((ROOT / ".build-provenance.json").read_text()))
     except (OSError, ValueError):
         values["state_zero_commit"] = None
+        values["state_zero_source_sha256"] = source_revision()
     return values
 
 
@@ -495,10 +505,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--validation-id", help="one supervised full run with isolated artifacts and archive")
     parser.add_argument("--manual", action="store_true", help="run outside the scheduled IST window for supervised validation")
     parser.add_argument("--recover-date", help="supervised media-only recovery using saved inputs; preserves original failure evidence")
-    parser.add_argument("--replace-image", action="store_true", help="authorize one replacement after reconciling prior image submissions")
     args = parser.parse_args(argv)
-    if args.replace_image and not args.recover_date:
-        parser.error("--replace-image requires --recover-date")
     if args.validation_id and (not args.manual or args.recover_date or args.final_check):
         parser.error("--validation-id requires --manual and cannot recover or finalize a daily run")
     os.environ.pop("FLOW_SHADOW_VALIDATION_ID", None)
@@ -551,7 +558,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         if not original_evidence.exists():
             _write_private_json(original_evidence, original)
         from flow_shadow_recover import validate_recovery_inputs
-        validate_recovery_inputs(output, getattr(args, "replace_image", False))
+        validate_recovery_inputs(output)
         required_inputs = ("daily_data.json", "card_metadata.json", "image_prompt.json", "video_prompt.txt")
         if any(not (output / name).is_file() for name in required_inputs):
             raise ValueError("Recovery requires all saved inputs")
@@ -632,7 +639,6 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         _run_logged(
             [sys.executable, "-u", str(ROOT / "ops" / "flow_shadow_recover.py" if recovery else ROOT / "src" / "scripts" / "pipeline.py")], log,
             {"FLOW_SHADOW_WHOOP_PREFETCHED": "true", "FLOW_SHADOW_ALERTS_OWNED_BY_RUNNER": "true",
-             "FLOW_SHADOW_REPLACE_IMAGE": "true" if recovery and getattr(args, "replace_image", False) else "false",
              "FLOW_SHADOW_RECOVERY_LOCKED": "true" if recovery else "false"},
         )
         report["stages"][stage] = "complete"

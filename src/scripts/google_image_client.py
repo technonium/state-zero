@@ -24,7 +24,7 @@ class GoogleImageClient:
         primary = os.getenv("GOOGLE_API_KEY_PRIMARY", "")
         fallback = os.getenv("GOOGLE_API_KEY_FALLBACK", "")
         self.router = GoogleKeyRouter(primary, fallback)
-        self.model = os.getenv("GOOGLE_IMAGE_MODEL", "gemini-3.1-flash-image-preview")
+        self.model = os.getenv("GOOGLE_IMAGE_MODEL", "gemini-nano-banana-2.1")
 
     @staticmethod
     def _build_prompt_from_json(prompt_json: dict) -> str:
