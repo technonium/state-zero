@@ -2325,7 +2325,7 @@ class PromptOrchestrator:
     def _is_negated_visual_match(self, text: str, match: re.Match[str]) -> bool:
         window = text[max(0, match.start() - 48):match.start()].lower()
         return bool(
-            re.search(r'(?:\bno|\bnot|\bwithout|\bavoid|\bnever|\bomit|\babsent from)\s+$', window)
+            re.search(r'(?:\bno|\bnot|\bwithout|\bavoid|\bnever|\bomit|\babsent from)\s+(?:overhead\s+)?$', window)
             or window.endswith('does not ')
             or window.endswith("doesn't ")
             or window.endswith('must not ')

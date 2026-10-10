@@ -16,6 +16,38 @@ from prompts import PromptOrchestrator
 from creature_utils import parse_creature_payload
 
 
+class VisualNegationRegressionTests(unittest.TestCase):
+    def test_overhead_negation_is_recognized(self):
+        orchestrator = object.__new__(PromptOrchestrator)
+        examples = [
+            'No overhead aperture',
+            'no open sky — light enters only through lateral cracks in the surrounding rock walls, no overhead aperture, no vertical beam',
+            'no aperture',
+            'no vertical beam',
+        ] + [f'{negator} overhead aperture' for negator in ('not', 'without', 'avoid', 'never', 'omit', 'absent from')]
+        for text in examples:
+            with self.subTest(text=text):
+                self.assertIsNone(orchestrator._first_unnegated_match(orchestrator._DEEP_OVERHEAD_APERTURE, text))
+
+    def test_positive_openings_remain_rejected(self):
+        orchestrator = object.__new__(PromptOrchestrator)
+        examples = {
+            'an overhead aperture': 'aperture',
+            'a skylight opens above': 'skylight',
+            'a vertical beam enters the scene': 'vertical beam',
+            'no overhead aperture, but a skylight opens above': 'skylight',
+            'no overhead aperture. A skylight opens above': 'skylight',
+            'no; overhead aperture': 'aperture',
+            'no, overhead aperture': 'aperture',
+            'no overhead rock conceals an aperture': 'aperture',
+        }
+        for text, expected in examples.items():
+            with self.subTest(text=text):
+                match = orchestrator._first_unnegated_match(orchestrator._DEEP_OVERHEAD_APERTURE, text)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.group(0).lower(), expected)
+
+
 class RecoveryPromptRegressionTests(unittest.TestCase):
     def test_json_builder_contains_recovery_severity_mapping(self):
         content = (PROJECT_ROOT / "src/prompts/json_builder.md").read_text(encoding="utf-8")
@@ -627,7 +659,7 @@ class ImagePromptWiringTests(unittest.TestCase):
         self.assertIn("Image JSON validation failed after 3 attempts", str(ctx.exception))
         self.assertIn("deep_image_overhead_aperture", str(ctx.exception))
 
-    def test_build_image_json_retries_after_parse_failure_then_succeeds(self):
+    def test_build_image_json_accepts_negated_overhead_after_two_parse_failures(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
                 os.environ,
@@ -637,11 +669,12 @@ class ImagePromptWiringTests(unittest.TestCase):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
                 responses = iter([
                     "this is not valid json",
+                    '{"composition": "broken"',
                     json.dumps(
                         {
                             "core_concept": "Inside a buried cave recess with overhead rock mass pressing close above.",
                             "lighting": {"time": "Cold light enters laterally through a side-wall seam."},
-                            "composition": {"sky": "None visible."},
+                            "composition": {"sky": "no open sky — light enters only through lateral cracks in the surrounding rock walls, no overhead aperture, no vertical beam"},
                             "color_palette": {"sky_gradient": "Enclosed interior, no direct sky glow."},
                             "creature_integration": {"blend": "Option B - Sculptural", "visibility": "Compressed cave masses hold indirect boundary tension."},
                             "mandatory_exclusions": ["no literal animal, creature, beast, mascot, or character subject"],
@@ -681,6 +714,7 @@ class ImagePromptWiringTests(unittest.TestCase):
                 )
 
                 retry_prompt = (orchestrator.output_dir / "last_prompt_image_json_retry.txt").read_text(encoding="utf-8")
+                self.assertTrue((orchestrator.output_dir / "last_prompt_image_json_retry_2.txt").is_file())
                 saved_output = json.loads((orchestrator.output_dir / "image_prompt.json").read_text(encoding="utf-8"))
 
         self.assertIn("was not valid JSON", retry_prompt)
