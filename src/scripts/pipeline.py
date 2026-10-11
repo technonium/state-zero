@@ -2190,6 +2190,22 @@ class WHOOPPipeline:
 
     def step_2_3_lookups(self) -> dict:
         # No more --test flag or mock data - always fetch real WHOOP data
+        if env_bool('FLOW_SHADOW_WHOOP_PREFETCHED', default=False):
+            try:
+                with open(self.output_dir / 'daily_data.json', encoding='utf-8') as handle:
+                    daily_data = json.load(handle)
+                if daily_data.get('date') != self.run_date:
+                    raise ValueError('Prefetched WHOOP data date does not match this pipeline run.')
+                print(f"{Fore.GREEN}✅ Using the shadow runner's validated WHOOP snapshot for {self.run_date}{Style.RESET_ALL}")
+                return daily_data
+            except Exception as e:
+                raise PipelineStageError(
+                    stage='Data Retrieve & Dasha Lookups',
+                    message='Validated shadow WHOOP snapshot is unavailable or invalid.',
+                    details=str(e),
+                    fallback_eligible=False,
+                ) from e
+
         args = []
 
         target_date = os.getenv('PIPELINE_DATE')
@@ -2278,12 +2294,15 @@ class WHOOPPipeline:
         generation_status = self._current_generation_status()
         self._set_heartbeat_context(status=generation_status, note='Generating video asset.', pulse=True)
         try:
-            from google_video_client import GoogleVideoClient
-
-            client = GoogleVideoClient()
+            provider = os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower()
             prompt_text = Path(video_prompt_path).read_text(encoding='utf-8').strip()
             out_path = self.output_dir / 'generated_video.mp4'
-            client.generate_from_image(prompt_text=prompt_text, image_path=art_path, output_path=out_path)
+            if provider == 'flow':
+                from flow_media_client import FlowMediaClient
+                FlowMediaClient().generate_video(prompt_text, art_path, out_path)
+            else:
+                from google_video_client import GoogleVideoClient
+                GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)
             if not out_path.exists():
                 raise FileNotFoundError(f'Expected output missing: {out_path}')
             if out_path.stat().st_mtime < art_path.stat().st_mtime:

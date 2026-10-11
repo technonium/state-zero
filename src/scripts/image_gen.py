@@ -16,7 +16,12 @@ from google_image_client import GoogleImageClient
 
 class ImageGenerator:
     def __init__(self):
+        self.provider = os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower()
         self.mock_mode = False
+        if self.provider == 'flow':
+            from flow_media_client import FlowMediaClient
+            self.client = FlowMediaClient()
+            return
         try:
             self.client = GoogleImageClient()
         except Exception as e:
@@ -25,6 +30,9 @@ class ImageGenerator:
 
     def generate(self, prompt_json: dict, output_path: str):
         """Generate image from JSON prompt"""
+        if self.provider == 'flow':
+            target = Path(output_path)
+            return self.client.generate_image(prompt_json, target)
         if self.mock_mode:
             print(f"⚠️ Falling back to mock image generation: {self._init_error}")
             try:

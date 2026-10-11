@@ -1,0 +1,59 @@
+# Separate image for the non-publishing Google Flow shadow service.
+FROM python:3.11-slim
+ARG TARGETARCH
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg openssh-client libsm6 libxext6 libxrender1 libgomp1 \
+      xvfb xauth x11vnc ca-certificates curl gnupg git \
+ && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+      | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+ && echo "deb [arch=${TARGETARCH} signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+      > /etc/apt/sources.list.d/google-chrome.list \
+ && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Reviewed v0.82.1 release. Rebuild and repeat the live gate before changing it.
+ARG GFLOW_COMMIT=5ea53ddf638d8392907d7ec70c5fdbe58ec5fe41
+RUN pip install --no-cache-dir "playwright==1.61.0" "urllib3>=2.8.0" "PyJWT>=2.15.1" \
+    "gflow-cli @ git+https://github.com/ffroliva/gflow-cli.git@${GFLOW_COMMIT}"
+
+COPY . .
+ARG STATE_ZERO_BUILD_COMMIT=
+RUN python3 -c 'import sys,json,os,re; sys.path.insert(0,"/app/ops"); from flow_shadow_run import source_revision; revision=os.getenv("STATE_ZERO_BUILD_COMMIT", ""); open("/app/.build-provenance.json","w").write(json.dumps({"state_zero_commit": revision if re.fullmatch("[0-9a-f]{40}", revision) else None, "state_zero_source_sha256": source_revision()}))'
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-agent-panel.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-media-recovery.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-submit-boundary.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-video-record.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-original-download.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-image-submit.patch
+RUN useradd --create-home --uid 10001 --gid shadow --shell /bin/sh shadow \
+ && mkdir -p /opt/state-zero-flow-shadow /opt/state-zero-flow-profile \
+ && chown -R shadow:shadow /opt/state-zero-flow-shadow /opt/state-zero-flow-profile /app
+ENV PYTHONUNBUFFERED=1 \
+    HOME=/home/shadow \
+    GFLOW_CLI_HEADLESS=false \
+    GFLOW_CLI_UPDATE_CHECK=0 \
+    GFLOW_CLI_HISTORY_PROMPTS=redacted \
+    GFLOW_CLI_BROWSER_WINDOW_POSITION=0,0 \
+    GFLOW_PROFILE=shadow \
+    STATE_ZERO_PRIVATE_ROOT=/opt/state-zero-flow-shadow \
+    GFLOW_CLI_HOME=/opt/state-zero-flow-profile \
+    PIPELINE_MODE=automatic \
+    PIPELINE_POST_TO_INSTAGRAM=false \
+    PIPELINE_MEDIA_MODE=local_test \
+    PORTFOLIO_MEDIA_ENABLED=true \
+    MEDIA_GENERATION_PROVIDER=flow \
+    FLOW_API_FALLBACK_ENABLED=false \
+    FLOW_VIDEO_EXPLICIT_DURATION=false \
+    FLOW_IMAGE_UPSCALE_2K=false \
+    FLOW_VIDEO_UPSCALE_1080P=true \
+    GOOGLE_API_FALLBACK_ENABLED=false \
+    PIPELINE_TIMEZONE=Asia/Kolkata
+
+# Dokploy's Application Schedule Job execs the runner in this live container.
+USER shadow
+CMD ["sleep", "infinity"]

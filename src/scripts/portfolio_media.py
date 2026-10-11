@@ -31,11 +31,6 @@ from composite import (
 PORTFOLIO_W, PORTFOLIO_H = 1080, 1701
 PORTFOLIO_VIDEO_W, PORTFOLIO_VIDEO_H = 720, 1134
 PORTFOLIO_VIDEO_MAX_BYTES = 1_500_000
-PORTFOLIO_VIDEO_COLOR_ARGS = (
-    "-color_primaries", "bt709", "-color_trc", "iec61966-2-1",
-    "-colorspace", "bt709", "-color_range", "tv",
-    "-x264-params", "colorprim=bt709:transfer=iec61966-2-1:colormatrix=bt709:range=tv",
-)
 
 # Figma node 204:119 / 204:181. The exact opaque frame exports own the
 # artwork aperture, including its slanted corner and bottom band.
@@ -45,6 +40,9 @@ PORTFOLIO_FRAME_DARK = ASSETS_DIR / "portfolio_frame_dark.png"
 ART_X, ART_Y = 80, 364
 ART_W, ART_BOTTOM_BAND = 920, 80
 ART_H = PORTFOLIO_H - ART_Y - ART_BOTTOM_BAND
+# The normal Flow/API sources sit full-width behind the Figma aperture.
+# Their padded video begins showing image content about 237 px from its top.
+SOURCE_IMAGE_Y, SOURCE_VIDEO_Y = 317, 80
 DATE_X, DATE_Y, DATE_W, DATE_H = 80, 80, 279, 71
 ARC_Y = 80
 SPARK_X, SPARK_Y, SPARK_SIZE = 929, 80, 71
@@ -154,11 +152,17 @@ def render_still(source_path: Path, output_path: Path, data: dict, theme: str, *
     background, _color = _theme(theme)
     with Image.open(source_path) as source:
         art_source = _fallback_image_art(source.convert("RGB")) if fallback_card else source.convert("RGB")
-    art = resize_cover(art_source, ART_W, ART_H)
+    if fallback_card:
+        art = resize_cover(art_source, ART_W, ART_H)
+        position = (ART_X, ART_Y)
+    else:
+        height = round(art_source.height * PORTFOLIO_W / art_source.width)
+        art = art_source.resize((PORTFOLIO_W, height), Image.Resampling.LANCZOS)
+        position = (0, SOURCE_IMAGE_Y)
     canvas = Image.new("RGB", (PORTFOLIO_W, PORTFOLIO_H), background)
     # Deliberately let media extend below the Figma frame; the exact exported
     # frame performs the final crop and prevents edge seams in both themes.
-    canvas.paste(art, (ART_X, ART_Y))
+    canvas.paste(art, position)
     overlay = _draw_ui(theme, data)
     canvas.paste(overlay, (0, 0), overlay)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,16 +186,20 @@ def _source_scale_options(source_path: Path) -> str:
 
 def _video_filter(theme: str, fallback_card: bool, source_scale_options: str = "") -> str:
     background, _color = _theme(theme)
-    prefix = ""
-    input_label = "0:v"
     if fallback_card:
-        prefix = f"[0:v]crop={FALLBACK_ART_W}:{FALLBACK_ART_H}:{FALLBACK_ART_X}:{FALLBACK_ART_Y}[fallback];"
-        input_label = "fallback"
+        media = (
+            f"[0:v]crop={FALLBACK_ART_W}:{FALLBACK_ART_H}:{FALLBACK_ART_X}:{FALLBACK_ART_Y},"
+            f"scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase{source_scale_options},"
+            f"crop={ART_W}:{ART_H}[art];"
+        )
+        x, y = ART_X, ART_Y
+    else:
+        media = f"[0:v]scale={PORTFOLIO_W}:1920{source_scale_options}[art];"
+        x, y = 0, SOURCE_VIDEO_Y
     return (
-        f"{prefix}[{input_label}]scale={ART_W}:{ART_H}:force_original_aspect_ratio=increase{source_scale_options},"
-        f"crop={ART_W}:{ART_H}[art];"
+        media +
         f"color=c={background}:s={PORTFOLIO_W}x{PORTFOLIO_H}[base];"
-        f"[base][art]overlay={ART_X}:{ART_Y}[card];"
+        f"[base][art]overlay={x}:{y}[card];"
         # Do not impose a delivery frame rate: the portfolio video keeps the
         # source cadence (the supplied fallback is 25 fps).
         f"[card][1:v]overlay=0:0:format=rgb,"
@@ -217,7 +225,9 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
                 "-map", "[v]", "-map", "0:a?", "-shortest",
                 "-c:v", "libx264", "-preset", "medium", "-crf", str(crf),
                 "-maxrate", "900k", "-bufsize", "1800k", "-pix_fmt", "yuv420p",
-                *PORTFOLIO_VIDEO_COLOR_ARGS,
+                "-color_range", "tv", "-colorspace", "bt709",
+                "-color_trc", "iec61966-2-1", "-color_primaries", "bt709",
+                "-bsf:v", "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1",
                 "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(candidate),
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)

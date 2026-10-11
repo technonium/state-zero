@@ -18,6 +18,8 @@ class GoogleKeyRouter:
     """Two-key router: primary -> fallback with transient retry."""
 
     def __init__(self, primary_key: str, fallback_key: str):
+        self.retry_ambiguous_calls = True
+        self.submission_started = False
         if not env_bool("GOOGLE_API_FALLBACK_ENABLED"):
             fallback_key = ""
         
@@ -59,6 +61,8 @@ class GoogleKeyRouter:
                     return call_fn(api_key, key_label)
                 except GoogleAPIError as e:
                     last_error = e
+                    if not self.retry_ambiguous_calls and (self.submission_started or e.status_code is None or e.status_code >= 500):
+                        raise
                     if self._is_non_retryable_client_error(e.status_code):
                         raise
                     if self._is_retryable_http(e.status_code):
@@ -67,6 +71,8 @@ class GoogleKeyRouter:
                 except Exception as e:
                     last_error = e
                     if self._is_transient_exception(e):
+                        if not self.retry_ambiguous_calls:
+                            raise
                         if attempt < 1:
                             continue
                         break

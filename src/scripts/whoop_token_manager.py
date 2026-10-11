@@ -6,7 +6,7 @@ import threading
 import tempfile
 from datetime import datetime, timedelta
 import httpx
-from utils import get_state_root, get_pipeline_run_date_str
+from utils import get_runtime_root, get_pipeline_run_date_str
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ class WHOOPTokenManager:
 
     def __init__(self):
         # Durable token state lives in private runtime storage.
-        self.state_file = get_state_root() / 'whoop_token_state.json'
+        self.state_file = get_runtime_root() / 'state' / 'whoop_token_state.json'
         self.access_token = None
         self.refresh_token = None
         self.last_refresh_at = None

@@ -1,0 +1,44 @@
+services:
+  flow-shadow:
+    build:
+      context: .
+      dockerfile: Dockerfile.flow-shadow
+      args:
+        STATE_ZERO_BUILD_COMMIT: ${STATE_ZERO_BUILD_COMMIT:-}
+    platform: linux/arm64
+    shm_size: 512m
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+    security_opt:
+      - seccomp:./ops/flow_chrome_seccomp.json
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    volumes:
+      - type: bind
+        source: ${SHADOW_PRIVATE_HOST_DIR:-/opt/state-zero-flow-shadow/private}
+        target: /opt/state-zero-flow-shadow
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${SHADOW_PROFILE_HOST_DIR:-/opt/state-zero-flow-shadow/profile}
+        target: /opt/state-zero-flow-profile
+        bind:
+          create_host_path: false
+    environment:
+      FLOW_PREFLIGHT_PROJECT_ID: ${FLOW_PREFLIGHT_PROJECT_ID:-}
+      SHADOW_TRIAL_START_DATE: ${SHADOW_TRIAL_START_DATE:-}
+      SHADOW_ALERT_BOT_TOKEN: ${SHADOW_ALERT_BOT_TOKEN:-}
+      SHADOW_ALERT_CHAT_ID: ${SHADOW_ALERT_CHAT_ID:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      PROMPT_GOOGLE_API_KEY: ${PROMPT_GOOGLE_API_KEY:-}
+      OPENROUTER_CALL_DEADLINE_SECONDS: "200"
+      WHOOP_CLIENT_ID: ${WHOOP_CLIENT_ID:-}
+      WHOOP_CLIENT_SECRET: ${WHOOP_CLIENT_SECRET:-}

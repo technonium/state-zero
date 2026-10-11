@@ -79,12 +79,8 @@ intact. The first qualifying post creates the feed; existing dates are not
 backfilled automatically. Only the fields above are public; private inputs and
 health inputs remain outside the repository and public feed.
 
-During the Oracle trial, **Hostinger main is the sole public feed source**.
-Apply this hardening to both main and `codex/flow-shadow-experiment`, preserving
-their API and Flow paths; Oracle remains private. Commit/push does not authorize
-deployment, generation, publication or feed ownership changes. Later rollout:
-Portfolio's compatible consumer first, selected Hostinger publisher second,
-then Portfolio's prepared refresh schedules.
+The portfolio consumes one authoritative public feed. Configure its source URL
+to match the active publisher; private non-posting runs do not publish metadata.
 
 ## Emergency posts
 

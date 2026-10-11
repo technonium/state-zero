@@ -35,3 +35,11 @@ SECURITY.md
 docs/*.gif
 docs/*.png
 docs/*.svg
+
+# Internal working notes and private deployment documents
+.superpowers/
+docs/private/
+docs/STATE_ZERO_ORACLE_MIGRATION_PRIVATE.md
+.env.*
+!.env.example
+.build-provenance.json

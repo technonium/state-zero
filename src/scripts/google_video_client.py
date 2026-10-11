@@ -213,6 +213,7 @@ class GoogleVideoClient:
                 })
                 raise GoogleAPIError(start_resp.status_code, error_msg)
 
+            self.router.submission_started = True
             op_name = self._extract_operation_name(start_resp.json())
             print(f"✓ Operation started: {op_name}")
             self._write_diagnostics(output_path, {

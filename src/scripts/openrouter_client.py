@@ -12,6 +12,8 @@ Configuration:
 """
 
 import os
+import signal
+import threading
 import time
 import requests
 from typing import Optional
@@ -23,6 +25,10 @@ GEMINI_TIMEOUT_SECONDS = 90
 class OpenRouterError(Exception):
     """Custom exception for OpenRouter API errors."""
     pass
+
+
+class OpenRouterTimeoutError(OpenRouterError):
+    """An OpenRouter call exhausted its time limit."""
 
 
 class LLMProviderError(Exception):
@@ -170,8 +176,30 @@ class OpenRouterClient:
             OpenRouterError: If API call fails
             LLMProviderError: If both primary and fallback fail
         """
+        deadline = int(os.getenv("OPENROUTER_CALL_DEADLINE_SECONDS", "0"))
+        if deadline and threading.current_thread() is not threading.main_thread():
+            raise ValueError("OpenRouter call deadline requires the main thread")
+        def on_deadline(_signum, _frame):
+            raise TimeoutError()
         try:
-            return self._call_openrouter(prompt, system_prompt)
+            for attempt in range(2 if deadline else 1):
+                if deadline:
+                    previous_handler = signal.getsignal(signal.SIGALRM)
+                    signal.signal(signal.SIGALRM, on_deadline)
+                    signal.setitimer(signal.ITIMER_REAL, deadline)
+                try:
+                    try:
+                        return self._call_openrouter(prompt, system_prompt)
+                    except TimeoutError as exc:
+                        raise OpenRouterTimeoutError(f"Call exceeded {deadline} seconds") from exc
+                except OpenRouterTimeoutError:
+                    if not deadline or attempt:
+                        raise
+                    print("⏳ OpenRouter timed out; retrying once...")
+                finally:
+                    if deadline:
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+                        signal.signal(signal.SIGALRM, previous_handler)
         except OpenRouterError as e:
             print(f"⚠️  OpenRouter failed: {e}")
             if self.fallback_api_key:
@@ -266,11 +294,12 @@ class OpenRouterClient:
 
     def _post_openrouter_request(self, url: str, headers: dict, payload: dict) -> requests.Response:
         """Execute a single OpenRouter request, including 429 retry handling."""
+        timeout = int(os.getenv("OPENROUTER_CALL_DEADLINE_SECONDS", "0")) or 120
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=120)
+            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
             response.raise_for_status()
-        except requests.exceptions.Timeout:
-            raise OpenRouterError("Request timed out after 120 seconds")
+        except requests.exceptions.Timeout as exc:
+            raise OpenRouterTimeoutError(f"Request timed out after {timeout} seconds") from exc
         except requests.exceptions.HTTPError as e:
             if e.response is not None and e.response.status_code == 429:
                 try:
@@ -280,8 +309,10 @@ class OpenRouterClient:
                 print(f"⏳ OpenRouter 429 — retrying in {retry_after}s...")
                 time.sleep(retry_after)
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=120)
+                    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
                     response.raise_for_status()
+                except requests.exceptions.Timeout as retry_e:
+                    raise OpenRouterTimeoutError(f"Retry after 429 timed out after {timeout} seconds") from retry_e
                 except requests.exceptions.RequestException as retry_e:
                     raise OpenRouterError(f"Retry after 429 also failed: {retry_e}")
             else:
