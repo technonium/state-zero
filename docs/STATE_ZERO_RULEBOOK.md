@@ -47,9 +47,9 @@ VIDEO PROMPT → animation
 
 | Strain Value | Energy Zone | Energy Type |
 |-------------|-------------|-------------|
-| 0-9 | **LOW ENERGY** | Passive, static, mineral |
-| 9-14 | **MID ENERGY** | Active, flowing, organic |
-| 14+ | **HIGH ENERGY** | Intense, explosive, extreme |
+| 0 ≤ strain < 9 | **LOW ENERGY** | Passive, static, mineral |
+| 9 ≤ strain < 14 | **MID ENERGY** | Active, flowing, organic |
+| strain ≥ 14 | **HIGH ENERGY** | Intense, explosive, extreme |
 
 **Note:** Strain is NEUTRAL - high strain from workout vs stress feels different based on Recovery modulation. Strain only sets energy level, not quality.
 
@@ -64,7 +64,7 @@ VIDEO PROMPT → animation
 No calculations happen at runtime. Everything is pre-stored in two YAML files:
 
 **File 1: `natal.yaml`** — permanent, never changes
-**File 2: `dasha_periods.yaml`** — pre-calculated2026-2031
+**File 2: `dasha_periods.yaml`** — pre-calculated for the intended operating dates
 
 **Daily lookup:**
 ```
@@ -76,7 +76,7 @@ Input lookup table covering : today's date
 → Feed to three AI prompts
 ```
 
-That's it. No Python. No APIs. No live calculations.
+The Python lookup reads these private files at runtime. It does not make live astrology API calls or recalculate the chart during daily generation.
 
 ---
 
@@ -112,7 +112,7 @@ Dignity values: `exalted` / `own` / `friendly` / `neutral` / `enemy` / `debilita
 
 ---
 
-**dasha_periods.yaml** — pre-calculated, covers 2026-2031:
+**dasha_periods.yaml** — pre-calculated; the example below illustrates the format:
 
 ```yaml
 periods:
@@ -159,7 +159,7 @@ periods:
 - Dates must be contiguous — no gaps between end of one and start of next
 
 **Generating this file:**
-Use Jagannatha Hora (free desktop software) — only tool that calculates to Prana level. Generate 2026-2031, export raw table, feed to AI with the prompt below.
+Use the [astrology input generator](../astrology_generator/ASTROLOGY_GENERATOR.md) or import a verified Prana-level table from your astrology software. Cover the intended operating dates and validate the exported periods before use.
 
 **Prompt to generate dasha_periods.yaml from raw export:**
 

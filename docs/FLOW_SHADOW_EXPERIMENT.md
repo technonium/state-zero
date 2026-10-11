@@ -1,4 +1,36 @@
-# Google Flow shadow service
+# Google Flow generation and isolated validation
+
+Google Flow is an optional media provider in the main State Zero pipeline.
+The existing `shadow` filenames and settings describe an isolated, non-publishing
+validation service. They do not change the regular pipeline's execution modes.
+
+## Regular pipeline
+
+Use a browser-capable image with the pinned gflow patches, headed Chrome, Xvfb,
+and an authenticated persistent profile. The ordinary `Dockerfile` remains an
+API-only image. Start the regular pipeline with:
+
+```text
+xvfb-run -a python3 -u /app/src/scripts/pipeline.py
+```
+
+Set `MEDIA_GENERATION_PROVIDER=flow` to select Flow. Keep the usual
+`PIPELINE_MODE`, `PIPELINE_POST_TO_INSTAGRAM`, Telegram, WHOOP, Instagram,
+Google key, and media-delivery settings for the intended deployment. Explicitly
+override the validation image's non-publishing defaults and private root when
+using it for production. Mount the intended database, daily state, private inputs,
+and browser profile; do not substitute a validation archive for production history.
+
+`FLOW_API_FALLBACK_ENABLED=true` permits API media fallback only for eligible,
+confirmed technical failures. Unknown or forwarded submissions require recovery;
+safety rejection, quota/account restrictions, and model mismatches stop generation.
+Keep API keys configured when enabling that fallback. Image upscaling remains off
+by default, and the existing video download/local-scaling behavior is unchanged.
+
+The isolated runner below is for validation, not Instagram publishing. Its fixed
+settings and restricted credential list are deliberate safety controls.
+
+## Isolated validation service
 
 The shadow runs WHOOP lookup, astrology lookup, prompt generation, Flow image
 and video generation, card rendering, and portfolio rendering in an isolated
@@ -12,12 +44,12 @@ browser-capable image and a persistent signed-in profile; merging code alone
 does not activate Flow. A production cutover must use the regular pipeline
 entrypoint under Xvfb with production settings, mounts and schedules. The shadow
 runner deliberately rejects publishing credentials. Its `SHADOW_ALERT_*` and
-`PROMPT_GOOGLE_API_KEY` variables are only trial isolation, not replacements for
+`PROMPT_GOOGLE_API_KEY` variables provide validation isolation, not replacements for
 production's existing Telegram and Google key settings.
 
 ## Build and storage
 
-Create a Dokploy Compose service from `codex/flow-shadow-experiment` using
+Create a Dokploy Compose service from `main` using
 `compose.flow-shadow.yml`. It builds `Dockerfile.flow-shadow` for `linux/arm64`
 with headed Google Chrome, Playwright 1.61.0, and gflow commit
 `5ea53ddf638d8392907d7ec70c5fdbe58ec5fe41`. The container runs as UID 10001,
@@ -257,7 +289,7 @@ After a CLI upgrade, run one supervised full validation with a unique ID:
 xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual --validation-id v0821-validation
 ```
 
-Files, pipeline state, and the archive use `runtime/validation/<id>/`. The validation shares the daily runner's execution lock, canonical WHOOP token, and Chrome profile. An ID can submit only once across all dates. Existing daily files and claims remain intact. Reports distinguish validation from scheduled runs and record installed versions. Compare five to seven fresh scheduled dates after the upgrade; a supervised validation does not count as an unattended run.
+Files, pipeline state, and the archive use `runtime/validation/<id>/`. The validation shares the daily runner's execution lock, canonical WHOOP token, and Chrome profile. An ID can submit only once across all dates. Existing daily files and claims remain intact. Reports distinguish validation from scheduled runs and record installed versions. A supervised validation does not prove unattended scheduling; verify a subsequent timer-triggered run separately.
 
 Existing submissions are never blindly regenerated on later invocations. Verified
 local images and known video IDs can be recovered; the pinned CLI cannot remotely
