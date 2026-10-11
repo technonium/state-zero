@@ -1,0 +1,56 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: Dockerfile.flow-shadow
+      args:
+        STATE_ZERO_BUILD_COMMIT: ${STATE_ZERO_BUILD_COMMIT:-}
+    platform: linux/arm64
+    shm_size: 512m
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 4G
+    security_opt:
+      - seccomp:./ops/flow_chrome_seccomp.json
+    init: true
+    restart: unless-stopped
+    command: ["sleep", "infinity"]
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    env_file: .env
+    environment:
+      STATE_ZERO_PRIVATE_ROOT: /opt/state-zero-private
+      GFLOW_CLI_HOME: /opt/state-zero-flow-profile
+      PIPELINE_MODE: ${PIPELINE_MODE:-automatic}
+      PIPELINE_POST_TO_INSTAGRAM: ${PIPELINE_POST_TO_INSTAGRAM:-false}
+      MEDIA_GENERATION_PROVIDER: ${MEDIA_GENERATION_PROVIDER:-flow}
+      PIPELINE_MEDIA_MODE: live_vps
+      FLOW_API_FALLBACK_ENABLED: "true"
+      FLOW_IMAGE_UPSCALE_2K: "false"
+      FLOW_VIDEO_UPSCALE_1080P: "true"
+      PORTFOLIO_MEDIA_ENABLED: "true"
+      PIPELINE_TIMEZONE: Asia/Kolkata
+      PIPELINE_TERMINAL_RESCUE_RUN: "false"
+      GOOGLE_IMAGE_MODEL: gemini-nano-banana-2.1
+      VPS_SSH_PATH: /srv/state-zero-media
+    volumes:
+      - type: bind
+        source: /opt/state-zero-private
+        target: /opt/state-zero-private
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /srv/state-zero-media
+        target: /srv/state-zero-media
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /opt/state-zero-production-profile
+        target: /opt/state-zero-flow-profile
+        bind:
+          create_host_path: false

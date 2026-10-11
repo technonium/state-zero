@@ -25,6 +25,24 @@ from pipeline import PipelineStageError, WHOOPPipeline
 
 
 class DeploymentEnvHardeningTests(unittest.TestCase):
+    def test_production_compose_is_idle_private_and_preserves_modes(self):
+        import yaml
+        service = yaml.safe_load((PROJECT_ROOT / 'compose.production.yml').read_text())['services']['pipeline']
+        self.assertEqual(service['platform'], 'linux/arm64')
+        self.assertEqual(service['command'], ['sleep', 'infinity'])
+        self.assertFalse(service.get('ports'))
+        self.assertEqual(service['deploy']['resources']['limits']['memory'], '4G')
+        self.assertEqual(service['env_file'], '.env')
+        settings = service['environment']
+        self.assertEqual(settings['PIPELINE_POST_TO_INSTAGRAM'], '${PIPELINE_POST_TO_INSTAGRAM:-false}')
+        self.assertEqual(settings['PIPELINE_MODE'], '${PIPELINE_MODE:-automatic}')
+        self.assertEqual(settings['MEDIA_GENERATION_PROVIDER'], '${MEDIA_GENERATION_PROVIDER:-flow}')
+        self.assertEqual(settings['GOOGLE_IMAGE_MODEL'], 'gemini-nano-banana-2.1')
+        self.assertEqual(settings['FLOW_API_FALLBACK_ENABLED'], 'true')
+        self.assertEqual({v['target'] for v in service['volumes']},
+                         {'/opt/state-zero-private', '/srv/state-zero-media', '/opt/state-zero-flow-profile'})
+        self.assertTrue(all(not v['bind']['create_host_path'] for v in service['volumes']))
+
     def _base_live_vps_env(self) -> dict[str, str]:
         return {
             "PIPELINE_MODE": "automatic",
