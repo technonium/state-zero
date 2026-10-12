@@ -117,9 +117,11 @@ TODAY'S DATE
 
 There are two ways to run it:
 
-**Automatic:** generate the image/video through APIs and post end to end.
+**Automatic:** generate the image/video through Google Flow or APIs and post end to end.
 
 **Manual-first:** get the prompts on Telegram, make the image/video wherever you want, send the files back, and let the pipeline finish the card and post.
+
+**Now supports Google Flow via [gflow CLI](https://github.com/ffroliva/gflow-cli):** automatically generate images and videos using a free Google account's included credits, without paid media APIs or manual uploads. Paid plans also offer video upscaling. See the [Flow setup guide](docs/FLOW_SHADOW_EXPERIMENT.md).
 
 The only non-obvious setup is astrology. The generator builds the required files from your birth data:
 
@@ -135,4 +137,4 @@ Everything else is in the docs:
 
 ---
 
-If this made you want to track your own data, I use WHOOP daily. <a href="https://join.whoop.com/9A53B336"><img src="docs/whoop-logo.svg" width="13" height="13" alt="WHOOP"></a> <a href="https://join.whoop.com/9A53B336">Get your first month of WHOOP free!</a>
+Considering WHOOP? <a href="https://join.whoop.com/9A53B336"><img src="docs/whoop-logo.svg" width="13" height="13" alt="WHOOP"></a> <a href="https://join.whoop.com/9A53B336">Get your first month of WHOOP free!</a> Joining through this referral link supports State Zero.

@@ -4,6 +4,38 @@ Google Flow is an optional media provider in the main State Zero pipeline.
 The existing `shadow` filenames and settings describe an isolated, non-publishing
 validation service. They do not change the regular pipeline's execution modes.
 
+## Google account
+
+Use a dedicated Google account rather than your everyday account, with its own
+persistent browser profile. Keep it recoverable; do not use a disposable login.
+If eligible, it can receive shared paid benefits through your Google One family
+group. Follow Google's [family-sharing requirements](https://support.google.com/googleone/answer/9004015?hl=en)
+and confirm Flow access and upscaling in that account before setup. Family Flow
+credits and usage limits are shared, not multiplied by adding accounts.
+
+Account separation keeps sessions separate; it does not guarantee protection from
+restrictions or isolate the family plan from enforcement. One daily run is not a
+guarantee either. Do not use additional accounts to bypass restrictions or quotas.
+
+## Flow credits and costs
+
+Google currently provides **50 daily Flow credits**, including for free accounts.
+This setup requests one image and one 8-second Veo Fast video. For non-Ultra
+accounts, the video costs **20 credits**. When Flow quotes the image at **0 credits**,
+one successful run uses **20 credits total**: `50 - 20 = 30` remaining. Two such
+runs fit within 50 credits, leaving 10; State Zero normally runs once per day.
+
+Additional chargeable generations consume more credits. Plus, Pro and Ultra plans
+currently offer 1080p video upscaling at **0 additional credits**; free accounts
+do not have that export, so State Zero can scale the original locally instead.
+Unused daily credits do not roll over. Free-account access can be limited during
+peak hours. Check the selected settings in Flow and Google's
+[current credit rates](https://support.google.com/flow/answer/16526234?hl=en)
+before running, since prices and availability can change.
+
+These are media-generation costs only. Prompt APIs, hosting and optional paid
+Google API fallback have separate costs; this is not a completely free pipeline.
+
 ## Regular pipeline
 
 Use a browser-capable image with the pinned gflow patches, headed Chrome, Xvfb,
