@@ -1063,23 +1063,18 @@ class WHOOPPipeline:
 
     def _notify_post_success_cleanup_warning(self, step: str, message: str, details_tail: str | None = None):
         print(f"{Fore.YELLOW}⚠ {message}{Style.RESET_ALL}")
-        notifier = get_notifier()
-        notifier.notify_warning(
-            run_date=self.run_date,
-            step=step,
-            message=message,
-            details_tail=details_tail,
-        )
+        try:
+            get_notifier().notify_warning(
+                run_date=self.run_date,
+                step=step,
+                message=message,
+                details_tail=details_tail,
+            )
+        except Exception:
+            print(f'{step}: warning delivery failed; pipeline continues.')
 
     def _notify_nonfatal_runtime_warning(self, step: str, message: str, details_tail: str | None = None):
-        print(f"{Fore.YELLOW}⚠ {message}{Style.RESET_ALL}")
-        notifier = get_notifier()
-        notifier.notify_warning(
-            run_date=self.run_date,
-            step=step,
-            message=message,
-            details_tail=details_tail,
-        )
+        self._notify_post_success_cleanup_warning(step, message, details_tail)
 
     def _whoop_revalidation_enabled(self) -> bool:
         return env_bool('WHOOP_REVALIDATE_BEFORE_PUBLISH', default=True)
@@ -3071,12 +3066,14 @@ class WHOOPPipeline:
                     },
                 )
 
-            notifier = get_notifier()
-            notifier.notify_emergency_fallback_activated(
-                run_date=self.run_date,
-                trigger_stage=trigger_stage,
-                fallback_version=manifest['version'],
-            )
+            try:
+                get_notifier().notify_emergency_fallback_activated(
+                    run_date=self.run_date,
+                    trigger_stage=trigger_stage,
+                    fallback_version=manifest['version'],
+                )
+            except Exception:
+                print('Emergency activation notification failed; rescue continues.')
 
             self._ensure_owner_runtime_dirs()
             try:
@@ -3210,12 +3207,8 @@ class WHOOPPipeline:
                     reused_existing_post=reused_existing_post,
                 )
             except Exception as e:
-                notifier.notify_warning(
-                    run_date=self.run_date,
-                    step='Emergency Fallback Archive',
-                    message='Emergency fallback posted, but emergency_fallback_used.json could not be written.',
-                    details_tail=str(e),
-                )
+                self._notify_post_success_cleanup_warning('Emergency Fallback Archive',
+                    'Emergency fallback posted, but emergency_fallback_used.json could not be written.', str(e))
 
             try:
                 CardDatabase().insert_fallback_post(
@@ -3235,12 +3228,8 @@ class WHOOPPipeline:
                     }
                 )
             except Exception as e:
-                notifier.notify_warning(
-                    run_date=self.run_date,
-                    step='Emergency Fallback Database',
-                    message='Emergency fallback posted, but fallback_posts insert failed.',
-                    details_tail=str(e),
-                )
+                self._notify_post_success_cleanup_warning('Emergency Fallback Database',
+                    'Emergency fallback posted, but fallback_posts insert failed.', str(e))
 
             # The fallback Instagram post is now confirmed. Portfolio sidecars
             # are optional and must never change the fallback's success state.
@@ -3412,20 +3401,24 @@ class WHOOPPipeline:
 
                 # Send success notification with MP4 and permalink
                 final_mp4 = self.output_dir / 'card_final.mp4'
-                notifier = get_notifier()
-                if success_notification_mode == 'fallback':
-                    notifier.notify_emergency_fallback_posted(
-                        run_date=self.run_date,
-                        final_mp4_path=final_mp4,
-                        instagram_permalink=permalink or 'Permalink unavailable',
-                        fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
-                    )
-                else:
-                    notifier.notify_success_posted(
-                        run_date=self.run_date,
-                        final_mp4_path=final_mp4,
-                        instagram_permalink=permalink or 'Permalink unavailable'
-                    )
+                try:
+                    notifier = get_notifier()
+                    if success_notification_mode == 'fallback':
+                        notifier.notify_emergency_fallback_posted(
+                            run_date=self.run_date,
+                            final_mp4_path=final_mp4,
+                            instagram_permalink=permalink or 'Permalink unavailable',
+                            fallback_version=self._active_emergency_fallback_version or 'error_404_v1',
+                        )
+                    else:
+                        notifier.notify_success_posted(
+                            run_date=self.run_date,
+                            final_mp4_path=final_mp4,
+                            instagram_permalink=permalink or 'Permalink unavailable'
+                        )
+                except Exception as exc:
+                    self._notify_post_success_cleanup_warning('Telegram',
+                        'Instagram post is confirmed; success notification failed.', type(exc).__name__)
 
                 # Return both post_id and permalink as dict for archive step
                 return {

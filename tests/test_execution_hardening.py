@@ -222,6 +222,45 @@ class ExecutionHardeningTests(unittest.TestCase):
                     patch('ops.run_rescue.time.sleep'):
                 self.assertFalse(acquire_execution_lock(contender, 600))
 
+    def test_notification_exception_cannot_stop_emergency_publish_or_archive(self):
+        from pipeline import WHOOPPipeline
+        from types import SimpleNamespace
+        p = WHOOPPipeline.__new__(WHOOPPipeline)
+        p.output_dir = self.root; p.run_date = '2026-10-18'
+        p.daily_run = Mock(); p.daily_run.is_owner.return_value = False
+        p._set_heartbeat_context = Mock(); p._ensure_owner_runtime_dirs = Mock()
+        p._ensure_public_urls_reachable = Mock(); p._run_portfolio_media_secondary = Mock()
+        p.step_14_post_instagram = Mock(return_value={'post_id': 'post', 'permalink': 'https://example.test/post'})
+        manager = Mock()
+        manager.load_and_validate_manifest.return_value = {'version': 'error_404_v1', 'title': 'ERROR 404', 'scene_description': 'fixture'}
+        manager.copy_to_run_output.return_value = {'mp4_path': self.root / 'card.mp4', 'png_path': self.root / 'card.png'}
+        manager.get_publish_strategy.return_value = {'mode': 'prehosted', 'video_url': 'https://example.test/video', 'thumb_url': 'https://example.test/image'}
+        manager.write_emergency_log.side_effect = OSError('fixture archive failure')
+        with patch('emergency_fallback_manager.EmergencyFallbackManager', return_value=manager), \
+                patch('database_manager.CardDatabase') as db, \
+                patch('pipeline.get_notifier', side_effect=RuntimeError('fixture notification failure')):
+            self.assertTrue(p._run_emergency_fallback('Image Generation', 'fixture technical failure'))
+        p.step_14_post_instagram.assert_called_once()
+        db.return_value.insert_fallback_post.assert_called_once()
+
+    def test_success_notification_exception_preserves_confirmed_result(self):
+        from pipeline import WHOOPPipeline
+        from types import SimpleNamespace
+        p = WHOOPPipeline.__new__(WHOOPPipeline)
+        p.output_dir = self.root; p.run_date = '2026-10-18'; p.run_token = 'fixture'
+        p.post_to_instagram = True; p.in_emergency_fallback = False
+        p.daily_run = Mock(); p.daily_run.load_state.return_value = {}
+        p._set_heartbeat_context = Mock(); p._build_instagram_publish_context = Mock(return_value={})
+        p._mark_posted_terminal_success = Mock()
+        token = Mock(); token.get_valid_token.return_value = 'test'; token.get_user_id.return_value = 'account'
+        poster = Mock(); poster.publish_with_strategy.return_value = SimpleNamespace(post_id='post', permalink='https://example.test/post')
+        with patch('instagram_token_manager.get_instagram_token_manager', return_value=token), \
+                patch('instagram_poster.InstagramPoster', return_value=poster), \
+                patch('pipeline.get_notifier', side_effect=RuntimeError('fixture notification failure')):
+            result = p.step_14_post_instagram('https://example.test/video', 'https://example.test/image', 'fixture')
+        self.assertEqual(result['post_id'], 'post')
+        p._mark_posted_terminal_success.assert_called_once()
+
     def test_auto_strategy_cannot_switch_after_uncertain_binary_publication(self):
         from instagram_poster import InstagramPublishDiagnosticsError
         poster = self.poster()
