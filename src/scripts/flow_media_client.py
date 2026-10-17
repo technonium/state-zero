@@ -179,9 +179,9 @@ class FlowMediaClient:
             except BlockingIOError:
                 raise FlowCommandError(stage, 'execution_busy') from None
             other = output.with_name(f'flow_{stage}_diagnostics.json')
-            if other.exists() and json.loads(other.read_text()).get('api_fallback_state'):
+            if other.exists() or any(output.parent.glob(f'flow_{stage}_attempt_*.submit')):
                 raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted',
-                    detail='The Flow path already reserved this date’s API attempt; reconcile its existing result.')
+                    detail='The Flow path has existing media evidence; resume that path or reconcile before changing providers.')
             saved = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
             if not isinstance(saved, dict):
                 raise FlowCommandError(stage, 'request_identity_unverified')
@@ -240,7 +240,7 @@ class FlowMediaClient:
             if not isinstance(previous, dict):
                 raise FlowCommandError(stage, 'request_identity_unverified')
             api_record = output.with_name(f'google_{stage}_diagnostics.json')
-            if api_record.exists() and json.loads(api_record.read_text()).get('logical_attempt'):
+            if api_record.exists() and (json.loads(api_record.read_text()).get('logical_attempt') or not previous.get('api_fallback_state')):
                 raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted',
                     detail='The API path already reserved this date’s API attempt; reconcile its existing result.')
             frozen = self.validate_inputs(output.parent)

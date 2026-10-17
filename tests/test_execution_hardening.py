@@ -76,6 +76,13 @@ class ExecutionHardeningTests(unittest.TestCase):
                 FlowMediaClient().generate_api_stage('image', {}, output)
         api.assert_not_called()
         receipt.unlink()
+        marker = self.root / 'flow_image_attempt_1.submit'
+        marker.write_text('{"state":"forwarded"}')
+        with patch.object(GoogleImageClient, 'generate_from_json') as api:
+            with self.assertRaises(FlowCommandError):
+                FlowMediaClient().generate_api_stage('image', {}, output)
+        api.assert_not_called()
+        marker.unlink()
         (self.root / 'google_image_diagnostics.json').write_text(json.dumps({'logical_attempt': 'reserved'}))
         with patch.object(FlowMediaClient, '_generate_image') as flow:
             with self.assertRaises(FlowCommandError):
@@ -88,6 +95,20 @@ class ExecutionHardeningTests(unittest.TestCase):
             with self.assertRaises(FlowCommandError):
                 FlowMediaClient().generate_api_stage('image', {'changed': True}, self.root / 'generated_art.png')
         api.assert_not_called()
+
+    def test_legacy_api_media_without_manifest_blocks_before_input_rewrite(self):
+        from pipeline import WHOOPPipeline, PipelineStageError
+        p = WHOOPPipeline.__new__(WHOOPPipeline); p.output_dir = self.root
+        original = self.root / 'generated_art.png'; original.write_bytes(b'legacy media')
+        with patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'google_api'}):
+            with self.assertRaises(PipelineStageError):
+                p._check_flow_submission_state()
+        self.assertEqual(original.read_bytes(), b'legacy media')
+        original.unlink()
+        (self.root / 'flow_video_attempt_1.submit').write_text('{"state":"forwarded"}')
+        with patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'google_api'}):
+            with self.assertRaises(PipelineStageError):
+                p._check_flow_submission_state()
 
     def test_unreadable_daily_state_is_not_an_empty_slate(self):
         from daily_run_state import DailyRunStateManager, DailyStateUnreadableError

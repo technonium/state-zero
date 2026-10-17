@@ -1348,7 +1348,10 @@ class WHOOPPipeline:
             if FlowMediaClient.validate_inputs(self.output_dir):
                 return True
             if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() != 'flow':
-                if any(self.output_dir.glob('google_*_diagnostics.json')):
+                if (any(self.output_dir.glob('google_*_diagnostics.json')) or
+                        any(self.output_dir.glob('flow_*_diagnostics.json')) or
+                        any(self.output_dir.glob('flow_*_attempt_*.submit')) or
+                        any((self.output_dir / name).exists() for name in ('generated_art.png', 'generated_video.mp4'))):
                     raise FlowCommandError('inputs', 'request_identity_unverified', detail='API media exists without frozen inputs; reconcile before resuming.')
                 return
             pending = FlowMediaClient._pending_submission(self.output_dir)
