@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -75,7 +76,7 @@ class GoogleVideoClient:
 
     def _download_video(self, uri: str, api_key: str, output_path: Path):
         headers = {"x-goog-api-key": api_key}
-        resp = requests.get(uri, headers=headers, timeout=180)
+        resp = requests.get(uri, headers=headers, timeout=self._request_timeout(180))
         if resp.status_code >= 400:
             raise GoogleAPIError(resp.status_code, f"Video download failed: {resp.text[:500]}")
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -139,7 +140,12 @@ class GoogleVideoClient:
         diagnostics.update(update)
         diagnostics["updated_at"] = datetime.now(timezone.utc).isoformat()
         diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
-        diagnostics_path.write_text(json.dumps(diagnostics, indent=2, sort_keys=True), encoding="utf-8")
+        staged = diagnostics_path.with_suffix('.json.tmp')
+        with os.fdopen(os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as handle:
+            json.dump(diagnostics, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        staged.replace(diagnostics_path)
 
     def generate_from_image(self, prompt_text: str, image_path: Path, output_path: Path) -> Path:
         """
@@ -194,7 +200,7 @@ class GoogleVideoClient:
                 "started_at": datetime.now(timezone.utc).isoformat(),
             })
 
-            start_resp = requests.post(url, headers=headers, json=payload, timeout=120)
+            start_resp = requests.post(url, headers=headers, json=payload, timeout=self._request_timeout(120))
             self._write_diagnostics(output_path, {
                 "status": "start_response_received",
                 "start_http_status": start_resp.status_code,
@@ -222,60 +228,84 @@ class GoogleVideoClient:
                 "elapsed_seconds": int(time.time() - attempt_started_at),
             })
 
-            started_at = time.time()
-            poll_count = 0
-            while True:
-                elapsed = time.time() - started_at
-                if elapsed > self.timeout_seconds:
-                    raise GoogleAPIError(504, f"Video generation timed out after {self.timeout_seconds}s")
-
-                op_url = f"{self.BASE_URL}/{op_name}"
-                op_resp = requests.get(op_url, headers=headers, timeout=60)
-                if op_resp.status_code >= 400:
-                    self._write_diagnostics(output_path, {
-                        "status": "failed",
-                        "failure_phase": "operation_poll",
-                        "operation_name": op_name,
-                        "error_code": op_resp.status_code,
-                        "error_message": op_resp.text[:500],
-                        "elapsed_seconds": int(elapsed),
-                    })
-                    raise GoogleAPIError(op_resp.status_code, op_resp.text[:500])
-                op_json = op_resp.json()
-
-                if op_json.get("error"):
-                    err = op_json["error"]
-                    msg = err.get("message", "Unknown operation error")
-                    code = err.get("code", 500)
-                    print(f"❌ Operation failed: {msg}")
-                    self._write_diagnostics(output_path, {
-                        "status": "failed",
-                        "failure_phase": "operation_result",
-                        "operation_name": op_name,
-                        "error_code": code,
-                        "error_message": msg,
-                        "elapsed_seconds": int(elapsed),
-                    })
-                    raise GoogleAPIError(code, msg)
-
-                if op_json.get("done") is True:
-                    print(f"✓ Video generation completed after {int(elapsed)}s")
-                    video_uri = self._extract_video_uri(op_json)
-                    self._download_video(video_uri, api_key, output_path)
-                    print(f"✅ Video generated via {key_label} key with {model}")
-                    print(f"   Output: {output_path}")
-                    self._write_diagnostics(output_path, {
-                        "status": "completed",
-                        "operation_name": op_name,
-                        "elapsed_seconds": int(elapsed),
-                        "output_path": str(output_path),
-                    })
-                    return output_path
-
-                poll_count += 1
-                if poll_count % 6 == 0:
-                    print(f"   Still processing... ({int(elapsed)}s elapsed)")
-
-                time.sleep(self.poll_seconds)
+            return self._finish_operation(op_name, api_key, key_label, output_path)
 
         return self.router.execute_with_fallback(_call)
+
+
+    def _request_timeout(self, maximum: float) -> float:
+        deadline = getattr(self, 'generation_deadline', None)
+        remaining = maximum if deadline is None else min(maximum, deadline - time.time())
+        if remaining <= 0:
+            raise GoogleAPIError(504, 'Generation window exhausted; operation evidence preserved')
+        return remaining
+
+    def resume_operation(self, output_path: Path) -> Path:
+        saved = json.loads(self._diagnostics_path(output_path).read_text())
+        operation = saved.get('operation_name', '')
+        if not isinstance(operation, str) or '..' in operation or not re.fullmatch(r'(?:models/[A-Za-z0-9_.-]+/)?operations/[A-Za-z0-9_-]+', operation):
+            raise GoogleAPIError(None, 'No verified API operation available for recovery')
+        key = next((key for label, key in self.router.keys if label == saved.get('key_label')), None)
+        if not key:
+            raise GoogleAPIError(None, 'Original API operation key is unavailable')
+        self.router.submission_started = True
+        return self._finish_operation(operation, key, saved['key_label'], output_path)
+
+    def _finish_operation(self, op_name: str, api_key: str, key_label: str, output_path: Path) -> Path:
+        model = self.default_model
+        headers = {'x-goog-api-key': api_key, 'Content-Type': 'application/json'}
+        started_at = time.time()
+        poll_count = 0
+        while True:
+            elapsed = time.time() - started_at
+            if elapsed > self.timeout_seconds:
+                raise GoogleAPIError(504, f"Video generation timed out after {self.timeout_seconds}s")
+
+            op_url = f"{self.BASE_URL}/{op_name}"
+            op_resp = requests.get(op_url, headers=headers, timeout=self._request_timeout(60))
+            if op_resp.status_code >= 400:
+                self._write_diagnostics(output_path, {
+                    "status": "failed",
+                    "failure_phase": "operation_poll",
+                    "operation_name": op_name,
+                    "error_code": op_resp.status_code,
+                    "error_message": op_resp.text[:500],
+                    "elapsed_seconds": int(elapsed),
+                })
+                raise GoogleAPIError(op_resp.status_code, op_resp.text[:500])
+            op_json = op_resp.json()
+
+            if op_json.get("error"):
+                err = op_json["error"]
+                msg = err.get("message", "Unknown operation error")
+                code = err.get("code", 500)
+                print(f"❌ Operation failed: {msg}")
+                self._write_diagnostics(output_path, {
+                    "status": "failed",
+                    "failure_phase": "operation_result",
+                    "operation_name": op_name,
+                    "error_code": code,
+                    "error_message": msg,
+                    "elapsed_seconds": int(elapsed),
+                })
+                raise GoogleAPIError(code, msg)
+
+            if op_json.get("done") is True:
+                print(f"✓ Video generation completed after {int(elapsed)}s")
+                video_uri = self._extract_video_uri(op_json)
+                self._download_video(video_uri, api_key, output_path)
+                print(f"✅ Video generated via {key_label} key with {model}")
+                print(f"   Output: {output_path}")
+                self._write_diagnostics(output_path, {
+                    "status": "completed",
+                    "operation_name": op_name,
+                    "elapsed_seconds": int(elapsed),
+                    "output_path": str(output_path),
+                })
+                return output_path
+
+            poll_count += 1
+            if poll_count % 6 == 0:
+                print(f"   Still processing... ({int(elapsed)}s elapsed)")
+
+            time.sleep(self._request_timeout(self.poll_seconds))

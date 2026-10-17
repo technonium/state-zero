@@ -31,14 +31,14 @@
 +    raw = os.getenv("GFLOW_SHADOW_SUBMIT_MARKER")
 +    if not raw or not Path(raw).exists():
 +        return
-+    try:
-+        if json.loads(Path(raw).read_text()).get("state") == "blocked_before_submission":
-+            return
-+    except (OSError, ValueError, AttributeError):
-+        pass
 +    from gflow_cli.data.redaction import redact_error_detail
 +    from gflow_cli.errors import GFlowError
 +    detail = redact_error_detail(str(exc.to_problem_details().get("detail", ""))) if isinstance(exc, GFlowError) else ""
++    try:
++        if json.loads(Path(raw).read_text()).get("state") == "blocked_before_submission":
++            raise WireFormatError(detail=f"blocked_before_submission: {type(exc).__name__}: {detail}") from exc
++    except (OSError, ValueError, AttributeError):
++        pass
 +    raise WireFormatError(
 +        detail=f"submitted_request_uncertain: {type(exc).__name__}: {detail}; reconcile before retry"
 +    ) from exc

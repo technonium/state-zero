@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import requests
@@ -64,7 +65,11 @@ class GoogleImageClient:
                 "x-goog-api-key": api_key,
                 "Content-Type": "application/json",
             }
-            resp = requests.post(url, headers=headers, json=payload, timeout=90)
+            deadline = getattr(self, 'generation_deadline', None)
+            remaining = 90 if deadline is None else min(90, deadline - time.time())
+            if remaining <= 0:
+                raise GoogleAPIError(504, 'Generation window exhausted')
+            resp = requests.post(url, headers=headers, json=payload, timeout=remaining)
             if resp.status_code >= 400:
                 raise GoogleAPIError(resp.status_code, resp.text[:500])
 

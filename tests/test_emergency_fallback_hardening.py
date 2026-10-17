@@ -68,6 +68,11 @@ class _FakeNotifier:
 
 
 class EmergencyFallbackHardeningTests(unittest.TestCase):
+    def setUp(self):
+        provider = patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'google_api'})
+        provider.start()
+        self.addCleanup(provider.stop)
+
     def _build_manager_with_temp_runtime(self):
         tmpdir = tempfile.TemporaryDirectory()
         runtime_root = Path(tmpdir.name) / "runtime"
@@ -544,6 +549,9 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
     def test_pre_cutoff_stage_error_releases_retryable_run(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        pipeline.output_dir = Path(directory.name)
         pipeline.run_date = "2026-03-08"
         pipeline.post_to_instagram = True
         pipeline.in_emergency_fallback = False

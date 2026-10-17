@@ -20,7 +20,7 @@ index 6b253ff3..339f6f5b 100644
      ImageModel.GEM_PIX_2: ModelMenuMatcher("Nano Banana Pro"),
      ImageModel.HARBOR_SEAL: ModelMenuMatcher("Nano Banana 2 Lite"),
  }
-@@ -912,49 +912,75 @@ def _r2v_body_problem(body: str, rpcid: str, media_ids: tuple[str, ...]) -> str
+@@ -912,49 +912,82 @@ def _r2v_body_problem(body: str, rpcid: str, media_ids: tuple[str, ...]) -> str
      return None
  
  
@@ -105,13 +105,20 @@ index 6b253ff3..339f6f5b 100644
 +        problem = "migrated host: image submit differs from requested 3:4 and count 1"
 +    marker = os.getenv("GFLOW_SHADOW_SUBMIT_MARKER")
 +    if marker:
++        target = Path(marker)
++        try:
++            untouched = target.read_text() == "submit_attempted\n"
++        except OSError:
++            untouched = False
++        if not untouched:
++            await route.abort()
++            return "submitted_request_uncertain: marker already used; reconcile before retry"
 +        evidence = {"state": "blocked_before_submission" if problem else "forwarded",
 +                    "expected_model": model.value if model else None,
 +                    "selected_model": "Nano Banana 2.1" if selected_label and IMAGE_MODEL_MENU_MATCHERS[ImageModel.NARWHAL].matches(selected_label) else None,
 +                    "actual_model": payload[1][0][5] if payload and isinstance(payload[1][0][5], str) and payload[1][0][5] in
 +                        {"NARWHAL", "BELUGA", "GEM_PIX_2", "HARBOR_SEAL"} else "unknown",
 +                    "reason": problem}
-+        target = Path(marker)
 +        temporary = target.with_suffix(target.suffix + ".tmp")
 +        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
 +            json.dump(evidence, handle)

@@ -662,7 +662,9 @@ class WHOOPPipeline:
         self._stop_heartbeat_thread()
         classification = exc.failure_classification or self._failure_classification_for_stage(exc.stage)
         next_slot = self._next_cron_slot_ist()
-        retry_message = f'{exc.message} Releasing claim for next cron retry (~{next_slot}).'
+        frozen_flow = (self.output_dir / 'flow_inputs.json').is_file()
+        retry_message = (f'{exc.message} Saved Flow work will be checked at ~{next_slot}; used attempts remain used.'
+                         if frozen_flow else f'{exc.message} Releasing claim for next cron retry (~{next_slot}).')
 
         retry_cleanup_notes: list[str] = []
         try:
@@ -685,13 +687,21 @@ class WHOOPPipeline:
             cleanup_tail = '\n'.join(retry_cleanup_notes)
             warning_details = f"{exc.details}\n\n{cleanup_tail}" if exc.details else cleanup_tail
 
-        notifier = get_notifier()
-        notifier.notify_warning(
-            run_date=self.run_date,
-            step=exc.stage,
-            message=f'{exc.message} Next retry ~{next_slot}.',
-            details_tail=warning_details,
-        )
+        if frozen_flow:
+            from flow_media_client import FlowMediaClient
+            diagnostic = self.output_dir / ('flow_video_diagnostics.json' if
+                (self.output_dir / 'flow_video_diagnostics.json').exists() else 'flow_image_diagnostics.json')
+            if diagnostic.exists():
+                signature = hashlib.sha256((exc.stage + exc.message).encode()).hexdigest()[:12]
+                FlowMediaClient()._notify_transition(diagnostic, f'SAVED_RUN_PENDING_{signature}', retry_message)
+            else:
+                safe_notify_status(self.run_date, 'SAVED_RUN_PENDING', retry_message)
+        else:
+            try:
+                get_notifier().notify_warning(run_date=self.run_date, step=exc.stage,
+                    message=f'{exc.message} Next retry ~{next_slot}.', details_tail=warning_details)
+            except Exception:
+                print('Retry notification unavailable; saved run remains intact.')
         if retry_cleanup_notes:
             print(f"{Fore.YELLOW}⚠ {' | '.join(retry_cleanup_notes)}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}⚠ {retry_message}{Style.RESET_ALL}")
@@ -913,13 +923,11 @@ class WHOOPPipeline:
         if exc.fallback_eligible and self.post_to_instagram and not self.in_emergency_fallback:
             if self._is_terminal_rescue_run():
                 if exc.emergency_fallback_allowed and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False):
-                    notifier = get_notifier()
-                    notifier.notify_warning(
-                        run_date=self.run_date,
-                        step=exc.stage,
-                        message=f"{exc.message} Emergency fallback will be attempted.",
-                        details_tail=exc.details,
-                    )
+                    try:
+                        get_notifier().notify_warning(run_date=self.run_date, step=exc.stage,
+                            message=f'{exc.message} Emergency fallback will be attempted.', details_tail=exc.details)
+                    except Exception:
+                        print('Emergency notification unavailable; continuing rescue.')
                     if self._run_emergency_fallback(exc.stage, exc.message):
                         print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
                         return True
@@ -1294,8 +1302,16 @@ class WHOOPPipeline:
     def _check_flow_submission_state(self):
         if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() != 'flow':
             return
-        from flow_media_client import FlowMediaClient
-        pending = FlowMediaClient._pending_submission(self.output_dir)
+        from flow_media_client import FlowMediaClient, FlowCommandError
+        try:
+            if FlowMediaClient.validate_inputs(self.output_dir):
+                return True
+            pending = FlowMediaClient._pending_submission(self.output_dir)
+        except FlowCommandError as exc:
+            pending = exc
+        if not pending and any(self.output_dir.glob('flow_*_diagnostics.json')):
+            pending = FlowCommandError('inputs', 'request_identity_unverified',
+                                       detail='Legacy generation inputs require reconciliation before resuming.')
         if pending:
             raise PipelineStageError(stage=f'Flow {pending.stage} reconciliation', message=str(pending),
                 details=f'Operation: {pending.operation_id or "unknown"}', fallback_eligible=True,
@@ -1317,7 +1333,7 @@ class WHOOPPipeline:
             )
 
             try:
-                self._check_flow_submission_state()
+                resume_flow = self._check_flow_submission_state()
                 self.step_1_validate()
 
                 # Only validate Instagram token when posting is enabled
@@ -1326,9 +1342,16 @@ class WHOOPPipeline:
                 else:
                     print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram token validation.{Style.RESET_ALL}")
 
-                daily_data = self.step_2_3_lookups()
-                self.step_4_6_prompts()
-                self._ensure_environment_selection_persisted(daily_data)
+                if resume_flow:
+                    daily_data = self._load_required_json(self.output_dir / 'daily_data.json', 'daily_data.json')
+                    self._revalidate_whoop_checkpoint(daily_data, checkpoint='before_media_resume')
+                else:
+                    daily_data = self.step_2_3_lookups()
+                    self.step_4_6_prompts()
+                    self._ensure_environment_selection_persisted(daily_data)
+                    if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() == 'flow':
+                        from flow_media_client import FlowMediaClient
+                        FlowMediaClient.freeze_inputs(self.output_dir)
 
                 image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
                 metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')

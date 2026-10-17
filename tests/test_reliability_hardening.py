@@ -50,6 +50,11 @@ class _FakeRefreshResponse:
 
 
 class ReliabilityHardeningTests(unittest.TestCase):
+    def setUp(self):
+        provider = patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'google_api'})
+        provider.start()
+        self.addCleanup(provider.stop)
+
     def _build_manual_session_pipeline(self, tmpdir: str) -> WHOOPPipeline:
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.output_dir = Path(tmpdir) / "runtime" / "output" / "2026-03-09"

@@ -13,6 +13,26 @@ except ImportError:
 
 @unittest.skipIf(MigratedComposer is None, "Requires the shadow image's pinned gflow")
 class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_original_image_recovery_uses_only_exact_verified_media(self):
+        from ops.flow_image_recover import download_existing
+        project = '11111111-1111-4111-8111-111111111111'
+        media = '22222222-2222-4222-8222-222222222222'
+        row = {'name': media, 'projectId': project, 'workflowId': 'workflow', 'image': {
+            'dimensions': {'width': 768, 'height': 1024}, 'generatedImage': {
+                'seed': 1, 'prompt': 'sanitized', 'modelNameType': 'BELUGA',
+                'aspectRatio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR',
+                'fifeUrl': 'https://flow-content.google/original'}}}
+        client = MagicMock(fetch_project_listing=AsyncMock(return_value={
+            'result': {'data': {'json': {'projectContents': {'media': [row]}}}}}), download_image=AsyncMock())
+        client.__aenter__.return_value = client
+        with patch('gflow_cli.api.client.FlowApiClient', return_value=client):
+            await download_existing(project, media, Path('/tmp/original.png'))
+            client.download_image.assert_awaited_once()
+            client.download_image.reset_mock()
+            with self.assertRaises(ValueError):
+                await download_existing(project, '33333333-3333-4333-8333-333333333333', Path('/tmp/wrong.png'))
+            client.download_image.assert_not_awaited()
+
     async def test_submit_boundary_creates_one_private_marker(self):
         from gflow_cli.api.transports.migrated_composer import _mark_shadow_submit_attempt
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -67,7 +87,8 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
                 'GFLOW_SHADOW_SUBMIT_MARKER': str(Path(tmpdir) / 'submit')}):
             marker = Path(tmpdir) / 'submit'
             marker.write_text('{"state":"blocked_before_submission"}')
-            _raise_after_shadow_submission(OSError('not sent'))
+            with self.assertRaisesRegex(WireFormatError, 'blocked_before_submission'):
+                _raise_after_shadow_submission(OSError('not sent'))
             marker.write_text('unreadable')
             with self.assertRaisesRegex(WireFormatError, 'OSError'):
                 _raise_after_shadow_submission(OSError('private prompt must not leak'))
@@ -247,6 +268,22 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(marker.read_text())['state'],'forwarded')
         route.continue_.assert_awaited_once()
         route.abort.assert_not_awaited()
+
+    async def test_same_attempt_cannot_forward_two_generation_requests(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        raw = MagicMock(post_data=self.body('BELUGA'))
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / 'submit'
+            marker.write_text('submit_attempted\n')
+            with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER': str(marker)}):
+                await _guard_image_submit(route, raw, (), Model.NARWHAL, 'Nano Banana 2.1')
+                before = marker.read_bytes()
+                await _guard_image_submit(route, raw, (), Model.NARWHAL, 'Nano Banana 2.1')
+            self.assertEqual(marker.read_bytes(), before)
+        route.continue_.assert_awaited_once()
+        route.abort.assert_awaited_once()
 
     async def test_wrong_aspect_or_count_is_aborted_before_forwarding(self):
         import json
