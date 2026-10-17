@@ -19,10 +19,58 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
             marker = Path(tmpdir) / "submit"
             with patch.dict(os.environ, {"GFLOW_SHADOW_SUBMIT_MARKER": str(marker)}):
                 _mark_shadow_submit_attempt()
-                with self.assertRaises(FileExistsError):
+                from gflow_cli.errors import WireFormatError
+                with self.assertRaisesRegex(WireFormatError, 'reconcile before retry'):
                     _mark_shadow_submit_attempt()
             self.assertEqual(marker.read_text(), "submit_attempted\n")
             self.assertEqual(marker.stat().st_mode & 0o777, 0o600)
+
+    async def test_forwarded_transport_failure_does_not_retry_or_mask_original(self):
+        from gflow_cli.api.client import FlowApiClient
+        from gflow_cli.errors import NetworkError, WireFormatError
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {
+                'GFLOW_SHADOW_SUBMIT_MARKER': str(Path(tmpdir) / 'submit')}):
+            marker = Path(tmpdir) / 'submit'
+            original = NetworkError(status=503, detail='Service unavailable')
+            async def submit(**kwargs):
+                marker.write_text('{"state":"forwarded"}')
+                raise original
+            client = object.__new__(FlowApiClient)
+            client.transport = MagicMock()
+            client.transport.uses_page_owned_image_recaptcha.return_value = True
+            client.transport.generate_images = AsyncMock(side_effect=submit)
+            with self.assertRaisesRegex(WireFormatError, 'NetworkError.*Service unavailable') as error:
+                await client._drive_images_generation(project_id='project', req=MagicMock(), recaptcha_action='image')
+            client.transport.generate_images.assert_awaited_once()
+            self.assertIs(error.exception.__cause__, original)
+            self.assertEqual(marker.read_text(), '{"state":"forwarded"}')
+
+    async def test_pre_submit_retry_still_uses_existing_bounded_retry_loop(self):
+        from gflow_cli.api.client import FlowApiClient
+        from gflow_cli.api._retry import _make_retrying
+        from gflow_cli.errors import NetworkError
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {
+                'GFLOW_SHADOW_SUBMIT_MARKER': str(Path(tmpdir) / 'absent')}), patch(
+                'gflow_cli.api.client.post_with_retry', side_effect=lambda: _make_retrying(wait_seconds=lambda _: 0).__aiter__()):
+            client = object.__new__(FlowApiClient)
+            client.transport = MagicMock()
+            client.transport.uses_page_owned_image_recaptcha.return_value = True
+            client.transport.generate_images = AsyncMock(side_effect=[NetworkError(status=503), [MagicMock()]])
+            result = await client._drive_images_generation(project_id='project', req=MagicMock(), recaptcha_action='image')
+            self.assertEqual(len(result), 1)
+            self.assertEqual(client.transport.generate_images.await_count, 2)
+
+    async def test_blocked_marker_allows_pre_submit_error_but_unknown_marker_does_not(self):
+        from gflow_cli.api.transports.migrated_composer import _raise_after_shadow_submission
+        from gflow_cli.errors import WireFormatError
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(os.environ, {
+                'GFLOW_SHADOW_SUBMIT_MARKER': str(Path(tmpdir) / 'submit')}):
+            marker = Path(tmpdir) / 'submit'
+            marker.write_text('{"state":"blocked_before_submission"}')
+            _raise_after_shadow_submission(OSError('not sent'))
+            marker.write_text('unreadable')
+            with self.assertRaisesRegex(WireFormatError, 'OSError'):
+                _raise_after_shadow_submission(OSError('private prompt must not leak'))
 
     async def test_download_failure_recovers_same_clip_without_generation(self):
         from pathlib import Path

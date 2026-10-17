@@ -865,6 +865,8 @@ class WHOOPPipeline:
                 print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")
 
                 details_tail = self._build_subprocess_details_tail(result)
+                if step_name in {'Image Generation', 'Video Generation'}:
+                    self._check_flow_submission_state()
                 if fallback_eligible:
                     public_safety_failure = self._is_prompt_public_safety_subprocess_failure(
                         step_name,
@@ -899,6 +901,15 @@ class WHOOPPipeline:
             self.log_error(step_name, str(e), str(e))
 
     def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
+        if exc.failure_classification == 'flow_reconciliation_required' and not self._is_terminal_rescue_run():
+            self._stop_heartbeat_thread()
+            try:
+                self.daily_run.mark_retryable_failure(step=exc.stage, message=exc.message,
+                    details_tail=exc.details, failure_classification=exc.failure_classification)
+                safe_notify_status(self.run_date, 'FLOW_RECONCILIATION_REQUIRED', exc.message)
+            finally:
+                self.daily_run.release_claim()
+            return True
         if exc.fallback_eligible and self.post_to_instagram and not self.in_emergency_fallback:
             if self._is_terminal_rescue_run():
                 if exc.emergency_fallback_allowed and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False):
@@ -1280,6 +1291,16 @@ class WHOOPPipeline:
             failure_classification='pre_post_failure',
         )
 
+    def _check_flow_submission_state(self):
+        if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() != 'flow':
+            return
+        from flow_media_client import FlowMediaClient
+        pending = FlowMediaClient._pending_submission(self.output_dir)
+        if pending:
+            raise PipelineStageError(stage=f'Flow {pending.stage} reconciliation', message=str(pending),
+                details=f'Operation: {pending.operation_id or "unknown"}', fallback_eligible=True,
+                failure_classification='flow_reconciliation_required')
+
     def run(self):
         try:
             self._claim_daily_run_or_exit()
@@ -1296,6 +1317,7 @@ class WHOOPPipeline:
             )
 
             try:
+                self._check_flow_submission_state()
                 self.step_1_validate()
 
                 # Only validate Instagram token when posting is enabled

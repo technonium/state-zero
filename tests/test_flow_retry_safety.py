@@ -19,6 +19,92 @@ from flow_media_client import FlowCommandError, FlowMediaClient
 
 
 class FlowRetrySafetyTests(unittest.TestCase):
+    def test_pending_submission_requires_reconciliation_for_both_stages(self):
+        for stage in ('image', 'video'):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                marker = root / f'flow_{stage}_attempt_1.submit'
+                marker.write_text('{"state":"forwarded"}')
+                failure = FlowMediaClient._pending_submission(root)
+                self.assertEqual(failure.stage, stage)
+                self.assertEqual(failure.category, 'submission_uncertain')
+                self.assertEqual(marker.read_text(), '{"state":"forwarded"}')
+
+    def test_corrupt_evidence_fails_closed_but_proven_pre_submit_is_safe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            diagnostic = root / 'flow_image_diagnostics.json'
+            diagnostic.write_text('broken')
+            self.assertIsNotNone(FlowMediaClient._pending_submission(root))
+            diagnostic.write_text(json.dumps({'failure': {'category': 'pre_submit_timeout',
+                                                          'submission_state': 'not_attempted'}}))
+            self.assertIsNone(FlowMediaClient._pending_submission(root))
+            (root / 'flow_image_attempt_1.submit').write_text('unreadable')
+            self.assertIsNotNone(FlowMediaClient._pending_submission(root))
+
+    def test_pipeline_stops_before_lookups_and_prompt_overwrite(self):
+        from pipeline import WHOOPPipeline, PipelineStageError
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'flow'}):
+            root = Path(tmp)
+            files = {'image_prompt.json': '{"scene":"original"}', 'daily_data.json': '{}',
+                     'flow_image_attempt_1.submit': '{"state":"forwarded"}'}
+            for name, value in files.items():
+                (root / name).write_text(value)
+            pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+            pipeline.output_dir = root
+            with self.assertRaises(PipelineStageError) as failure:
+                pipeline._check_flow_submission_state()
+            self.assertEqual(failure.exception.failure_classification, 'flow_reconciliation_required')
+            self.assertEqual({n: (root / n).read_text() for n in files}, files)
+            with patch.object(pipeline, '_claim_daily_run_or_exit'), \
+                    patch.object(pipeline, '_ensure_owner_runtime_dirs'), \
+                    patch.object(pipeline, '_stop_heartbeat_thread'), \
+                    patch.object(pipeline, '_cleanup_non_authoritative_daily_state'), \
+                    patch('pipeline._setup_global_exception_handler'), \
+                    patch.object(pipeline, '_handle_runtime_stage_error', return_value=True) as handler:
+                pipeline.mode, pipeline.post_to_instagram = 'automatic', False
+                pipeline.media_mode, pipeline.run_token = 'local_test', 'test'
+                pipeline.step_1_validate = Mock()
+                pipeline.step_2_3_lookups = Mock()
+                pipeline.step_4_6_prompts = Mock()
+                pipeline.run()
+                pipeline.step_1_validate.assert_not_called()
+                pipeline.step_2_3_lookups.assert_not_called()
+                pipeline.step_4_6_prompts.assert_not_called()
+                handler.assert_called_once()
+
+    def test_reconciliation_does_not_claim_fresh_retry_and_notification_failure_is_nonfatal(self):
+        from pipeline import WHOOPPipeline, PipelineStageError
+        from unittest.mock import Mock
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.daily_run, pipeline._stop_heartbeat_thread = Mock(), Mock()
+        pipeline.run_date = '2026-10-17'
+        error = PipelineStageError('Flow image reconciliation', 'Inspect the original Flow project',
+                                   failure_classification='flow_reconciliation_required')
+        with patch.object(pipeline, '_is_terminal_rescue_run', return_value=False), \
+                patch('pipeline.safe_notify_status', return_value=False):
+            self.assertTrue(pipeline._handle_runtime_stage_error(error))
+        pipeline.daily_run.release_claim.assert_called_once()
+        message = pipeline.daily_run.mark_retryable_failure.call_args.kwargs['message']
+        self.assertNotIn('Next retry', message)
+        pipeline.daily_run.mark_fatal_failure.assert_not_called()
+
+    def test_reconciliation_preserves_terminal_emergency_rescue(self):
+        from pipeline import WHOOPPipeline, PipelineStageError
+        from unittest.mock import Mock
+        pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
+        pipeline.post_to_instagram, pipeline.in_emergency_fallback = True, False
+        pipeline.run_date = '2026-10-17'
+        error = PipelineStageError('Flow image reconciliation', 'Inspect original Flow project',
+            fallback_eligible=True, failure_classification='flow_reconciliation_required')
+        with patch.object(pipeline, '_is_terminal_rescue_run', return_value=True), \
+                patch.object(pipeline, '_run_emergency_fallback', return_value=True) as rescue, \
+                patch('pipeline.get_notifier', return_value=Mock()), \
+                patch.dict(os.environ, {'EMERGENCY_FALLBACK_ENABLED': 'true'}):
+            self.assertTrue(pipeline._handle_runtime_stage_error(error))
+        rescue.assert_called_once()
+
     def image_response(self, command, timeout, marker):
         raw = Path(command[command.index('--output') + 1])
         Image.new('RGB', (768, 1024), 'white').save(raw)

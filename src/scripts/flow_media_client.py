@@ -21,6 +21,7 @@ from google_video_client import GoogleVideoClient
 
 class FlowCommandError(RuntimeError):
     def __init__(self, stage: str, category: str, *, error_class: str = "", media_id: str = "", retryable: bool = False, detail: str = "", operation_id: str = "", submission_state: str = ""):
+        self.stage = stage
         self.detail = detail
         self.operation_id = operation_id
         self.submission_state = submission_state
@@ -28,12 +29,47 @@ class FlowCommandError(RuntimeError):
         self.error_class = error_class
         self.media_id = media_id
         self.retryable = retryable
-        super().__init__(f"Flow {stage} {category} ({error_class or 'unclassified'})")
+        super().__init__(f"Flow {stage} {category} ({error_class or 'unclassified'})" + (f": {detail}" if detail else ""))
 
 
 class FlowMediaClient:
     def __init__(self, profile: str | None = None):
         self.profile = profile or os.getenv("GFLOW_PROFILE", "shadow")
+
+    @staticmethod
+    def _pending_submission(directory: Path) -> FlowCommandError | None:
+        """Check before upstream inputs can be overwritten by a scheduled retry."""
+        for stage, name in (("image", "generated_art.png"), ("video", "generated_video.mp4")):
+            path = directory / f"flow_{stage}_diagnostics.json"
+            markers = list(directory.glob(f"flow_{stage}_attempt_*.submit"))
+            if not path.exists() and not markers:
+                continue
+            try:
+                saved = json.loads(path.read_text()) if path.exists() else {}
+                if not isinstance(saved, dict):
+                    raise ValueError("Invalid diagnostics")
+                states = [json.loads(marker.read_text())["state"] for marker in markers]
+                failure = saved.get("failure") or {}
+                if not isinstance(failure, dict):
+                    raise ValueError("Invalid failure")
+                canonical = directory / name
+                if (saved.get("output_sha256") and canonical.is_file() and not failure
+                        and hashlib.sha256(canonical.read_bytes()).hexdigest() == saved["output_sha256"]):
+                    continue
+                if (all(state == "blocked_before_submission" for state in states)
+                        and failure.get("category") in {"pre_submit_transient", "pre_submit_timeout", "auth_required", "blocked_before_submission"}
+                        and failure.get("submission_state") in {"not_attempted", "blocked_before_submission"}):
+                    continue
+            except (OSError, ValueError, KeyError, TypeError):
+                saved, failure = {}, {}
+            action = "Recover the recorded media with saved inputs" if saved.get("result") else "Inspect the original Flow project and reconcile the submitted request"
+            reason = str(failure.get("detail") or "")[:500]
+            return FlowCommandError(stage, "submission_uncertain", submission_state="uncertain",
+                                    error_class=failure.get("error_class", ""),
+                                    operation_id=failure.get("operation_id", ""),
+                                    detail=f"{action}; automatic generation and API fallback are blocked." +
+                                           (f" Original failure: {reason}" if reason else ""))
+        return None
 
     @staticmethod
     def _api_fallback_allowed(error: Exception) -> bool:
@@ -213,6 +249,8 @@ class FlowMediaClient:
                 category = "auth_required"
             elif submission_state == "blocked_before_submission":
                 category = "blocked_before_submission"
+            elif detail.startswith("submitted_request_uncertain:"):
+                category = "submission_uncertain"
             elif clicked:
                 category = "post_submit_error"
             elif bool(error.get("retryable")):
