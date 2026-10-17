@@ -142,17 +142,13 @@ class Notifier:
         if parse_mode:
             payload['parse_mode'] = parse_mode
         
-        for attempt in range(self.max_retries):
-            try:
-                self._telegram_request('sendMessage', data=payload)
-                return True
-            except Exception as e:
-                if attempt < self.max_retries - 1:
-                    time.sleep(self.retry_delay * (attempt + 1))
-                else:
-                    LOCAL_LOG.error(f"Failed to send Telegram message after {self.max_retries} attempts: {e}")
-                    return False
-        return False
+        try:
+            self._telegram_request('sendMessage', data=payload, timeout=(3, 7))
+            return True
+        except Exception:
+            # Status delivery must not consume the generation/rescue window.
+            LOCAL_LOG.error('Telegram message delivery failed; pipeline continues.')
+            return False
     
     def _send_document(self, file_path: Path, caption: str = None) -> bool:
         """Send document to Telegram with retry logic."""

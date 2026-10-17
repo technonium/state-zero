@@ -37,6 +37,33 @@ def env_bool(name: str, default: bool = False) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
+def pipeline_seconds_remaining(*, generation: bool = False, maximum: float = 600) -> float:
+    import time
+    deadline, _ = get_pipeline_deadline()
+    remaining = deadline.timestamp() - time.time() - (1800 if generation else 0)
+    if remaining <= 0:
+        raise TimeoutError('Pipeline window exhausted; saved work is preserved.')
+    return min(maximum, remaining)
+
+
+def run_bounded(command, *, timeout, **kwargs):
+    """Kill and reap the whole pre-publication process group on timeout."""
+    import signal
+    import subprocess
+    with subprocess.Popen(command, start_new_session=True, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, **kwargs) as child:
+        try:
+            stdout, stderr = child.communicate(timeout=timeout)
+        except BaseException:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.communicate()
+            raise
+        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+
+
 def resolve_instagram_publish_strategy(strategy: str | None = None) -> str:
     """Resolve Instagram publish strategy with a safe production default."""
     resolved = (strategy or os.getenv("INSTAGRAM_PUBLISH_STRATEGY") or "resumable_binary").strip().lower()

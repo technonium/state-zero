@@ -173,7 +173,7 @@ def _source_scale_options(source_path: Path) -> str:
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
          "stream=color_space,color_range", "-of", "json", str(source_path)],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, timeout=30,
     )
     streams = json.loads(probe.stdout).get("streams", [])
     if not streams:
@@ -230,7 +230,7 @@ def render_video(source_path: Path, output_path: Path, data: dict, theme: str, *
                 "-bsf:v", "h264_metadata=video_full_range_flag=0:colour_primaries=1:transfer_characteristics=13:matrix_coefficients=1",
                 "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(candidate),
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
             if result.returncode:
                 last_error = result.stderr[-2000:]
                 candidate.unlink(missing_ok=True)

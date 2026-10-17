@@ -677,6 +677,15 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
             with patch("pipeline._setup_global_exception_handler", lambda instance: None):
                 with patch("pipeline.get_notifier", return_value=_FakeNotifier()):
+                    from flow_media_client import FlowMediaClient
+                    if not pipeline.output_dir.exists():
+                        fixture = tempfile.TemporaryDirectory()
+                        self.addCleanup(fixture.cleanup)
+                        pipeline.output_dir = Path(fixture.name)
+                    for name in FlowMediaClient._input_names(pipeline.output_dir):
+                        name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
+                        if not (pipeline.output_dir / name).exists():
+                            (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
                     pipeline.run()
 
     def test_instagram_post_mock_mode_returns_consistent_dict(self):
@@ -1123,6 +1132,8 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         fake_poster_module.InstagramPoster = _BrokenPoster
         fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
+        from instagram_poster import InstagramPublicationUncertain
+        fake_poster_module.InstagramPublicationUncertain = InstagramPublicationUncertain
 
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.daily_run = _FakeDailyRun()
@@ -1201,6 +1212,8 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         fake_poster_module.InstagramPoster = _Poster
         fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
+        from instagram_poster import InstagramPublicationUncertain
+        fake_poster_module.InstagramPublicationUncertain = InstagramPublicationUncertain
 
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.daily_run = _FakeDailyRun()
@@ -1289,6 +1302,8 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         fake_poster_module.InstagramPoster = _Poster
         fake_poster_module.InstagramPublishDiagnosticsError = _FakeDiagnosticsError
+        from instagram_poster import InstagramPublicationUncertain
+        fake_poster_module.InstagramPublicationUncertain = InstagramPublicationUncertain
 
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
         pipeline.daily_run = _FakeDailyRun()
@@ -1379,6 +1394,15 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         with patch("pipeline._setup_global_exception_handler", lambda instance: None):
             with self.assertRaises(PipelineStageError) as ctx:
+                from flow_media_client import FlowMediaClient
+                if not pipeline.output_dir.exists():
+                    fixture = tempfile.TemporaryDirectory()
+                    self.addCleanup(fixture.cleanup)
+                    pipeline.output_dir = Path(fixture.name)
+                for name in FlowMediaClient._input_names(pipeline.output_dir):
+                    name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
+                    if not (pipeline.output_dir / name).exists():
+                        (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
                 pipeline.run()
 
         self.assertEqual(ctx.exception.stage, "Instagram Posting")

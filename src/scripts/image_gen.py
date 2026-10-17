@@ -46,7 +46,8 @@ class ImageGenerator:
             print(f"✅ Mock image saved to {output_path}")
             return
 
-        self.client.generate_from_json(prompt_json, Path(output_path))
+        from flow_media_client import FlowMediaClient
+        return FlowMediaClient().generate_api_stage('image', prompt_json, Path(output_path))
 
 def main():
     parser = argparse.ArgumentParser()

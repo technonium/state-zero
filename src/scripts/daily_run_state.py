@@ -15,6 +15,10 @@ class OwnershipLostError(RuntimeError):
     pass
 
 
+class DailyStateUnreadableError(RuntimeError):
+    pass
+
+
 class DailyRunStateManager:
     def __init__(
         self,
@@ -43,9 +47,12 @@ class DailyRunStateManager:
         if not self.state_path.exists():
             return None
         try:
-            return json.loads(self.state_path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
+            state = json.loads(self.state_path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or state.get('date') != self.run_date or not state.get('status'):
+                raise ValueError('Invalid daily state')
+            return state
+        except (OSError, ValueError, TypeError) as exc:
+            raise DailyStateUnreadableError('Daily state is unreadable; publication requires reconciliation.') from exc
 
     def load_claim(self) -> dict | None:
         if not self.claim_path.exists():

@@ -395,3 +395,16 @@ class NanoBanana21ReadbackTests(unittest.IsolatedAsyncioTestCase):
         route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
         self.assertIsNotNone(await _guard_image_submit(route, MagicMock(post_data=ImageSubmissionGuardTests.body('BELUGA')), (), Model.NARWHAL))
         route.abort.assert_awaited_once(); route.continue_.assert_not_awaited()
+
+class GenericSubmissionErrorTests(unittest.TestCase):
+    def test_generic_browser_error_retains_sanitized_reason(self):
+        import json
+        from gflow_cli.api.transports.migrated_composer import _raise_after_shadow_submission
+        from gflow_cli.errors import WireFormatError
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'submit'
+            marker.write_text(json.dumps({'state': 'forwarded'}))
+            with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER': str(marker)}):
+                with self.assertRaises(WireFormatError) as caught:
+                    _raise_after_shadow_submission(RuntimeError('Response.body: protocol error reading response'))
+        self.assertIn('protocol error reading response', str(caught.exception))

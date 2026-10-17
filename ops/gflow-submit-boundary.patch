@@ -8,7 +8,7 @@
  import re
  import time
  import unicodedata
-@@ -715,8 +716,38 @@
+@@ -715,8 +716,43 @@
                  detail=f"Flow refused the submit: {safety} (gRPC {err.code})", route=route
              )
      return None
@@ -33,7 +33,12 @@
 +        return
 +    from gflow_cli.data.redaction import redact_error_detail
 +    from gflow_cli.errors import GFlowError
-+    detail = redact_error_detail(str(exc.to_problem_details().get("detail", ""))) if isinstance(exc, GFlowError) else ""
++    import sys
++    original = str(exc.to_problem_details().get("detail", "")) if isinstance(exc, GFlowError) else str(exc).split("\n", 1)[0]
++    for argument in sys.argv[1:]:
++        if len(argument) > 80:
++            original = original.replace(argument, "[private argument]")
++    detail = redact_error_detail(original)
 +    try:
 +        if json.loads(Path(raw).read_text()).get("state") == "blocked_before_submission":
 +            raise WireFormatError(detail=f"blocked_before_submission: {type(exc).__name__}: {detail}") from exc
@@ -87,3 +92,29 @@
          if not images:
              raise ContentPolicyError(
                  detail="empty media[]",
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -2039,8 +2039,12 @@
+             if status == 200:
+                 try:
+                     text = await response.text()
+-                except Exception:  # noqa: BLE001 - an aborted body is a rejected upload
+-                    text = ""
++                except Exception as exc:
++                    from gflow_cli.data.redaction import redact_error_detail
++                    reply.set_exception(MediaUploadRejectedError(
++                        detail=f"upload_response_read_failed: HTTP 200 rpc={UPLOAD_RPC} {type(exc).__name__}: "
++                               + redact_error_detail(str(exc).split("\n", 1)[0]), status=status, route=route))
++                    return
+             if not reply.done():
+                 reply.set_result((status, text))
+ 
+@@ -2183,7 +2187,7 @@
+             media_id = _first_uuid(text)
+             if media_id is None:
+                 raise MediaUploadRejectedError(
+-                    detail=f"migrated host: {UPLOAD_RPC} answered 200 without a media id",
++                    detail=f"upload_response_unrecognized: HTTP 200 rpc={UPLOAD_RPC} bytes={len(text)} frames={len(parse_frames(text))}",
+                     status=status,
+                     route=route,
+                 )

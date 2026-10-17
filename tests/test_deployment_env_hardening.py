@@ -109,7 +109,7 @@ class DeploymentEnvHardeningTests(unittest.TestCase):
             private_root = project_root.parent / "project-private"
             (private_root / "runtime").mkdir(parents=True)
 
-            with patch.object(utils, "get_project_root", return_value=project_root):
+            with patch.object(utils, "get_project_root", return_value=project_root), patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": ""}):
                 self.assertEqual(utils.get_private_root(), private_root)
 
     def test_get_private_root_still_supports_legacy_spaced_sibling_layout(self):
@@ -120,7 +120,7 @@ class DeploymentEnvHardeningTests(unittest.TestCase):
             legacy_private_root = project_root.parent / "project Private"
             (legacy_private_root / "astrology").mkdir(parents=True)
 
-            with patch.object(utils, "get_project_root", return_value=project_root):
+            with patch.object(utils, "get_project_root", return_value=project_root), patch.dict(os.environ, {"STATE_ZERO_PRIVATE_ROOT": ""}):
                 self.assertEqual(utils.get_private_root(), legacy_private_root)
 
     def test_validate_environment_rejects_localhost_live_vps_host(self):

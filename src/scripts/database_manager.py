@@ -486,6 +486,16 @@ class CardDatabase:
         finally:
             conn.close()
 
+    def published_records_for_date(self, run_date: str) -> list[dict]:
+        with sqlite3.connect(self.db_path) as conn:
+            records = []
+            for table, column, source in (('cards', 'date', 'normal'), ('fallback_posts', 'run_date', 'emergency_fallback')):
+                for post_id, permalink in conn.execute(
+                        f'SELECT instagram_post_id, instagram_permalink FROM {table} WHERE {column}=?', (run_date,)):
+                    if post_id and post_id not in {'unknown', 'dry-run'} and not str(post_id).startswith('mock'):
+                        records.append(dict(instagram_post_id=post_id, instagram_permalink=permalink, asset_source=source))
+            return records
+
     def insert_fallback_post(self, fallback_data: dict):
         """Insert a new emergency fallback post record."""
         conn = sqlite3.connect(self.db_path)

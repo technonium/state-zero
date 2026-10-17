@@ -404,7 +404,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.freeze()
         api = Mock()
         api.generate_from_json.side_effect = self.save_image
-        with patch.object(FlowMediaClient, '_generation_seconds', return_value=200), \
+        with patch.object(FlowMediaClient, '_generation_seconds', return_value=1600), \
                 patch.object(FlowMediaClient, '_generate_image') as flow, \
                 patch('flow_media_client.GoogleImageClient', return_value=api):
             FlowMediaClient().generate_image({}, self.root / 'generated_art.png')

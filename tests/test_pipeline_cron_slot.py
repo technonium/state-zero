@@ -41,7 +41,7 @@ class NextCronSlotIstTests(unittest.TestCase):
 
     def test_hour_rollover(self):
         self.assertEqual(self._slot(2026, 5, 25, 10, 59, 59), "11:00 IST")
-        self.assertEqual(self._slot(2026, 5, 25, 23, 59, 59), "00:00 IST")
+        self.assertEqual(self._slot(2026, 5, 25, 23, 59, 59), "10:00 IST (tomorrow)")
 
     def test_accepts_utc_input_and_converts_to_ist(self):
         utc_dt = datetime(2026, 5, 25, 5, 14, 0, tzinfo=ZoneInfo("UTC"))

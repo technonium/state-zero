@@ -746,6 +746,15 @@ class ReliabilityHardeningTests(unittest.TestCase):
             )
 
             with patch("builtins.print") as print_mock:
+                from flow_media_client import FlowMediaClient
+                if not pipeline.output_dir.exists():
+                    fixture = tempfile.TemporaryDirectory()
+                    self.addCleanup(fixture.cleanup)
+                    pipeline.output_dir = Path(fixture.name)
+                for name in FlowMediaClient._input_names(pipeline.output_dir):
+                    name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
+                    if not (pipeline.output_dir / name).exists():
+                        (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
                 WHOOPPipeline.run(pipeline)
 
         printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list if call.args)
@@ -888,6 +897,15 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"INSTAGRAM_PUBLISH_STRATEGY": "resumable_binary"}, clear=False):
                 with patch("builtins.print"):
+                    from flow_media_client import FlowMediaClient
+                    if not pipeline.output_dir.exists():
+                        fixture = tempfile.TemporaryDirectory()
+                        self.addCleanup(fixture.cleanup)
+                        pipeline.output_dir = Path(fixture.name)
+                    for name in FlowMediaClient._input_names(pipeline.output_dir):
+                        name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
+                        if not (pipeline.output_dir / name).exists():
+                            (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
                     WHOOPPipeline.run(pipeline)
 
         self.assertEqual(captured_publish, [])
@@ -1059,6 +1077,15 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false"}, clear=False):
                 with patch("builtins.print"):
+                    from flow_media_client import FlowMediaClient
+                    if not pipeline.output_dir.exists():
+                        fixture = tempfile.TemporaryDirectory()
+                        self.addCleanup(fixture.cleanup)
+                        pipeline.output_dir = Path(fixture.name)
+                    for name in FlowMediaClient._input_names(pipeline.output_dir):
+                        name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
+                        if not (pipeline.output_dir / name).exists():
+                            (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
                     WHOOPPipeline.run(pipeline)
 
         self.assertEqual(render_calls, [])
@@ -1251,6 +1278,15 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 with patch("pipeline.get_notifier", return_value=notifier):
                     with patch("builtins.print"):
                         with self.assertRaises(SystemExit) as ctx:
+                            from flow_media_client import FlowMediaClient
+                            if not pipeline.output_dir.exists():
+                                fixture = tempfile.TemporaryDirectory()
+                                self.addCleanup(fixture.cleanup)
+                                pipeline.output_dir = Path(fixture.name)
+                            for name in FlowMediaClient._input_names(pipeline.output_dir):
+                                name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
+                                if not (pipeline.output_dir / name).exists():
+                                    (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
                             WHOOPPipeline.run(pipeline)
 
             revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
@@ -1361,7 +1397,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 stderr="RuntimeError: Video prompt validation failed after 2 LLM attempts and deterministic repair.",
             )
 
-            with patch("pipeline.subprocess.run", return_value=failed):
+            with patch("pipeline.run_bounded", return_value=failed), patch("pipeline.pipeline_seconds_remaining", return_value=900):
                 with self.assertRaises(PipelineStageError) as prompt_ctx:
                     WHOOPPipeline.step_4_6_prompts(pipeline)
 
@@ -1402,7 +1438,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                 stderr="RuntimeError: Video prompt validation failed after 2 LLM attempts and deterministic repair.",
             )
 
-            with patch("pipeline.subprocess.run", return_value=failed):
+            with patch("pipeline.run_bounded", return_value=failed), patch("pipeline.pipeline_seconds_remaining", return_value=900):
                 with self.assertRaises(PipelineStageError) as prompt_ctx:
                     WHOOPPipeline.step_4_6_prompts(pipeline)
 

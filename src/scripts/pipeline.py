@@ -26,6 +26,8 @@ from utils import (
     VALID_MEDIA_MODES,
     env_bool,
     ensure_path,
+    pipeline_seconds_remaining,
+    run_bounded,
     get_pipeline_run_date_str,
     get_live_vps_config_error,
     load_project_dotenv,
@@ -337,6 +339,8 @@ class WHOOPPipeline:
         self._heartbeat_thread = None
 
     def _claim_daily_run_or_exit(self):
+        if hasattr(self, 'output_dir') and self.post_to_instagram:
+            self._check_publication_before_claim()
         decision, state = self.daily_run.acquire()
         if decision == 'owner':
             self.generation_started_at = state.get('claimed_at') or getattr(self, 'generation_started_at', None)
@@ -366,8 +370,47 @@ class WHOOPPipeline:
         )
         raise SystemExit(0)
 
+    def _check_publication_before_claim(self):
+        from instagram_poster import read_publication_record, InstagramPublicationUncertain
+        from database_manager import CardDatabase
+        state = self.daily_run.load_state() or {}
+        receipt = read_publication_record(self.output_dir)
+        records = CardDatabase().published_records_for_date(self.run_date)
+        ids = {str(r['instagram_post_id']) for r in records}
+        for value in (state.get('instagram_post_id'), receipt.get('post_id')):
+            if value:
+                ids.add(str(value))
+        if len(ids) > 1:
+            raise InstagramPublicationUncertain('publication_evidence', 'Conflicting post identities; no new generation or post is safe.', {})
+        if state.get('status') == 'POSTED':
+            return
+        if ids:
+            source = state.get('asset_source') or (records[0]['asset_source'] if records else receipt.get('asset_source'))
+            if source:
+                self.daily_run.mark_posted_after_publish(post_id=next(iter(ids)),
+                    permalink=state.get('instagram_permalink') or (records[0].get('instagram_permalink') if records else None),
+                    note='Recovered confirmed publication identity before claiming the date.', extra={'asset_source': source})
+                return
+        if ids or receipt.get('publication_state') in {'intent', 'uncertain', 'published_unidentified', 'confirmed'}:
+            raise InstagramPublicationUncertain('publication_evidence',
+                'Recorded publication requires reconciliation; generation and replacement posting are blocked.', receipt)
+
     def _recover_posted_archive_if_needed(self, state: dict):
         if not self.post_to_instagram:
+            return
+
+        if state.get('asset_source') == 'emergency_fallback':
+            # An emergency post must never archive abandoned normal prompts.
+            evidence = self.output_dir / 'emergency_fallback_used.json'
+            try:
+                saved = json.loads(evidence.read_text())
+                if saved.get('instagram_post_id') != state.get('instagram_post_id') or saved.get('asset_source') != 'emergency_fallback':
+                    raise ValueError('Emergency post identity differs')
+                from database_manager import CardDatabase
+                CardDatabase().insert_fallback_post(saved)
+            except Exception as exc:
+                self._notify_post_success_cleanup_warning('Emergency Archive',
+                    'Emergency post remains POSTED; its archive requires reconciliation.', type(exc).__name__)
             return
 
         payload_path = self.output_dir / 'last_archived_payload.json'
@@ -568,17 +611,11 @@ class WHOOPPipeline:
     def _next_cron_slot_ist(self, now: datetime | None = None) -> str:
         ist = ZoneInfo("Asia/Kolkata")
         base = now.astimezone(ist) if now else datetime.now(ist)
-        interval = self.CRON_INTERVAL_MINUTES
-        hour_start = base.replace(minute=0, second=0, microsecond=0)
-        elapsed_minutes = (base - hour_start).total_seconds() / 60.0
-        next_slot_minute = (int(elapsed_minutes // interval) + 1) * interval
-        if next_slot_minute >= 60:
-            slot = (hour_start + timedelta(hours=1)).replace(
-                minute=next_slot_minute - 60, second=0, microsecond=0
-            )
-        else:
-            slot = hour_start.replace(minute=next_slot_minute, second=0, microsecond=0)
-        return slot.strftime("%H:%M IST")
+        for day in (base, base + timedelta(days=1)):
+            for hour, minute in [(h, m) for h in range(10, 13) for m in (0, 30)] + [(13, 0), (14, 0)]:
+                slot = day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if slot > base:
+                    return slot.strftime('%H:%M IST') + (' (tomorrow)' if slot.date() != base.date() else '')
 
     def _release_retryable_lookup_failure(
         self,
@@ -867,7 +904,9 @@ class WHOOPPipeline:
             env = os.environ.copy()
             if env_overrides:
                 env.update(env_overrides)
-            result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+            result = run_bounded(cmd, env=env, timeout=pipeline_seconds_remaining(
+                generation=step_name in {'Image Generation', 'LLM Prompts (Interpretation -> Video)'},
+                maximum=2400 if step_name == 'Image Generation' else 900))
             if result.stdout:
                 print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
             if result.returncode != 0:
@@ -911,6 +950,15 @@ class WHOOPPipeline:
             self.log_error(step_name, str(e), str(e))
 
     def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
+        if exc.failure_classification == 'instagram_publication_uncertain':
+            self._stop_heartbeat_thread()
+            try:
+                self.daily_run.mark_retryable_failure(step=exc.stage, message=exc.message,
+                    failure_classification=exc.failure_classification)
+                safe_notify_status(self.run_date, 'INSTAGRAM_RECONCILIATION_REQUIRED', exc.message)
+            finally:
+                self.daily_run.release_claim()
+            return True
         if exc.failure_classification == 'flow_reconciliation_required' and not self._is_terminal_rescue_run():
             self._stop_heartbeat_thread()
             try:
@@ -1300,12 +1348,14 @@ class WHOOPPipeline:
         )
 
     def _check_flow_submission_state(self):
-        if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() != 'flow':
-            return
         from flow_media_client import FlowMediaClient, FlowCommandError
         try:
             if FlowMediaClient.validate_inputs(self.output_dir):
                 return True
+            if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() != 'flow':
+                if any(self.output_dir.glob('google_*_diagnostics.json')):
+                    raise FlowCommandError('inputs', 'request_identity_unverified', detail='API media exists without frozen inputs; reconcile before resuming.')
+                return
             pending = FlowMediaClient._pending_submission(self.output_dir)
         except FlowCommandError as exc:
             pending = exc
@@ -1349,9 +1399,8 @@ class WHOOPPipeline:
                     daily_data = self.step_2_3_lookups()
                     self.step_4_6_prompts()
                     self._ensure_environment_selection_persisted(daily_data)
-                    if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() == 'flow':
-                        from flow_media_client import FlowMediaClient
-                        FlowMediaClient.freeze_inputs(self.output_dir)
+                    from flow_media_client import FlowMediaClient
+                    FlowMediaClient.freeze_inputs(self.output_dir)
 
                 image_json = self._load_required_json(self.output_dir / 'image_prompt.json', 'image_prompt.json')
                 metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')
@@ -1871,7 +1920,7 @@ class WHOOPPipeline:
             '-of', 'default=noprint_wrappers=1:nokey=1',
             str(video_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         if result.returncode != 0:
             # Send warning notification for invalid video
             notifier = get_notifier()
@@ -2190,7 +2239,7 @@ class WHOOPPipeline:
         deadline_reason = getattr(self, 'deadline_reason', '')
         if deadline_reason:
             env['PIPELINE_EFFECTIVE_DEADLINE_REASON'] = deadline_reason
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
         if result.stdout:
             print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
         if result.returncode != 0:
@@ -2273,7 +2322,7 @@ class WHOOPPipeline:
         self._set_heartbeat_context(status='STARTING', note=f'Running {step_name}.', pulse=True)
         cmd = [sys.executable, str(self.base_dir / 'src/scripts/lookups.py'), *args]
         env = os.environ.copy()
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=300)
         if result.stdout:
             print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
         if result.returncode == 2:
@@ -2357,8 +2406,8 @@ class WHOOPPipeline:
                 from flow_media_client import FlowMediaClient
                 FlowMediaClient().generate_video(prompt_text, art_path, out_path)
             else:
-                from google_video_client import GoogleVideoClient
-                GoogleVideoClient().generate_from_image(prompt_text, art_path, out_path)
+                from flow_media_client import FlowMediaClient
+                FlowMediaClient().generate_api_stage('video', prompt_text, out_path, art_path)
             if not out_path.exists():
                 raise FileNotFoundError(f'Expected output missing: {out_path}')
             if out_path.stat().st_mtime < art_path.stat().st_mtime:
@@ -2463,9 +2512,11 @@ class WHOOPPipeline:
         if 'mock' not in vps_base and self.post_to_instagram:
             if self.media_mode == 'local_test':
                 ensure_path(self.local_vps_dir)
+                self.local_vps_dir.chmod(0o755)
                 for local_path, remote_name in uploads:
                     staged_path = self.local_vps_dir / remote_name
                     shutil.copy2(local_path, staged_path)
+                    staged_path.chmod(0o644)
                 print(
                     f"{Fore.GREEN}✅ Local media staged for ngrok → {self.local_vps_dir}{Style.RESET_ALL}"
                 )
@@ -2492,8 +2543,11 @@ class WHOOPPipeline:
                     if mounted_upload_dir.exists():
                         try:
                             ensure_path(mounted_upload_dir)
+                            mounted_upload_dir.chmod(0o755)
                             for local_path, remote_name in uploads:
-                                shutil.copy2(local_path, mounted_upload_dir / remote_name)
+                                public_path = mounted_upload_dir / remote_name
+                                shutil.copy2(local_path, public_path)
+                                public_path.chmod(0o644)
                             print(
                                 f"{Fore.GREEN}✅ Media copied directly to mounted VPS path → "
                                 f"{mounted_upload_dir}{Style.RESET_ALL}"
@@ -2513,8 +2567,8 @@ class WHOOPPipeline:
                         if strict_host_key_checking not in {'yes', 'accept-new'}:
                             strict_host_key_checking = 'accept-new'
                         ssh_opts = ['-o', f'StrictHostKeyChecking={strict_host_key_checking}']
-                        mkdir_cmd = ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(ssh_path)}"]
-                        mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True)
+                        mkdir_cmd = ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(ssh_path)} && chmod 755 {shlex.quote(ssh_path)}"]
+                        mkdir_result = subprocess.run(mkdir_cmd, capture_output=True, text=True, timeout=60)
                         if mkdir_result.returncode != 0:
                             details = self._build_subprocess_details_tail(mkdir_result)
                             raise PipelineStageError(
@@ -2527,7 +2581,7 @@ class WHOOPPipeline:
                         for local_path, remote_name in uploads:
                             remote_target = f'{target}:{ssh_path.rstrip("/")}/{remote_name}'
                             scp_cmd = ['scp', *ssh_opts, str(local_path), remote_target]
-                            scp_result = subprocess.run(scp_cmd, capture_output=True, text=True)
+                            scp_result = subprocess.run(scp_cmd, capture_output=True, text=True, timeout=120)
                             if scp_result.returncode != 0:
                                 details = self._build_subprocess_details_tail(scp_result)
                                 raise PipelineStageError(
@@ -2536,6 +2590,12 @@ class WHOOPPipeline:
                                     details=details,
                                     fallback_eligible=True,
                                 )
+                            public_mode = subprocess.run(['ssh', *ssh_opts, target,
+                                f'chmod 644 {shlex.quote(ssh_path.rstrip("/") + "/" + remote_name)}'],
+                                capture_output=True, text=True, timeout=60)
+                            if public_mode.returncode:
+                                raise PipelineStageError(stage='VPS Upload',
+                                    message='Failed to make uploaded public media readable.', fallback_eligible=True)
 
         vps_base = vps_base.rstrip("/")
         video_url = f'{vps_base}/{remote_video_name}'
@@ -2594,18 +2654,25 @@ class WHOOPPipeline:
             latest = root / latest_relative
             ensure_path(archive.parent)
             ensure_path(latest)
+            for directory in (root, root / 'portfolio', archive.parent, latest):
+                directory.chmod(0o755)
             staging = archive.parent / f'.upload-{uuid.uuid4().hex}'
             ensure_path(staging)
+            staging.chmod(0o755)
             try:
                 for local_path, name in uploads:
                     shutil.copy2(local_path, staging / name)
+                    (staging / name).chmod(0o644)
                 try:
                     staging.rename(archive)
                 except OSError:
                     if not archive.is_dir() or media_revision(archive) != self.portfolio_revision:
                         raise
+                archive.chmod(0o755)
                 for _path, name in uploads:
+                    (archive / name).chmod(0o644)
                     shutil.copy2(archive / name, latest / name)
+                    (latest / name).chmod(0o644)
             finally:
                 if staging.exists(): shutil.rmtree(staging)
         if 'mock' not in vps_base and self.post_to_instagram:
@@ -2634,7 +2701,7 @@ class WHOOPPipeline:
                     staging_dir = archive_dir.parent / f'.upload-{uuid.uuid4().hex}'
                     mkdir = subprocess.run(
                         ['ssh', *ssh_opts, target, f"mkdir -p {shlex.quote(str(staging_dir))} {shlex.quote(str(latest_dir))}"],
-                        capture_output=True, text=True,
+                        capture_output=True, text=True, timeout=60,
                     )
                     if mkdir.returncode:
                         raise RuntimeError(f'Failed to create portfolio VPS directories: {self._build_subprocess_details_tail(mkdir)}')
@@ -2642,17 +2709,18 @@ class WHOOPPipeline:
                         for local_path, name in uploads:
                             result = subprocess.run(
                                 ['scp', *ssh_opts, str(local_path), f'{target}:{shlex.quote(str(staging_dir / name))}'],
-                                capture_output=True, text=True,
+                                capture_output=True, text=True, timeout=120,
                             )
                             if result.returncode:
                                 raise RuntimeError(f'Failed to upload portfolio {name}: {self._build_subprocess_details_tail(result)}')
                         stage = shlex.quote(str(staging_dir)); archive = shlex.quote(str(archive_dir)); latest = shlex.quote(str(latest_dir))
+                        checksums = '\n'.join(f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {archive_dir / name}' for path, name in uploads)
                         activate = subprocess.run(['ssh', *ssh_opts, target,
-                            f'if [ ! -d {archive} ]; then mv -T {stage} {archive} || [ -d {archive} ]; fi && cp {archive}/* {latest}/'], capture_output=True, text=True)
+                            f'chmod 755 {shlex.quote(ssh_path)} {shlex.quote(str(Path(ssh_path) / "portfolio"))} {stage} {shlex.quote(str(archive_dir.parent))} {latest} && chmod 644 {stage}/* && if [ ! -d {archive} ]; then mv -T {stage} {archive} || [ -d {archive} ]; fi && printf "%s\\n" {shlex.quote(checksums)} | sha256sum --check --status && chmod 755 {archive} && chmod 644 {archive}/* && cp {archive}/* {latest}/ && chmod 644 {latest}/*'], capture_output=True, text=True, timeout=60)
                         if activate.returncode:
                             raise RuntimeError('Failed to activate portfolio revision')
                     finally:
-                        subprocess.run(['ssh', *ssh_opts, target, f'rm -rf -- {shlex.quote(str(staging_dir))}'], capture_output=True, text=True)
+                        subprocess.run(['ssh', *ssh_opts, target, f'rm -rf -- {shlex.quote(str(staging_dir))}'], capture_output=True, text=True, timeout=60)
 
         base = vps_base.rstrip('/')
         urls = {name: f'{base}/{archive_relative.as_posix()}/{name}' for name in filenames}
@@ -2854,7 +2922,7 @@ class WHOOPPipeline:
                 "json",
                 str(path),
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             if result.returncode != 0:
                 snapshot["ffprobe"] = {
                     "available": False,
@@ -2955,6 +3023,11 @@ class WHOOPPipeline:
         )
 
     def _run_emergency_fallback(self, trigger_stage: str, reason: str) -> bool:
+        if hasattr(self, 'output_dir'):
+            from instagram_poster import read_publication_record, InstagramPublicationUncertain
+            receipt = read_publication_record(self.output_dir)
+            if receipt.get('post_id') or receipt.get('publication_state') in {'intent', 'uncertain', 'published_unidentified', 'confirmed'}:
+                raise InstagramPublicationUncertain('publication_evidence', 'Existing publication blocks emergency replacement.', receipt)
         self._last_emergency_fallback_error = None
         self._last_emergency_fallback_details = None
         self._last_emergency_fallback_classification = None
@@ -3253,7 +3326,7 @@ class WHOOPPipeline:
 
         print(f"{Fore.CYAN}▶ Posting to Instagram (Real)...{Style.RESET_ALL}")
         self._set_heartbeat_context(status='POSTING', note='Posting media to Instagram.', pulse=True)
-        from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError
+        from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError, InstagramPublicationUncertain
 
         processing_max_attempts = max(1, int(os.getenv("INSTAGRAM_PROCESSING_MAX_ATTEMPTS", "2") or "2"))
         processing_retry_delay = max(0, int(os.getenv("INSTAGRAM_PROCESSING_RETRY_DELAY_SECONDS", "30") or "30"))
@@ -3291,6 +3364,7 @@ class WHOOPPipeline:
 
                 publish_context["processing_attempt"] = processing_attempt
                 publish_context["processing_max_attempts"] = processing_max_attempts
+                publish_context['asset_source'] = getattr(self, 'asset_source', 'normal')
 
                 poster = InstagramPoster(access_token, user_id)
                 poster.diagnostics_output_dir = self.output_dir
@@ -3360,6 +3434,10 @@ class WHOOPPipeline:
                     'permalink': permalink,
                     'mock': False,
                 }
+        except InstagramPublicationUncertain as e:
+            raise PipelineStageError(stage='Instagram Publication Reconciliation', message=str(e),
+                details=e.details_tail(), fallback_eligible=False, emergency_fallback_allowed=False,
+                failure_classification='instagram_publication_uncertain') from e
         except InstagramPublishDiagnosticsError as e:
             if fallback_eligible_on_publish_failure and not self.in_emergency_fallback:
                 raise PipelineStageError(
@@ -3452,7 +3530,7 @@ class WHOOPPipeline:
                 str(payload_path),
             ]
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy())
+                result = subprocess.run(cmd, capture_output=True, text=True, env=os.environ.copy(), timeout=120)
             except Exception as e:
                 self._notify_post_success_cleanup_warning(
                     'Database Archive',

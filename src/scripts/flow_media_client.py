@@ -86,7 +86,7 @@ class FlowMediaClient:
 
     @staticmethod
     def _stops_replacement(error: FlowCommandError) -> bool:
-        reason = (error.error_class + ' ' + error.detail).upper()
+        reason = error.detail.upper()
         return (error.category in {'request_identity_unverified', 'original_asset_changed', 'execution_busy', 'validation_failed', 'provider_rejected', 'pre_submit_terminal'} or
                 error.category == 'generation_failed' and not error.retryable or
                 any(word in reason for word in ('SAFETY', 'POLICY', 'RESTRICT', 'REFUSAL', 'MODEL', 'SETTING')) or
@@ -143,7 +143,7 @@ class FlowMediaClient:
     def _api_fallback_allowed(error: Exception) -> bool:
         if not isinstance(error, FlowCommandError):
             return False
-        reason = (error.error_class + " " + error.detail).upper()
+        reason = error.detail.upper()
         if any(word in reason for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT", "MODEL", "SETTING", "RECAPTCHA")):
             return False
         if error.category == "generation_failed":
@@ -159,6 +159,69 @@ class FlowMediaClient:
         request = {"prompt": prompt_text, "start_frame_sha256": hashlib.sha256(image_path.read_bytes()).hexdigest()}
         return self._generate_guarded("video", request, output_path,
                                       lambda result: self._generate_video(prompt_text, image_path, output_path, result), image_path)
+
+    def generate_api_stage(self, stage: str, request, output: Path, image_path: Path | None = None) -> Path:
+        """API-default uses the same saved-input and atomic-asset boundaries as Flow."""
+        if self.validate_inputs(output.parent):
+            expected = (json.loads((output.parent / 'image_prompt.json').read_text()) if stage == 'image'
+                        else (output.parent / 'video_prompt.txt').read_text().strip())
+            if request != expected:
+                raise FlowCommandError(stage, 'request_identity_unverified')
+        identity = {'request': request, 'settings': self._input_settings(),
+                    'image_sha256': hashlib.sha256(image_path.read_bytes()).hexdigest() if image_path else None}
+        fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        diagnostics = output.with_name(f'google_{stage}_diagnostics.json')
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with output.with_name('.flow-generation.lock').open('a') as lock:
+            os.chmod(lock.name, 0o600)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise FlowCommandError(stage, 'execution_busy') from None
+            other = output.with_name(f'flow_{stage}_diagnostics.json')
+            if other.exists() and json.loads(other.read_text()).get('api_fallback_state'):
+                raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted',
+                    detail='The Flow path already reserved this date’s API attempt; reconcile its existing result.')
+            saved = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
+            if not isinstance(saved, dict):
+                raise FlowCommandError(stage, 'request_identity_unverified')
+            if saved and saved.get('request_hash') != fingerprint:
+                raise FlowCommandError(stage, 'request_identity_unverified')
+            candidate = output.with_name(f'.{output.stem}.api{output.suffix}')
+            digest = saved.get('selected_sha256')
+            if digest:
+                for path in (output, candidate):
+                    if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+                        if path != output:
+                            path.replace(output)
+                        output.touch()
+                        return output
+                raise FlowCommandError(stage, 'original_asset_changed')
+            timeout = 180 if stage == 'image' else int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480
+            following_video = int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480 if stage == 'image' else 0
+            if self._generation_seconds() < timeout + following_video:
+                raise FlowCommandError(stage, 'generation_window_exhausted')
+            client = GoogleImageClient() if stage == 'image' else GoogleVideoClient()
+            client.router.retry_ambiguous_calls = False
+            client.generation_deadline = time.time() + max(0, self._generation_seconds())
+            if saved.get('logical_attempt'):
+                if stage != 'video' or not saved.get('operation_name'):
+                    raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted')
+                client.resume_operation(candidate)
+            else:
+                self._write_diagnostics(diagnostics, {'request_hash': fingerprint, 'logical_attempt': 'reserved'})
+                if stage == 'image':
+                    client.generate_from_json(request, candidate)
+                else:
+                    client.generate_from_image(request, image_path, candidate)
+            self._validate_original(stage, candidate)
+            if stage == 'video' and self._probe_video(candidate)[:2] != (1080, 1920):
+                raise FlowCommandError(stage, 'validation_failed')
+            self._write_diagnostics(diagnostics, {'selected_sha256': hashlib.sha256(candidate.read_bytes()).hexdigest(),
+                'logical_attempt': 'complete'})
+            candidate.replace(output)
+            output.touch()
+            return output
 
     def _generate_guarded(self, stage: str, request: dict, output: Path, generate, image_path: Path | None = None) -> Path:
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +239,10 @@ class FlowMediaClient:
             previous = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
             if not isinstance(previous, dict):
                 raise FlowCommandError(stage, 'request_identity_unverified')
+            api_record = output.with_name(f'google_{stage}_diagnostics.json')
+            if api_record.exists() and json.loads(api_record.read_text()).get('logical_attempt'):
+                raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted',
+                    detail='The API path already reserved this date’s API attempt; reconcile its existing result.')
             frozen = self.validate_inputs(output.parent)
             if frozen:
                 expected = (json.loads((output.parent / 'image_prompt.json').read_text()) if stage == 'image'
@@ -317,6 +384,8 @@ class FlowMediaClient:
         diagnostics = output.with_name(f'flow_{stage}_diagnostics.json')
         flow_timeout = 600 if stage == 'image' else 1500
         api_timeout = 180 if stage == 'image' else int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480
+        following_video = (min(1500, int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480)
+                           if os.getenv('FLOW_API_FALLBACK_ENABLED', 'false').lower() == 'true' else 1500) if stage == 'image' else 0
         while True:
             saved = json.loads(diagnostics.read_text())
             attempts = self._daily_attempts(stage, diagnostics)
@@ -354,7 +423,7 @@ class FlowMediaClient:
             used = sum(a.get('submit_attempted', True) for a in attempts)
             pre_submit = sum(not a.get('submit_attempted', True) for a in attempts)
             skip_flow = error and (error.category in {'auth_required', 'credits_exhausted'} or pre_submit >= 2)
-            if used < 2 and not skip_flow and self._generation_seconds() >= flow_timeout:
+            if used < 2 and not skip_flow and self._generation_seconds() >= flow_timeout + following_video:
                 number = max([a['number'] for a in attempts], default=0) + 1
                 attempt = {'number': number, 'status': 'reserved', 'submit_attempted': True,
                            'reserved_at': time.time()}
@@ -386,7 +455,7 @@ class FlowMediaClient:
                     self._save_attempt(diagnostics, attempt | {'failure': failure})
                     self._write_diagnostics(diagnostics, {'failure': failure})
                     raise FlowCommandError(stage, **failure) from exc
-            if os.getenv('FLOW_API_FALLBACK_ENABLED', 'false').lower() != 'true' or self._generation_seconds() < api_timeout:
+            if os.getenv('FLOW_API_FALLBACK_ENABLED', 'false').lower() != 'true' or self._generation_seconds() < api_timeout + following_video:
                 raise FlowCommandError(stage, 'generation_window_exhausted' if self._generation_seconds() < api_timeout else 'attempts_exhausted',
                                        detail='Fresh generation budget exhausted; existing emergency rescue remains available.')
             self._write_diagnostics(diagnostics, {'api_fallback_state': 'started',
@@ -421,6 +490,9 @@ class FlowMediaClient:
         output.touch()
         self._write_diagnostics(diagnostics, {'output_sha256': digest,
             'failure': None, 'provider': provider, **({'api_fallback_state': 'complete'} if provider == 'google_api' else {})})
+        if provider == 'google_api':
+            self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_API_COMPLETE',
+                f'Paid Google API {stage} completed and validated; continuing the remaining stages.')
         return output
 
     def _recover_pending(self, stage: str, diagnostics: Path, attempt: dict, output: Path) -> dict | None:
@@ -430,8 +502,12 @@ class FlowMediaClient:
             self._save_attempt(diagnostics, attempt)
         deadline = min(attempt['recovery_deadline'], time.time() + max(0, self._generation_seconds()))
         self._recovery_deadline = deadline
+        has_identity = bool(saved.get('result') or (attempt.get('failure') or {}).get('media_id') or
+                            (attempt.get('failure') or {}).get('operation_id') or
+                            diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.result.json').exists())
         self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_RECOVERY_{attempt["number"]}',
-                                f'Flow {stage}: checking the existing result for up to five minutes before replacement.')
+            f'Flow {stage}: ' + ('recovering the exact recorded result' if has_identity else
+                'waiting for an exact result identity; no asset can be downloaded yet') + ' for up to five minutes before replacement.')
         while time.time() < deadline:
             result = saved.get('result') or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
             if result:
@@ -562,6 +638,8 @@ class FlowMediaClient:
     @staticmethod
     def _run_json(command: list[str], timeout: int, marker: Path | None = None) -> dict:
         env = os.environ.copy()
+        catalog = FlowMediaClient(command[command.index('--profile') + 1] if '--profile' in command else None)
+        catalog_position = catalog._catalog_position() if marker is not None else 0
         if marker is not None:
             env["GFLOW_SHADOW_SUBMIT_MARKER"] = str(marker)
             if (marker.parent / 'flow_inputs.json').is_file():
@@ -584,8 +662,9 @@ class FlowMediaClient:
             error_class = re.sub(r"[^A-Za-z0-9_]", "", str(error.get("class", "")))[:80]
             media_id = str(payload.get("media_id") or "")
             failed = payload.get("generation_status") == "MEDIA_GENERATION_STATUS_FAILED" and bool(media_id)
-            reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("class", "")) + " " + str(error.get("detail", ""))).upper()
-            policy_or_quota = (any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT")) or
+            reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("detail", ""))).upper()
+            policy_or_quota = (error_class in {'ContentPolicyError', 'WafRejectionError', 'AccountRestrictedError', 'RecaptchaError'} or
+                               any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT")) or
                                any('RECAPTCHA' in str(reason).upper() for reason in payload.get('failure_reasons') or []))
             clicked = bool(marker and marker.exists())
             submission_state = "attempted" if clicked else "not_attempted"
@@ -605,7 +684,20 @@ class FlowMediaClient:
             for key, value in env.items():
                 if any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")) and len(value) >= 8:
                     detail = detail.replace(value, "[redacted]")
-            operation_id = str(payload.get("operation_id") or "")
+            remote_operation_id = str(payload.get("operation_id") or "")
+            operation_id = ''
+            if marker is not None:
+                try:
+                    from gflow_cli.config import get_settings
+                    db = get_settings().resolved_db_path()
+                    with sqlite3.connect(f'{db.as_uri()}?mode=ro', uri=True) as connection:
+                        rows = connection.execute('SELECT id FROM operations WHERE rowid>? AND profile_name=? '
+                            'AND flow_project_id=? AND command=?', (catalog_position, catalog.profile,
+                            env.get('FLOW_PREFLIGHT_PROJECT_ID', ''), 'image t2i' if command[1] == 'image' else 'video i2v')).fetchall()
+                    if len(rows) == 1:
+                        operation_id = rows[0][0]
+                except (ImportError, OSError, sqlite3.Error):
+                    pass
             auth_error = error_class in {
                 "AuthExpiredError", "AisandboxAuthError", "AuthMissingError",
                 "AuthLoginTimeoutError", "IdentityRecheckPendingError", "FlowAccountChooserError",
@@ -614,6 +706,10 @@ class FlowMediaClient:
                 category = 'credits_exhausted'
             elif policy_or_quota:
                 category = "provider_rejected"
+            elif error_class == 'MediaUploadRejectedError' and not clicked and (
+                    detail.startswith(('upload_response_read_failed:', 'upload_response_unrecognized:')) or
+                    'answered 200 without a media id' in detail or 'no maseQ reply within' in detail):
+                category = 'pre_submit_transient'
             elif failed:
                 category = "generation_failed"
             elif auth_error:
@@ -628,6 +724,12 @@ class FlowMediaClient:
                 category = "pre_submit_transient"
             else:
                 category = "pre_submit_terminal"
+            if marker is not None:
+                FlowMediaClient._write_diagnostics(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
+                    {'last_cli_error': {'phase': 'upload' if error_class == 'MediaUploadRejectedError' else 'submit_response',
+                        'class': error_class, 'detail': detail, 'http_status': error.get('status'),
+                        'catalog_operation_id': operation_id, 'remote_operation_id': remote_operation_id,
+                        'rpc': re.sub(r'[^A-Za-z0-9:._-]', '', str(error.get('route') or ''))[:80]}})
             raise FlowCommandError(command[1], category, error_class=error_class,
                                    media_id=media_id, retryable=failed and not policy_or_quota and "RECAPTCHA" not in reasons,
                                    detail=detail, operation_id=operation_id, submission_state=submission_state)

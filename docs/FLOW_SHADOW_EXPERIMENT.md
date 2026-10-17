@@ -53,9 +53,10 @@ override the validation image's non-publishing defaults and private root when
 using it for production. Mount the intended database, daily state, private inputs,
 and browser profile; do not substitute a validation archive for production history.
 
-`FLOW_API_FALLBACK_ENABLED=true` permits API media fallback only for eligible,
-confirmed technical failures. Unknown or forwarded submissions require recovery;
-safety rejection, quota/account restrictions, and model mismatches stop generation.
+`FLOW_API_FALLBACK_ENABLED=true` permits eligible technical fallback after bounded
+recovery and remaining Flow allowance. Unknown or forwarded submissions count
+against that allowance; safety/account/CAPTCHA restrictions and model mismatches
+stop replacement. Ordinary Flow credit exhaustion may use eligible paid API fallback.
 Keep API keys configured when enabling that fallback. Image upscaling remains off
 by default, and the existing video download/local-scaling behavior is unchanged.
 
@@ -323,8 +324,12 @@ xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual --validation-id v082
 
 Files, pipeline state, and the archive use `runtime/validation/<id>/`. The validation shares the daily runner's execution lock, canonical WHOOP token, and Chrome profile. An ID can submit only once across all dates. Existing daily files and claims remain intact. Reports distinguish validation from scheduled runs and record installed versions. A supervised validation does not prove unattended scheduling; verify a subsequent timer-triggered run separately.
 
-Existing submissions are never blindly regenerated on later invocations. Verified
-local images and known video IDs can be recovered; the pinned CLI cannot remotely
-download image IDs. If no verified local image copy remains, recovery stops for
-manual reconciliation. Optional paid API fallback does not retry an ambiguous
-generation POST or restart generation after a polling/download error.
+Existing submissions are never blindly regenerated on later invocations. Production
+uses frozen inputs, exact media receipts/catalog identities, two Flow submissions
+per stage/date, and a five-minute recovery budget per unresolved submission shared
+across restarts. Supported original-image downloads and exact-ID video recovery
+never generate or upscale. Missing identities cannot be guessed from project tiles.
+After recovery, technical failures may use remaining Flow allowance and eligible
+API fallback. An ambiguous API generation POST cannot create another operation;
+accepted video operations resume polling/download. The isolated shadow runner's
+claim policy remains separate from production's daily retry policy.

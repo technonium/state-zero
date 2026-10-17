@@ -33,6 +33,31 @@ class InstagramPublishDiagnosticsError(RuntimeError):
         return json.dumps(self.diagnostics, indent=2, ensure_ascii=False)[:limit]
 
 
+class InstagramPublicationUncertain(InstagramPublishDiagnosticsError):
+    """A publish may have succeeded; no replacement post is safe."""
+
+
+def read_publication_record(directory: Path) -> dict:
+    path = directory / 'instagram_publish_diagnostics.json'
+    if not path.exists():
+        return {}
+    try:
+        record = json.loads(path.read_text())
+        if not isinstance(record, dict):
+            raise ValueError('Invalid publication record')
+        if record.get('publication_state') not in {None, 'intent', 'uncertain', 'confirmed', 'rejected', 'published_unidentified'}:
+            raise ValueError('Unknown publication state')
+        if record.get('phase') == 'publish_complete' and record.get('post_id'):
+            record['publication_state'] = 'confirmed'
+        # Legacy publish errors also crossed the publication boundary.
+        if record.get('phase') == 'publish_media' and not record.get('publication_state'):
+            record['publication_state'] = 'uncertain'
+        return record
+    except (OSError, ValueError, TypeError) as exc:
+        raise InstagramPublicationUncertain('publication_evidence',
+            'Publication evidence is unreadable; reconcile before another post.', {}) from exc
+
+
 class InstagramPublishResult:
     """Result object for Instagram publish operations."""
     
@@ -85,8 +110,8 @@ class InstagramPoster:
         self.publish_context = context or None
 
     def _diagnostics_path(self) -> Path | None:
-        if self.diagnostics_output_dir is None:
-            if self.run_date:
+        if getattr(self, 'diagnostics_output_dir', None) is None:
+            if getattr(self, 'run_date', None):
                 return get_output_root() / self.run_date / "instagram_publish_diagnostics.json"
             return None
         return self.diagnostics_output_dir / "instagram_publish_diagnostics.json"
@@ -137,6 +162,8 @@ class InstagramPoster:
                 payload = {}
 
         payload.update(updates)
+        if (getattr(self, 'publish_context', None) or {}).get('asset_source'):
+            payload['asset_source'] = self.publish_context['asset_source']
         payload.setdefault("run_date", self.run_date)
         payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         self._append_diagnostics_history(payload)
@@ -887,78 +914,82 @@ class InstagramPoster:
         print(f"❌ Polling timeout reached after {max_duration_seconds}s.")
         return False
 
-    def publish_media(self, creation_id: str) -> str:
-        """Step 14c: Publish media with retry logic"""
-        if self.mock_mode:
-            print(f"Mocking IG Publish. Creation ID: {creation_id}")
-            return "mock_ig_post_456"
-
-        url = f"{self.base_url}/{self.user_id}/media_publish"
-        payload = {
-            'creation_id': creation_id,
-            'access_token': self.access_token
-        }
-        
-        # Retry configuration: 3 attempts with exponential backoff
-        max_attempts = 3
-        backoff_seconds = [5, 15, 30]  # 5s -> 15s -> 30s
-        
-        for attempt in range(max_attempts):
+    def reconcile_publication(self, record: dict) -> str:
+        if record.get('post_id'):
+            return str(record['post_id'])
+        creation_id = record.get('creation_id')
+        if not creation_id:
+            raise InstagramPublicationUncertain('publish_media', 'Missing exact container identity; reconcile publication.', record)
+        deadline = record.get('reconciliation_deadline')
+        if not isinstance(deadline, (float, int)):
+            deadline = time.time() + 300
+            self._persist_diagnostics({'reconciliation_deadline': deadline})
+        for _ in range(5):
+            if time.time() >= deadline:
+                break
+            next_poll = record.get('reconciliation_next_poll_at', 0)
+            if next_poll > time.time():
+                time.sleep(min(next_poll - time.time(), max(0, deadline - time.time())))
+                if time.time() >= deadline:
+                    break
+            record['reconciliation_next_poll_at'] = time.time() + 60
+            self._persist_diagnostics({'reconciliation_next_poll_at': record['reconciliation_next_poll_at']})
             try:
-                response = requests.post(url, data=payload, timeout=self.REQUEST_TIMEOUT)
-                parse_error_message = None
-                try:
-                    response_data = response.json()
-                except Exception as parse_error:
-                    parse_error_message = str(parse_error)
-                    response_data = self._response_snapshot(response).get("body", {})
-                
-                if 'id' in response_data:
-                    print(f"✅ Reel published successfully: {response_data['id']}")
-                    return response_data['id']
-                
-                # Check if this is a transient error
-                should_retry, error_summary = self._check_transient_from_response(response)
-                
-                if should_retry and attempt < max_attempts - 1:
-                    wait_time = backoff_seconds[attempt]
-                    print(f"⚠ Transient error publishing: {error_summary}")
-                    print(f"▶ Retrying in {wait_time}s... (attempt {attempt + 1}/{max_attempts})")
-                    time.sleep(wait_time)
-                    continue
-                
-                # Non-transient or exhausted retries
-                error_msg = f"Failed to publish reel: {response_data}"
-                print(f"❌ {error_msg}")
-                raise self._raise_diagnostics_error(
-                    phase="publish_media",
-                    message=error_msg,
-                    creation_id=creation_id,
-                    response=response,
-                    extra={
-                        "parse_error": parse_error_message,
-                        "publish_response": self._response_snapshot(response),
-                    },
-                )
-                
-            except requests.exceptions.RequestException as e:
-                if attempt < max_attempts - 1:
-                    wait_time = backoff_seconds[attempt]
-                    print(f"⚠ Network error publishing: {e}")
-                    print(f"▶ Retrying in {wait_time}s... (attempt {attempt + 1}/{max_attempts})")
-                    time.sleep(wait_time)
-                    continue
-                message = f"Failed to publish after {max_attempts} attempts: {e}"
-                diagnostics = self._base_diagnostics(
-                    "publish_media",
-                    creation_id=creation_id,
-                    network_error=str(e),
-                )
-                artifact_path = self._persist_diagnostics(diagnostics)
-                if artifact_path is not None:
-                    diagnostics["artifact_path"] = str(artifact_path)
-                raise InstagramPublishDiagnosticsError("publish_media", message, diagnostics) from e
-    
+                response = requests.get(f'{self.base_url}/{creation_id}',
+                    params={'fields': 'status_code,status', 'access_token': self.access_token},
+                    timeout=min(30, max(.01, deadline - time.time())))
+                status = response.json().get('status_code') if response.status_code == 200 else None
+            except (requests.RequestException, ValueError, TypeError):
+                status = None
+            if status == 'PUBLISHED':
+                self._persist_diagnostics({'publication_state': 'published_unidentified', 'creation_id': creation_id})
+                raise InstagramPublicationUncertain('publish_media',
+                    'Instagram confirms publication; post identity needs reconciliation. No replacement will be posted.', record)
+            if status in {'ERROR', 'EXPIRED'}:
+                self._persist_diagnostics({'publication_state': 'rejected', 'container_status': status})
+                raise InstagramPublishDiagnosticsError('publish_rejected',
+                    'Instagram confirms the container failed without publication.', {'creation_id': creation_id, 'container_status': status})
+            time.sleep(min(60, max(0, deadline - time.time())))
+        raise InstagramPublicationUncertain('publish_media',
+            'Instagram publication is unresolved; no alternate or emergency post is safe.', record)
+
+    def publish_media(self, creation_id: str) -> str:
+        if self.mock_mode:
+            return 'mock_ig_post_456'
+        path = self._diagnostics_path()
+        previous = read_publication_record(path.parent) if path else {}
+        if previous.get('publication_state') in {'intent', 'uncertain', 'confirmed', 'published_unidentified'}:
+            if previous.get('creation_id') != creation_id:
+                raise InstagramPublicationUncertain('publish_media', 'Another container may already be published.', previous)
+            return self.reconcile_publication(previous)
+        # The receipt must reach disk before crossing the irreversible boundary.
+        self._persist_diagnostics({'phase': 'publish_media', 'creation_id': creation_id,
+            'publication_state': 'intent', 'reconciliation_deadline': None})
+        try:
+            response = requests.post(f'{self.base_url}/{self.user_id}/media_publish',
+                data={'creation_id': creation_id, 'access_token': self.access_token}, timeout=self.REQUEST_TIMEOUT)
+            try:
+                data = response.json()
+            except ValueError as exc:
+                self._persist_diagnostics({'parse_error': type(exc).__name__})
+                data = {}
+            self._persist_diagnostics({'response': self._response_snapshot(response),
+                                      'publish_response': self._response_snapshot(response)})
+            if isinstance(data, dict) and data.get('id'):
+                post_id = str(data['id'])
+                self._persist_diagnostics({'publication_state': 'confirmed', 'post_id': post_id})
+                return post_id
+            if 400 <= response.status_code < 500 and isinstance(data, dict) and data.get('error'):
+                self._persist_diagnostics({'publication_state': 'rejected'})
+                raise self._raise_diagnostics_error(phase='publish_media', message='Instagram rejected publication.',
+                    creation_id=creation_id, response=response)
+        except requests.RequestException:
+            pass
+        self._persist_diagnostics({'publication_state': 'uncertain'})
+        path = self._diagnostics_path()
+        record = read_publication_record(path.parent) if path else {'creation_id': creation_id}
+        return self.reconcile_publication(record)
+
     def get_permalink(self, post_id: str, max_retries: int = 5) -> Optional[str]:
         """
         Fetch the public permalink for a published media item.
@@ -1073,6 +1104,11 @@ class InstagramPoster:
         local_video_path: Path | None = None,
         strategy: str | None = None,
     ) -> InstagramPublishResult:
+        path = self._diagnostics_path()
+        record = read_publication_record(path.parent) if path else {}
+        if record.get('publication_state') in {'intent', 'uncertain', 'published_unidentified', 'confirmed'}:
+            post_id = self.reconcile_publication(record)
+            return InstagramPublishResult(post_id, self.get_permalink(post_id))
         resolved_strategy = resolve_instagram_publish_strategy(strategy or self._publish_strategy())
 
         if resolved_strategy == "video_url":
@@ -1091,6 +1127,10 @@ class InstagramPoster:
             try:
                 return self.publish_resumable_binary_and_get_result(local_video_path, caption, cover_url=cover_url)
             except InstagramPublishDiagnosticsError as error:
+                path = self._diagnostics_path()
+                record = read_publication_record(path.parent) if path else {}
+                if isinstance(error, InstagramPublicationUncertain) or record.get('publication_state') in {'intent', 'uncertain', 'published_unidentified', 'confirmed'} or error.phase in {'publish_media', 'publish_complete'}:
+                    raise
                 binary_error = error
                 self._append_diagnostics_history(
                     self._base_diagnostics(

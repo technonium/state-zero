@@ -134,10 +134,18 @@ regular pipeline's publishing lifecycle.
 
 - Prompt requests have bounded retries and optional Gemini fallback. Invalid
   prompts do not proceed to media generation.
-- Flow API fallback requires a known eligible failure. Forwarded or uncertain
-  submissions, safety rejection, quota/account restriction, and model mismatch
-  do not silently switch providers. Recover recorded media instead of regenerating
-  to fix a download failure.
+- Freeze prepared inputs before automatic media generation, including API-default
+  and Telegram handoff. Later invocations reuse those inputs and completed assets.
+- Flow recovers an unresolved submission for up to five minutes, then uses its
+  remaining allowance (two image and two video submissions per date), then eligible
+  paid API fallback. Uncertain submissions count. Technical upload failures before
+  generation receive one setup retry. Explicit safety/account/CAPTCHA restrictions
+  and model mismatches block replacement; corrupt identities require reconciliation.
+- API media has one logical generation per stage/date across invocations. Accepted
+  video operations resume; ambiguous creation responses never create replacements.
+- Stop new generation by 13:30 IST, retaining thirty minutes for finalization. The
+  14:00 rescue command `python3 ops/run_rescue.py` waits up to ten minutes for the
+  shared execution lock, alerts if still busy, and never interrupts a publisher.
 - `EMERGENCY_FALLBACK_ENABLED=true` permits the existing private `error_404_v1`
   fallback package for eligible terminal failures. Its manifest and prehosted
   media must validate; missing fallback assets produce an alert rather than a
@@ -145,6 +153,10 @@ regular pipeline's publishing lifecycle.
 - A successful Instagram publication remains posted even if later archive,
   portfolio or notification work fails. Repair secondary work using the recorded
   post identity; never post again merely to repair metadata or an archive.
+- Record publish intent before sending and the returned post ID before permalink
+  lookup. An uncertain response is checked against its exact container for up to
+  five minutes. Unresolved publication blocks alternate upload and emergency posts.
+  Normal and emergency archive repair use their own evidence and records.
 - Preserve failed reports, claims and submission evidence. Do not delete state
   to force another generation. Logs and diagnostics are private runtime files;
   ordinary public documentation must not contain copied run records.
@@ -161,6 +173,8 @@ and both matching, publicly reachable videos. The videos use immutable dated
 revision URLs; older runs cannot replace newer metadata. Normal and successful
 emergency posts use their actual title and permalink. Secondary failures retain
 the prior latest feed and cannot invalidate or retry the successful Instagram post.
+Public directories and assets explicitly use `0755` and `0644`; private diagnostics
+and publication-ordering state remain private regardless of the caller's umask.
 
 The portfolio consumes one authoritative feed. Source selection and server
 migration are operational decisions; private validation outputs are not a competing

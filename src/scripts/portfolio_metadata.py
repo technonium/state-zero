@@ -51,6 +51,8 @@ def build_metadata(*, date, title, post_result, base_url, revision=None):
 
 def _atomic_json(destination, value, mode=0o644):
     destination.parent.mkdir(parents=True, exist_ok=True)
+    if mode == 0o644:
+        destination.parent.chmod(0o755)
     fd, temporary = tempfile.mkstemp(prefix='.metadata-', dir=destination.parent)
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as stream:

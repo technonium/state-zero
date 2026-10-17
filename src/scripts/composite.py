@@ -413,7 +413,7 @@ def process_video_card(video_path: Path, data: dict, output_path: Path):
             "-c:a", "copy",
             str(output_path)
         ]
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=600)
         print(f"✅ Saved video card: {output_path}")
     except subprocess.CalledProcessError as e:
         print(f"FFmpeg Error: {e.stderr.decode()}")

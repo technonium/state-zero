@@ -772,7 +772,7 @@ class SafeRuntimeHardeningTests(unittest.TestCase):
         self.assertEqual(payload["phase"], "publish_media")
         self.assertEqual(payload["creation_id"], "creation-id")
         self.assertEqual(payload["response"]["http_status"], 502)
-        self.assertIn("not json", payload["parse_error"])
+        self.assertEqual(payload["parse_error"], "ValueError")
 
     def test_poll_processing_status_fails_after_time_budget_expires(self):
         poster = InstagramPoster.__new__(InstagramPoster)
