@@ -1528,7 +1528,7 @@ class WHOOPPipeline:
             'run_token': self.run_token,
             'status': 'WAITING_MANUAL',
             'timezone': self.pipeline_timezone,
-            'deadline_local': self.deadline_dt.isoformat(),
+            'deadline_local': self._get_session_deadline({}).isoformat(),
             'deadline_mode': self.manual_deadline_mode,
             'deadline_reason': self.deadline_reason,
             'created_at': self._now().isoformat(),
@@ -1912,9 +1912,9 @@ class WHOOPPipeline:
         session['updated_at'] = self._now().isoformat()
         self._save_manual_session(session)
 
-    def _try_fetch_manual_assets(self, session: dict) -> tuple[Path, Path] | None:
+    def _try_fetch_manual_assets(self, session: dict, *, allow_partial: bool = False) -> tuple[Path, Path | None] | None:
         tg = session['telegram']
-        if not tg.get('image_file_id') or not tg.get('video_file_id'):
+        if not tg.get('image_file_id') or not allow_partial and not tg.get('video_file_id'):
             return None
 
         art_path = self.output_dir / 'generated_art.png'
@@ -1924,7 +1924,6 @@ class WHOOPPipeline:
 
         try:
             self._download_telegram_file(tg['image_file_id'], raw_image_path)
-            self._download_telegram_file(tg['video_file_id'], raw_video_path)
 
             try:
                 with Image.open(raw_image_path) as img:
@@ -1949,10 +1948,15 @@ class WHOOPPipeline:
                 self._clear_manual_asset(session, 'image', 'Manual image validation failed. Waiting for resend.')
                 raise
 
+            if not tg.get('video_file_id'):
+                return art_path, None
             try:
+                self._download_telegram_file(tg['video_file_id'], raw_video_path)
                 self._validate_video_file(raw_video_path)
             except Exception:
                 self._clear_manual_asset(session, 'video', 'Manual video validation failed. Waiting for resend.')
+                if allow_partial:
+                    return art_path, None
                 raise
 
             if video_path.exists():
@@ -1980,12 +1984,22 @@ class WHOOPPipeline:
 
     def _get_session_deadline(self, session: dict) -> datetime:
         raw = session.get('deadline_local')
-        if not raw or not isinstance(raw, str):
-            return self.deadline_dt
         try:
-            return datetime.fromisoformat(raw)
+            deadline = datetime.fromisoformat(raw) if isinstance(raw, str) else self.deadline_dt
         except ValueError:
-            return self.deadline_dt
+            deadline = self.deadline_dt
+        if os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower() == 'flow':
+            deadline = min(deadline, self.deadline_dt.replace(hour=12, minute=55, second=0, microsecond=0))
+        return deadline
+
+    def _manual_fallback_media(self, image_json: dict, session: dict) -> tuple[Path, Path]:
+        try:
+            assets = self._try_fetch_manual_assets(session, allow_partial=True)
+        except Exception:
+            assets = None
+        art = assets[0] if assets else self.step_7_generate_image(image_json)
+        video = assets[1] if assets else None
+        return art, video or self.step_9_generate_video(art, self.output_dir / 'video_prompt.txt')
 
     def _mark_session(self, session: dict, status: str, note: str | None = None):
         session['status'] = status
@@ -2039,8 +2053,7 @@ class WHOOPPipeline:
                 'AUTO_FALLBACK_RUNNING',
                 f"Deadline already passed at pipeline start ({session_deadline.isoformat()}).",
             )
-            art_path = self.step_7_generate_image(image_json)
-            video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
+            art_path, video_path = self._manual_fallback_media(image_json, session)
             self._mark_session(session, 'COMPLETED', 'Completed via automatic fallback.')
             return art_path, video_path
 
@@ -2069,8 +2082,7 @@ class WHOOPPipeline:
                 )
                 
                 # Immediately proceed with automatic generation
-                art_path = self.step_7_generate_image(image_json)
-                video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
+                art_path, video_path = self._manual_fallback_media(image_json, session)
                 self._mark_session(session, 'COMPLETED', 'Completed via automatic fallback after Telegram dispatch failure.')
                 return art_path, video_path
 
@@ -2163,8 +2175,7 @@ class WHOOPPipeline:
             context=' (deadline fallback)'
         )
 
-        art_path = self.step_7_generate_image(image_json)
-        video_path = self.step_9_generate_video(art_path, self.output_dir / 'video_prompt.txt')
+        art_path, video_path = self._manual_fallback_media(image_json, session)
         self._mark_session(session, 'COMPLETED', 'Completed via automatic fallback.')
         return art_path, video_path
 

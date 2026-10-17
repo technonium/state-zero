@@ -13,6 +13,35 @@ except ImportError:
 
 @unittest.skipIf(MigratedComposer is None, "Requires the shadow image's pinned gflow")
 class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
+    async def test_image_identity_is_saved_before_download_failure(self):
+        import json
+        from types import SimpleNamespace
+        from gflow_cli.cli_image import _generate_verify_download
+        client = MagicMock()
+        client.generate_image = AsyncMock(return_value=SimpleNamespace(
+            media_name='exact-media', model_name_type=None,
+            aspect_ratio='IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'))
+        client.download_image = AsyncMock(side_effect=OSError('Original download failed'))
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / 'flow_image_attempt_1.submit'
+            marker.write_text('{"state":"forwarded"}')
+            with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER': str(marker),
+                                         'GFLOW_SHADOW_REQUEST_HASH': 'original-request'}):
+                with self.assertRaisesRegex(OSError, 'Original download failed'):
+                    await _generate_verify_download(client, recorder=MagicMock(), profile_name='profile',
+                        project_id='project', req=SimpleNamespace(model=SimpleNamespace(value='NARWHAL')),
+                        count=1, out=None, output_root=Path(directory), output_file=Path(directory) / 'art.png')
+            receipt = marker.with_suffix('.result.json')
+            saved = json.loads(receipt.read_text())
+            self.assertEqual(saved['images'][0]['media_name'], 'exact-media')
+            self.assertEqual(saved['request_hash'], 'original-request')
+            self.assertEqual(saved['profile'], 'profile')
+            self.assertEqual(saved['project_id'], 'project')
+            self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+            self.assertNotIn('prompt', receipt.read_text())
+            client.generate_image.assert_awaited_once()
+            self.assertEqual(marker.read_text(), '{"state":"forwarded"}')
+
     async def test_original_image_recovery_uses_only_exact_verified_media(self):
         from ops.flow_image_recover import download_existing
         project = '11111111-1111-4111-8111-111111111111'

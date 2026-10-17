@@ -195,3 +195,30 @@ index 6b253ff3..339f6f5b 100644
  
      @staticmethod
      async def _await_terminal(
+--- a/src/gflow_cli/cli_image.py
++++ b/src/gflow_cli/cli_image.py
+@@ -1233,5 +1233,24 @@
+             **resolver_kw,
+         )
+     recorder.verify_media_attribution(profile_name=profile_name, images=images)
++    # Keep the exact result identity even when the following download fails.
++    import json
++    import os
++    if marker := os.getenv("GFLOW_SHADOW_SUBMIT_MARKER"):
++        target = Path(marker).with_suffix(".result.json")
++        receipt = {
++            "request_hash": os.getenv("GFLOW_SHADOW_REQUEST_HASH", ""),
++            "profile": profile_name, "project_id": project_id,
++            "count": count, "model": req.model.value,
++            "images": [{"media_name": image.media_name,
++                        "model_name_type": image.model_name_type,
++                        "aspect_ratio": image.aspect_ratio} for image in images],
++        }
++        temporary = target.with_suffix(target.suffix + ".tmp")
++        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
++            json.dump(receipt, handle)
++            handle.flush()
++            os.fsync(handle.fileno())
++        os.replace(temporary, target)
+     saved_paths = await _download_images(client, images, out, output_root, output_file=output_file)
+     return images, saved_paths

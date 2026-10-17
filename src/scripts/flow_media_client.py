@@ -87,7 +87,7 @@ class FlowMediaClient:
     @staticmethod
     def _stops_replacement(error: FlowCommandError) -> bool:
         reason = (error.error_class + ' ' + error.detail).upper()
-        return (error.category in {'request_identity_unverified', 'execution_busy', 'validation_failed', 'provider_rejected', 'pre_submit_terminal'} or
+        return (error.category in {'request_identity_unverified', 'original_asset_changed', 'execution_busy', 'validation_failed', 'provider_rejected', 'pre_submit_terminal'} or
                 error.category == 'generation_failed' and not error.retryable or
                 any(word in reason for word in ('SAFETY', 'POLICY', 'RESTRICT', 'REFUSAL', 'MODEL', 'SETTING')) or
                 'RECAPTCHA' in reason and error.category not in {'pre_submit_transient', 'pre_submit_timeout'})
@@ -261,6 +261,9 @@ class FlowMediaClient:
     @staticmethod
     def _daily_attempts(stage: str, diagnostics: Path) -> list[dict]:
         saved = json.loads(diagnostics.read_text())
+        failure = saved.get('failure') or {}
+        invalid = FlowCommandError(stage, 'request_identity_unverified',
+            **{key: failure[key] for key in ('error_class', 'detail', 'operation_id', 'media_id') if key in failure})
         attempts = saved.get('attempts', [])
         if not isinstance(attempts, list) or any(not isinstance(a, dict) or type(a.get('number')) is not int or a['number'] < 1 for a in attempts):
             raise FlowCommandError(stage, 'request_identity_unverified')
@@ -279,11 +282,23 @@ class FlowMediaClient:
             except (ValueError, KeyError):
                 raise FlowCommandError(stage, 'request_identity_unverified') from None
             try:
-                evidence = json.loads(marker.read_text())
-                blocked = evidence.get('state') == 'blocked_before_submission'
+                raw = marker.read_text()
+                evidence = {'state': 'attempted'} if raw == 'submit_attempted\n' else json.loads(raw)
+                if not isinstance(evidence, dict) or raw != 'submit_attempted\n' and evidence.get('state') not in {'forwarded', 'blocked_before_submission'}:
+                    raise invalid
+                blocked = evidence['state'] == 'blocked_before_submission'
+                if blocked and (not isinstance(evidence.get('reason'), str) or not evidence['reason']):
+                    raise invalid
+                if stage == 'image' and evidence['state'] == 'forwarded' and (
+                        evidence.get('expected_model') != 'NARWHAL' or evidence.get('actual_model') != 'BELUGA' or
+                        evidence.get('selected_model') != 'Nano Banana 2.1'):
+                    raise invalid
+                prior_state = (attempt.get('failure') or {}).get('submission_state')
+                if blocked and prior_state in {'forwarded', 'attempted', 'uncertain'} or not blocked and prior_state in {'not_attempted', 'blocked_before_submission'}:
+                    raise invalid
                 attempt['validation_block'] = blocked and bool(evidence.get('reason'))
             except (OSError, ValueError, AttributeError):
-                blocked = False
+                raise invalid from None
             attempt['submit_attempted'] = not blocked
         if sum(a.get('submit_attempted', True) for a in by_number.values()) > 2 or sum(not a.get('submit_attempted', True) for a in by_number.values()) > 2:
             raise FlowCommandError(stage, 'request_identity_unverified')
@@ -416,7 +431,7 @@ class FlowMediaClient:
         self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_RECOVERY_{attempt["number"]}',
                                 f'Flow {stage}: checking the existing result for up to five minutes before replacement.')
         while time.time() < deadline:
-            result = saved.get('result') or self._catalog_result(stage, attempt)
+            result = saved.get('result') or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
             if result:
                 try:
                     item = result['images'][0] if stage == 'image' else result
@@ -424,8 +439,11 @@ class FlowMediaClient:
                     if local:
                         try:
                             path = self._owned_path(local, output.parent)
-                            if not saved.get('original_sha256') or hashlib.sha256(path.read_bytes()).hexdigest() == saved['original_sha256']:
-                                return result
+                            self._validate_original(stage, path, saved.get('original_sha256'))
+                            return result
+                        except FlowCommandError as exc:
+                            if self._stops_replacement(exc):
+                                raise
                         except (OSError, RuntimeError):
                             pass
                     if stage == 'image':
@@ -434,11 +452,55 @@ class FlowMediaClient:
                         result['images'][0]['local_path'] = str(path)
                     else:
                         result['local_path'] = str(self._recover_video(result['media_id'], output.parent))
+                    path = self._owned_path(item.get('local_path') if stage == 'image' else result['local_path'], output.parent)
+                    self._validate_original(stage, path, saved.get('original_sha256'))
                     return result
-                except (FlowCommandError, OSError, ValueError, KeyError, IndexError):
+                except FlowCommandError as exc:
+                    if self._stops_replacement(exc):
+                        raise
+                except (OSError, ValueError, KeyError, IndexError):
                     pass
             time.sleep(min(15, max(0, deadline - time.time())))
         return None
+
+    def _image_receipt(self, diagnostics: Path, attempt: dict) -> dict | None:
+        receipt = diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.result.json')
+        if not receipt.exists():
+            return None
+        try:
+            result = json.loads(receipt.read_text())
+            saved = json.loads(diagnostics.read_text())
+            marker = json.loads(diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.submit').read_text())
+            if (result['request_hash'] != saved['request_hash'] or result['profile'] != self.profile or
+                    result['project_id'] != os.getenv('FLOW_PREFLIGHT_PROJECT_ID', '') or
+                    result['count'] != 1 or result['model'] != 'NARWHAL' or len(result['images']) != 1 or
+                    not result['images'][0]['media_name'] or
+                    result['images'][0]['model_name_type'] not in (None, 'BELUGA') or
+                    result['images'][0]['aspect_ratio'] != 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR' or
+                    marker.get('state') != 'forwarded' or marker.get('actual_model') != 'BELUGA' or
+                    marker.get('expected_model') != 'NARWHAL' or marker.get('selected_model') != 'Nano Banana 2.1'):
+                raise ValueError('Receipt identity differs')
+            return result
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise FlowCommandError('image', 'request_identity_unverified') from None
+
+    def _validate_original(self, stage: str, path: Path, expected_hash: str | None = None) -> tuple:
+        if expected_hash and hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+            raise FlowCommandError(stage, 'original_asset_changed')
+        try:
+            if stage == 'image':
+                with Image.open(path) as image:
+                    image.load()
+                    if image.width < 512 or image.height < 512 or abs(image.width / image.height - .75) > .015:
+                        raise ValueError('Invalid image dimensions')
+                    return image.size
+            width, height, duration, audio = self._probe_video(path)
+            if (width, height) not in ((720, 1280), (1080, 1920)) or not 7.5 <= duration <= 8.5 or not audio:
+                raise ValueError('Invalid video properties')
+            return width, height, duration, audio
+        except (OSError, ValueError, KeyError, IndexError, StopIteration, subprocess.SubprocessError) as exc:
+            raise FlowCommandError(stage, 'asset_download_failed', error_class=type(exc).__name__,
+                                   submission_state='attempted') from exc
 
     def _catalog_result(self, stage: str, attempt: dict) -> dict | None:
         try:
@@ -501,6 +563,7 @@ class FlowMediaClient:
         if marker is not None:
             env["GFLOW_SHADOW_SUBMIT_MARKER"] = str(marker)
             if (marker.parent / 'flow_inputs.json').is_file():
+                env['GFLOW_SHADOW_REQUEST_HASH'] = json.loads(marker.with_name(f'flow_{command[1]}_diagnostics.json').read_text())['request_hash']
                 timeout = min(timeout, max(.01, FlowMediaClient._generation_seconds()))
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=env)
@@ -511,6 +574,8 @@ class FlowMediaClient:
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError:
+            payload = {}
+        if not isinstance(payload, dict):
             payload = {}
         if result.returncode or payload.get("status") != "ok":
             error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
@@ -685,9 +750,8 @@ class FlowMediaClient:
             source = self._recover_image(item["media_name"], output_path.parent)
         source = self._owned_path(str(source), output_path.parent)
         original = source.name
+        width, height = self._validate_original('image', source, saved.get('original_sha256'))
         source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        if saved.get("original_sha256") and saved["original_sha256"] != source_hash:
-            raise FlowCommandError("image", "original_asset_changed")
         self._write_diagnostics(diagnostics, {"original_sha256": source_hash})
         upscaled = False
         if not recovered and os.getenv("FLOW_IMAGE_UPSCALE_2K", "false").lower() == "true" and (not daily or self._generation_seconds() >= 300):
@@ -703,9 +767,11 @@ class FlowMediaClient:
                     result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
                     matches = list(upscale_dir.rglob(f"{media_id}_2k.*")) if result.returncode == 0 else []
                     if len(matches) == 1:
-                        source = self._owned_path(str(matches[0]), output_path.parent)
+                        candidate = self._owned_path(str(matches[0]), output_path.parent)
+                        self._validate_original('image', candidate)
+                        source = candidate
                         upscaled = True
-                except subprocess.TimeoutExpired:
+                except (FlowCommandError, OSError, subprocess.SubprocessError):
                     pass  # Keep the original image; the resolution gap stays visible in diagnostics.
         with Image.open(source) as image:
             image.load()
@@ -754,6 +820,7 @@ class FlowMediaClient:
                 try:
                     path = self._owned_path(raw, output_dir)
                     if hashlib.sha256(path.read_bytes()).hexdigest() == digest:
+                        self._validate_original('image', path)
                         return path
                 except (OSError, RuntimeError):
                     continue
@@ -883,15 +950,9 @@ class FlowMediaClient:
         if (not payload.get("succeeded") or request.get("count") != 1 or
                 request.get("model") != "veo_3_1_fast" or request.get("mode") != "i2v" or
                 request.get("aspect") != "portrait"):
-            raise RuntimeError("Flow did not return one successful video")
-        width, height, duration, has_audio = self._probe_video(source)
-        if (width, height) not in ((720, 1280), (1080, 1920)) or not 7.5 <= duration <= 8.5:
-            raise RuntimeError(f"Flow video has invalid size or duration: {width}x{height}, {duration:.2f}s")
-        if not has_audio:
-            raise RuntimeError("Flow video has no audio stream")
+            raise FlowCommandError('video', 'provider_rejected', detail='Flow video MODEL or SETTINGS differ')
+        width, height, duration, has_audio = self._validate_original('video', source, saved.get('original_sha256'))
         source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        if saved.get("original_sha256") and saved["original_sha256"] != source_hash:
-            raise FlowCommandError("video", "original_asset_changed")
         self._write_diagnostics(diagnostics, {"original_sha256": source_hash})
         if source.resolve() != raw_path.resolve():
             shutil.copyfile(source, raw_path)
