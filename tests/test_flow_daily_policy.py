@@ -151,6 +151,14 @@ class DailyFlowPolicyTests(unittest.TestCase):
         recover.assert_not_called()
         api.assert_not_called()
 
+    def test_empty_reservation_and_gaps_in_attempt_history_fail_closed(self):
+        diagnostic = self.root / 'flow_image_diagnostics.json'
+        for record in ({'pending_attempt': {}}, {'attempts': [{'number': 2, 'submit_attempted': True}]}):
+            diagnostic.write_text(json.dumps(record))
+            with self.subTest(record=record), self.assertRaises(FlowCommandError) as error:
+                FlowMediaClient._daily_attempts('image', diagnostic)
+            self.assertEqual(error.exception.category, 'request_identity_unverified')
+
     def test_receipt_requires_exact_request_profile_project_and_settings(self):
         diagnostic = self.root / 'flow_image_diagnostics.json'
         diagnostic.write_text(json.dumps({'request_hash': 'original'}))

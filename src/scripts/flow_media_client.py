@@ -271,10 +271,12 @@ class FlowMediaClient:
         if len(by_number) != len(attempts):
             raise FlowCommandError(stage, 'request_identity_unverified')
         pending = saved.get('pending_attempt')
-        if pending:
+        if pending is not None:
             if not isinstance(pending, dict) or type(pending.get('number')) is not int or pending['number'] < 1:
                 raise FlowCommandError(stage, 'request_identity_unverified')
             by_number[pending['number']] = pending | by_number.get(pending['number'], {})
+        if sorted(by_number) != list(range(1, len(by_number) + 1)):
+            raise invalid
         for marker in diagnostics.parent.glob(f'flow_{stage}_attempt_*.submit'):
             try:
                 number = int(marker.stem.rsplit('_', 1)[1])
