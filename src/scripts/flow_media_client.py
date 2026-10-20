@@ -502,14 +502,30 @@ class FlowMediaClient:
             self._save_attempt(diagnostics, attempt)
         deadline = min(attempt['recovery_deadline'], time.time() + max(0, self._generation_seconds()))
         self._recovery_deadline = deadline
+        if deadline <= time.time():
+            return None
         has_identity = bool(saved.get('result') or (attempt.get('failure') or {}).get('media_id') or
                             (attempt.get('failure') or {}).get('operation_id') or
                             diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.result.json').exists())
+        context_file = diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.context.json')
         self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_RECOVERY_{attempt["number"]}',
             f'Flow {stage}: ' + ('recovering the exact recorded result' if has_identity else
+                'checking the original project for the saved request' if stage == 'image' and context_file.exists() else
                 'waiting for an exact result identity; no asset can be downloaded yet') + ' for up to five minutes before replacement.')
+        receipt = diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.result.json')
+        exact_result = saved.get('result') or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
+        if stage == 'image' and context_file.exists() and not exact_result:
+            recovered = self._readback_image(context_file, saved['request_hash'], output, deadline)
+            if recovered:
+                self._notify_transition(diagnostics, f'FLOW_IMAGE_RECOVERED_{attempt["number"]}',
+                                        'Flow image: recovered the exact saved result; no replacement was submitted.')
+                return recovered
+            self._notify_transition(diagnostics, f'FLOW_IMAGE_RECOVERY_UNAVAILABLE_{attempt["number"]}',
+                                    'Flow image: exact-result readback unavailable; checking the remaining allowance.')
+            if not receipt.exists():
+                return None
         while time.time() < deadline:
-            result = saved.get('result') or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
+            result = exact_result or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
             if result:
                 try:
                     item = result['images'][0] if stage == 'image' else result
@@ -540,6 +556,47 @@ class FlowMediaClient:
                     pass
             time.sleep(min(15, max(0, deadline - time.time())))
         return None
+
+    def _readback_image(self, context_file: Path, request_hash: str, output: Path, deadline: float) -> dict | None:
+        recovery = output.parent / 'flow_recovered'
+        recovery.mkdir(exist_ok=True)
+        script = Path(__file__).resolve().parents[2] / 'ops/flow_image_recover.py'
+        command = [sys.executable, str(script), os.getenv('FLOW_PREFLIGHT_PROJECT_ID', ''), '--context',
+                   str(context_file), str(recovery / (context_file.stem + '.png')), str(deadline), request_hash]
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return None
+        code, payload = self._recovery_command(command, remaining)
+        if payload.get('status') == 'identity_unverified':
+            raise FlowCommandError('image', 'request_identity_unverified', detail='Saved image readback evidence requires reconciliation.')
+        return payload.get('result') if code == 0 else None
+
+    @staticmethod
+    def _recovery_command(command: list[str], timeout: float) -> tuple[int, dict]:
+        import signal
+        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                              start_new_session=True) as process:
+            try:
+                stdout, _ = process.communicate(timeout=max(.01, timeout))
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate()
+                return -1, {}
+        try:
+            payload = json.loads(stdout)
+        except ValueError:
+            return process.returncode, {}
+        return process.returncode, payload if isinstance(payload, dict) else {}
 
     def _image_receipt(self, diagnostics: Path, attempt: dict) -> dict | None:
         receipt = diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.result.json')
@@ -642,6 +699,8 @@ class FlowMediaClient:
         catalog_position = catalog._catalog_position() if marker is not None else 0
         if marker is not None:
             env["GFLOW_SHADOW_SUBMIT_MARKER"] = str(marker)
+            env['GFLOW_PROFILE'] = catalog.profile
+            env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
             if (marker.parent / 'flow_inputs.json').is_file():
                 env['GFLOW_SHADOW_REQUEST_HASH'] = json.loads(marker.with_name(f'flow_{command[1]}_diagnostics.json').read_text())['request_hash']
                 timeout = min(timeout, max(.01, FlowMediaClient._generation_seconds()))
@@ -725,11 +784,19 @@ class FlowMediaClient:
             else:
                 category = "pre_submit_terminal"
             if marker is not None:
+                response = {}
+                context_file = marker.with_suffix('.context.json')
+                if context_file.exists():
+                    try:
+                        response = json.loads(context_file.read_text()).get('response', {})
+                    except (ValueError, OSError):
+                        raise FlowCommandError(command[1], 'request_identity_unverified') from None
                 FlowMediaClient._write_diagnostics(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
                     {'last_cli_error': {'phase': 'upload' if error_class == 'MediaUploadRejectedError' else 'submit_response',
-                        'class': error_class, 'detail': detail, 'http_status': error.get('status'),
+                        'class': error_class, 'detail': detail, 'http_status': error.get('status') or response.get('http_status'),
                         'catalog_operation_id': operation_id, 'remote_operation_id': remote_operation_id,
-                        'rpc': re.sub(r'[^A-Za-z0-9:._-]', '', str(error.get('route') or ''))[:80]}})
+                        'rpc': re.sub(r'[^A-Za-z0-9:._-]', '', str(error.get('route') or response.get('rpc') or ''))[:80],
+                        'response': response}})
             raise FlowCommandError(command[1], category, error_class=error_class,
                                    media_id=media_id, retryable=failed and not policy_or_quota and "RECAPTCHA" not in reasons,
                                    detail=detail, operation_id=operation_id, submission_state=submission_state)
@@ -940,13 +1007,15 @@ class FlowMediaClient:
                 remaining = getattr(self, '_recovery_deadline', time.time() + 120) - time.time()
                 if remaining > 0:
                     try:
-                        result = subprocess.run([sys.executable, str(script),
+                        code, payload = self._recovery_command([sys.executable, str(script),
                             os.getenv('FLOW_PREFLIGHT_PROJECT_ID', ''), media_id, str(target)],
-                            capture_output=True, text=True, timeout=min(120, remaining), check=False)
-                        candidates = list(recovery.glob(f'{media_id}.*')) if result.returncode == 0 else []
+                            min(120, remaining))
+                        if payload.get('status') == 'identity_unverified':
+                            raise FlowCommandError('image', 'request_identity_unverified')
+                        candidates = list(recovery.glob(f'{media_id}.*')) if code == 0 else []
                         if len(candidates) == 1:
                             return self._owned_path(str(candidates[0]), output_dir)
-                    except subprocess.SubprocessError:
+                    except (ValueError, subprocess.SubprocessError):
                         pass
         # Pinned gflow data download supports videos only; never regenerate to recover an image.
         raise FlowCommandError("image", "image_recovery_unavailable", media_id=media_id)

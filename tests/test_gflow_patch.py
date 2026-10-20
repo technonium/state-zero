@@ -1,8 +1,10 @@
 """Run in the shadow image to check the pinned CLI panel recovery patch."""
 import unittest
+import sys
 import os
 import tempfile
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/scripts'))
 from unittest.mock import AsyncMock, MagicMock, patch
 
 try:
@@ -46,21 +48,21 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
         from ops.flow_image_recover import download_existing
         project = '11111111-1111-4111-8111-111111111111'
         media = '22222222-2222-4222-8222-222222222222'
-        row = {'name': media, 'projectId': project, 'workflowId': 'workflow', 'image': {
-            'dimensions': {'width': 768, 'height': 1024}, 'generatedImage': {
-                'seed': 1, 'prompt': 'sanitized', 'modelNameType': 'BELUGA',
-                'aspectRatio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR',
-                'fifeUrl': 'https://flow-content.google/original'}}}
-        client = MagicMock(fetch_project_listing=AsyncMock(return_value={
-            'result': {'data': {'json': {'projectContents': {'media': [row]}}}}}), download_image=AsyncMock())
+        from types import SimpleNamespace
+        details = [None] * 15; details[8] = 36; details[14] = 4
+        listing = {'images': [SimpleNamespace(media_id=media, project_id=project)],
+                   'media': {media: [None] * 6 + [[details]]}}
+        client = MagicMock()
         client.__aenter__.return_value = client
-        with patch('gflow_cli.api.client.FlowApiClient', return_value=client):
+        with patch('gflow_cli.api.client.FlowApiClient', return_value=client), \
+                patch('flow_readback.snapshot', new=AsyncMock(return_value=listing)), \
+                patch('flow_readback.download_image', new=AsyncMock()) as download:
             await download_existing(project, media, Path('/tmp/original.png'))
-            client.download_image.assert_awaited_once()
-            client.download_image.reset_mock()
+            download.assert_awaited_once()
+            download.reset_mock()
             with self.assertRaises(ValueError):
                 await download_existing(project, '33333333-3333-4333-8333-333333333333', Path('/tmp/wrong.png'))
-            client.download_image.assert_not_awaited()
+            download.assert_not_awaited()
 
     async def test_submit_boundary_creates_one_private_marker(self):
         from gflow_cli.api.transports.migrated_composer import _mark_shadow_submit_attempt
@@ -297,6 +299,21 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(marker.read_text())['state'],'forwarded')
         route.continue_.assert_awaited_once()
         route.abort.assert_not_awaited()
+
+    async def test_required_context_write_failure_prevents_forwarding(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / 'flow_image_attempt_1.submit'
+            marker.write_text('submit_attempted\n')
+            with patch.dict(os.environ, {'GFLOW_SHADOW_SUBMIT_MARKER': str(marker)}), \
+                    patch('flow_readback.bind_request', side_effect=OSError('disk full')):
+                problem = await _guard_image_submit(route, MagicMock(post_data=self.body('BELUGA')),
+                    (), Model.NARWHAL, 'Nano Banana 2.1', {}, 'cloud')
+            self.assertIn('could not be persisted', problem)
+        route.abort.assert_awaited_once()
+        route.continue_.assert_not_awaited()
 
     async def test_same_attempt_cannot_forward_two_generation_requests(self):
         from gflow_cli.api.image import Model

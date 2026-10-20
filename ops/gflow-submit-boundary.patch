@@ -118,3 +118,71 @@
                      status=status,
                      route=route,
                  )
+
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -2030,8 +2030,16 @@
+         own, because both callers find the upload again by that name — so the caller must
+         search for the name returned here, never for ``image_path.name``.
+         """
+         display_name = _unique_display_name(image_path)
++        upload_record = None
++        if os.getenv("GFLOW_SHADOW_SUBMIT_MARKER") and os.getenv("GFLOW_SHADOW_REQUEST_HASH"):
++            from flow_readback import prepare_upload, recover_saved_upload, mark_upload
++            upload_record = prepare_upload(project_id, image_path, display_name)
++            display_name = upload_record["name"]
++            if upload_record["state"] != "prepared":
++                media_id = await recover_saved_upload(page, project_id, image_path, upload_record)
++                return media_id, display_name
+         loop = asyncio.get_running_loop()
+         reply: asyncio.Future[tuple[int, str]] = loop.create_future()
+         route = f"batchexecute:{UPLOAD_RPC}"
+ 
+@@ -2123,8 +2131,10 @@
+             # A FilePayload, not a path: the display name Flow lists the asset under is
+             # ours to choose, so uniqueness needs no copy on disk (and leaves no temp file
+             # to leak). `read_bytes` is off-thread for the same reason the header read in
+             # `client.py` is — the file is up to MAX_IMAGE_BYTES.
++            if upload_record is not None:
++                mark_upload(upload_record, "attempted")
+             await chooser.set_files(
+                 {
+                     "name": display_name,
+                     "mimeType": mimetypes.guess_type(image_path.name)[0]
+@@ -2133,9 +2143,23 @@
+                 }
+             )
+             try:
+                 status, text = await asyncio.wait_for(reply, timeout=FRAME_UPLOAD_S)
++            except MediaUploadRejectedError as original:
++                if upload_record is not None and "upload_response_read_failed:" in original.detail:
++                    try:
++                        media_id = await recover_saved_upload(page, project_id, image_path, upload_record)
++                        return media_id, display_name
++                    except MediaUploadRejectedError:
++                        raise original from None
++                raise
+             except TimeoutError:
++                if upload_record is not None and sent:
++                    try:
++                        media_id = await recover_saved_upload(page, project_id, image_path, upload_record)
++                        return media_id, display_name
++                    except MediaUploadRejectedError:
++                        pass
+                 try:
+                     opened = await page.locator(DIALOG).count() > dialogs_before
+                 except Exception:  # noqa: BLE001 - a probe is never the failure it reports
+                     # The likeliest reason no reply came is that the page died or navigated,
+
+--- a/src/gflow_cli/cli_video.py
++++ b/src/gflow_cli/cli_video.py
+@@ -379,8 +379,9 @@
+             command=f"video {request.mode.value}",
+             mode=OperationKind(request.mode.value),
+             exc=exc,
+             request=request,
++            flow_project_id=project_id,
+             flow_media_ids=started_media_ids,
+         )
+         raise
+     finally:

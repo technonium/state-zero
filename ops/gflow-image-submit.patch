@@ -222,3 +222,147 @@ index 6b253ff3..339f6f5b 100644
 +        os.replace(temporary, target)
      saved_paths = await _download_images(client, images, out, output_root, output_file=output_file)
      return images, saved_paths
+
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -985,9 +985,9 @@
+     return None
+ 
+ 
+ async def _guard_image_submit(route: Any, raw_request: Any,
+-                                     reference_ids: tuple[str, ...], model: ImageModel | None, selected_label: str | None = None) -> str | None:
++                                     reference_ids: tuple[str, ...], model: ImageModel | None, selected_label: str | None = None, readback_context=None, prompt=None) -> str | None:
+     body = _post_data(raw_request)
+     problem = _image_body_problem(body, reference_ids, model)
+     payload = _image_submit_payload(body)
+     if not problem and model is ImageModel.NARWHAL and (
+@@ -1007,8 +1007,14 @@
+             untouched = False
+         if not untouched:
+             await route.abort()
+             return "submitted_request_uncertain: marker already used; reconcile before retry"
++        if not problem and readback_context is not None:
++            from flow_readback import bind_request, identity_hash
++            try:
++                bind_request(readback_context, marker, payload, prompt)
++            except Exception:
++                problem = "image submission context could not be persisted"
+         evidence = {"state": "blocked_before_submission" if problem else "forwarded",
+                     "expected_model": model.value if model else None,
+                     "selected_model": "Nano Banana 2.1" if selected_label and IMAGE_MODEL_MENU_MATCHERS[ImageModel.NARWHAL].matches(selected_label) else None,
+                     "actual_model": payload[1][0][5] if payload and isinstance(payload[1][0][5], str) and payload[1][0][5] in
+@@ -3021,8 +3027,12 @@
+         # Complete all UI gates before registering network observers or clicking
+         # Generate. A deterministic DOM failure therefore cannot spend a request or
+         # enter the transport retry loop.
+         submit = await self._pre_submit_gate(page)
++        readback_context = None
++        if os.getenv("GFLOW_SHADOW_SUBMIT_MARKER") and os.getenv("GFLOW_SHADOW_REQUEST_HASH"):
++            from flow_readback import prepare_image
++            readback_context = await prepare_image(page)
+         loop = asyncio.get_running_loop()
+         result: asyncio.Future[list[GeneratedImage]] = loop.create_future()
+         route_error: asyncio.Future[WireFormatError] = loop.create_future()
+ 
+@@ -3050,9 +3060,14 @@
+                     )
+                 )
+                 return
+             try:
++                if readback_context is not None:
++                    from flow_readback import note_response
++                    note_response(readback_context, received=True, http_status=status, rpc=IMAGE_SUBMIT_RPC)
+                 text = await response.text()
++                if readback_context is not None:
++                    note_response(readback_context, body_readable=True, response_finished=True)
+                 refusal = _submit_refusal(text, (IMAGE_SUBMIT_RPC,))
+                 if refusal is not None:
+                     raise refusal
+                 parsed = parse_frames(text)
+@@ -3073,8 +3088,10 @@
+                     raise WireFormatError(
+                         detail="migrated image submit returned no ogiZ0b frame",
+                         route=f"batchexecute:{IMAGE_SUBMIT_RPC}",
+                     )
++                if readback_context is not None:
++                    note_response(readback_context, decoded=True)
+                 images = [
+                     GeneratedImage(
+                         media_name=record.media_id,
+                         workflow_id=record.workflow_id,
+@@ -3102,9 +3119,9 @@
+         def is_image_submit(url: str) -> bool:
+             return _rpcid(url) == IMAGE_SUBMIT_RPC
+ 
+         async def guard(route: Any, raw_request: Any) -> None:
+-            problem = await _guard_image_submit(route, raw_request, reference_ids, request.model, getattr(self, "_shadow_image_model_label", None))
++            problem = await _guard_image_submit(route, raw_request, reference_ids, request.model, getattr(self, "_shadow_image_model_label", None), readback_context, request.prompt)
+             log.info(
+                 "migrated.image_submit_guarded",
+                 outcome="aborted" if problem else "passed",
+                 references=len(reference_ids),
+
+--- a/src/gflow_cli/cli_image.py
++++ b/src/gflow_cli/cli_image.py
+@@ -1404,8 +1404,9 @@
+             command="image t2i",
+             mode=OperationKind.T2I,
+             exc=exc,
+             request=req,
++            flow_project_id=getattr(locals().get("project"), "project_id", project_id),
+         )
+         raise
+     finally:
+         recorder.close()
+
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -1018,9 +1018,10 @@
+                     "expected_model": model.value if model else None,
+                     "selected_model": "Nano Banana 2.1" if selected_label and IMAGE_MODEL_MENU_MATCHERS[ImageModel.NARWHAL].matches(selected_label) else None,
+                     "actual_model": payload[1][0][5] if payload and isinstance(payload[1][0][5], str) and payload[1][0][5] in
+                         {"NARWHAL", "BELUGA", "GEM_PIX_2", "HARBOR_SEAL"} else "unknown",
+-                    "reason": problem}
++                    "reason": problem,
++                    "readback_hash": identity_hash(readback_context) if readback_context is not None and not problem else None}
+         temporary = target.with_suffix(target.suffix + ".tmp")
+         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as handle:
+             json.dump(evidence, handle)
+         os.replace(temporary, target)
+@@ -2056,9 +2057,14 @@
+             status = int(getattr(response, "status", 0) or 0)
+             text = ""
+             if status == 200:
+                 try:
++                    if upload_record is not None:
++                        from flow_readback import note_upload_response
++                        note_upload_response(upload_record, http_status=status, rpc=UPLOAD_RPC, body_readable=False)
+                     text = await response.text()
++                    if upload_record is not None:
++                        note_upload_response(upload_record, body_readable=True, response_finished=True)
+                 except Exception as exc:
+                     from gflow_cli.data.redaction import redact_error_detail
+                     reply.set_exception(MediaUploadRejectedError(
+                         detail=f"upload_response_read_failed: HTTP 200 rpc={UPLOAD_RPC} {type(exc).__name__}: "
+@@ -2137,16 +2145,20 @@
+             # A FilePayload, not a path: the display name Flow lists the asset under is
+             # ours to choose, so uniqueness needs no copy on disk (and leaves no temp file
+             # to leak). `read_bytes` is off-thread for the same reason the header read in
+             # `client.py` is — the file is up to MAX_IMAGE_BYTES.
++            upload_bytes = await asyncio.to_thread(image_path.read_bytes)
+             if upload_record is not None:
++                import hashlib
++                if hashlib.sha256(upload_bytes).hexdigest() != upload_record["source_hash"]:
++                    raise WireFormatError(detail="Saved upload source bytes changed", route=route)
+                 mark_upload(upload_record, "attempted")
+             await chooser.set_files(
+                 {
+                     "name": display_name,
+                     "mimeType": mimetypes.guess_type(image_path.name)[0]
+                     or "application/octet-stream",
+-                    "buffer": await asyncio.to_thread(image_path.read_bytes),
++                    "buffer": upload_bytes,
+                 }
+             )
+             try:
+                 status, text = await asyncio.wait_for(reply, timeout=FRAME_UPLOAD_S)

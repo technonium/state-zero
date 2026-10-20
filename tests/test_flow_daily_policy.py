@@ -400,6 +400,19 @@ class DailyFlowPolicyTests(unittest.TestCase):
         saved = json.loads(diagnostic.read_text())
         self.assertEqual(saved['attempts'][0]['recovery_deadline'], 400)
 
+    def test_existing_exact_result_precedes_project_readback(self):
+        self.freeze()
+        target = self.root / 'art.png'
+        self.save_image({}, target)
+        result = {'images': [{'media_name': 'exact', 'local_path': str(target)}]}
+        diagnostic = self.root / 'flow_image_diagnostics.json'
+        diagnostic.write_text(json.dumps({'attempts': [{'number': 1}], 'result': result}))
+        (self.root / 'flow_image_attempt_1.context.json').write_text('{}')
+        client = FlowMediaClient()
+        with patch.object(client, '_notify_transition'), patch.object(client, '_readback_image') as read:
+            self.assertEqual(client._recover_pending('image', diagnostic, {'number': 1}, target), result)
+            read.assert_not_called()
+
     def test_short_window_skips_flow_for_api_then_stops_all_generation(self):
         self.freeze()
         api = Mock()
