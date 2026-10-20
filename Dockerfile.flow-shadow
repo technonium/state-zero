@@ -1,6 +1,8 @@
 # Separate image for the non-publishing Google Flow shadow service.
 FROM python:3.11-slim
 ARG TARGETARCH
+# Retain the browser validated with the pinned CLI across image rebuilds.
+ARG CHROME_VERSION=154.0.8037.97-1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ffmpeg openssh-client libsm6 libxext6 libxrender1 libgomp1 \
@@ -9,7 +11,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
  && echo "deb [arch=${TARGETARCH} signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
       > /etc/apt/sources.list.d/google-chrome.list \
- && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+ && curl -fsSL "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_${TARGETARCH}.deb" \
+      -o /tmp/state-zero-chrome.deb \
+ && apt-get update && apt-get install -y --no-install-recommends /tmp/state-zero-chrome.deb \
+ && rm /tmp/state-zero-chrome.deb \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

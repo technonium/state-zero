@@ -304,6 +304,13 @@ class ShadowGuardTests(unittest.TestCase):
         self.assertIn("USER shadow", dockerfile)
         self.assertIn("useradd", dockerfile)
 
+    def test_shadow_image_pins_the_validated_browser(self):
+        dockerfile = (ROOT / "Dockerfile.flow-shadow").read_text(encoding="utf-8")
+        self.assertIn("ARG CHROME_VERSION=154.0.8037.97-1", dockerfile)
+        self.assertIn("google-chrome-stable_${CHROME_VERSION}_${TARGETARCH}.deb", dockerfile)
+        self.assertIn("--no-install-recommends /tmp/state-zero-chrome.deb", dockerfile)
+        self.assertNotIn("--no-install-recommends google-chrome-stable ", dockerfile)
+
     def test_failed_preflight_claims_date_without_running_pipeline(self):
         import flow_shadow_run
 
