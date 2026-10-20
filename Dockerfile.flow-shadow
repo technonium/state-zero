@@ -19,11 +19,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY ops/flow-runtime-constraints.txt ops/flow-runtime-constraints.txt
+RUN pip install --no-cache-dir -c ops/flow-runtime-constraints.txt -r requirements.txt
 
 # Reviewed v0.82.1 release. Rebuild and repeat the live gate before changing it.
 ARG GFLOW_COMMIT=5ea53ddf638d8392907d7ec70c5fdbe58ec5fe41
-RUN pip install --no-cache-dir "playwright==1.61.0" "urllib3>=2.8.0" "PyJWT>=2.15.1" \
+RUN pip install --no-cache-dir -c ops/flow-runtime-constraints.txt "playwright==1.61.0" "urllib3>=2.8.0" "PyJWT>=2.15.1" \
     "gflow-cli @ git+https://github.com/ffroliva/gflow-cli.git@${GFLOW_COMMIT}"
 
 COPY . .

@@ -15,6 +15,18 @@ except ImportError:
 
 @unittest.skipIf(MigratedComposer is None, "Requires the shadow image's pinned gflow")
 class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
+    def test_browser_runtime_matches_its_validated_constraints(self):
+        from importlib.metadata import version
+        root = Path(__file__).resolve().parents[1]
+        constraints = root / "ops/flow-runtime-constraints.txt"
+        dockerfile = (root / "Dockerfile.flow-shadow").read_text(encoding="utf-8")
+        self.assertEqual(dockerfile.count("pip install --no-cache-dir -c ops/flow-runtime-constraints.txt"), 2)
+        for line in constraints.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith("#"):
+                name, expected = line.split("==")
+                with self.subTest(package=name):
+                    self.assertEqual(version(name), expected)
+
     async def test_image_identity_is_saved_before_download_failure(self):
         import json
         from types import SimpleNamespace
