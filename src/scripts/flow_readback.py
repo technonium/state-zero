@@ -354,8 +354,8 @@ async def download_image(client, image, output):
         url, deadline = image.image_url, time.time() + 120
         address = urlsplit(url)
         if address.hostname in {'lh3.googleusercontent.com', 'lh3.google.com'}:
-            path = re.sub(r'=[ws]\d+[a-z0-9-]*$', '=s0', address.path)
-            url = urlunsplit(address._replace(path=path if path != address.path else path + '=s0'))
+            path = re.sub(r'=[ws]\d+[a-z0-9-]*$', '', address.path) + '=s0'
+            url = urlunsplit(address._replace(path=path))
         for _ in range(3):
             address = urlsplit(url)
             if (address.scheme != 'https' or address.hostname not in

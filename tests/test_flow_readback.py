@@ -227,6 +227,7 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
             redirect = Mock(status=302, headers={'location': 'https://lh3.google.com/exact-original'})
             client._context.request.get.side_effect = [redirect, response]
             await download_image(client, image, output)
+            self.assertEqual(client._context.request.get.call_args.args[0], redirect.headers['location'])
             redirect.headers['location'] = 'https://untrusted.example/original'
             client._context.request.get.side_effect = [redirect]
             from flow_readback import ReadbackIdentityError
@@ -244,6 +245,25 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
             output = Path(tmp) / 'original.png'
             with self.assertRaises(ReadbackUnavailable): await download_image(client, decode_listing(listing(), PROJECT)['images'][0], output)
             self.assertFalse(output.exists())
+
+    async def test_original_size_url_normalization_is_idempotent_and_preserves_queries(self):
+        import io
+        from PIL import Image
+        from types import SimpleNamespace
+        from flow_readback import download_image
+        data = io.BytesIO(); Image.new('RGB', (768, 1024)).save(data, 'PNG')
+        for host in ('lh3.googleusercontent.com', 'lh3.google.com'):
+            for suffix in ('', '=s0', '=s512', '=w384-h512'):
+                with self.subTest(host=host, suffix=suffix), tempfile.TemporaryDirectory() as tmp:
+                    query = '?synthetic=a%2Fb&value=one%3Dtwo'
+                    original = f'https://{host}/original{suffix}{query}'
+                    expected = f'https://{host}/original=s0{query}'
+                    client = Mock()
+                    client._context.request.get = AsyncMock(return_value=Mock(
+                        status=200, body=AsyncMock(return_value=data.getvalue())))
+                    for url in (original, expected):
+                        await download_image(client, SimpleNamespace(image_url=url, dimensions=(768, 1024)), Path(tmp) / 'art.png')
+                    self.assertEqual([call.args[0] for call in client._context.request.get.call_args_list], [expected, expected])
 
     async def test_upload_matches_unique_name_and_unchanged_source(self):
         import hashlib, time

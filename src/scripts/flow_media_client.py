@@ -407,7 +407,7 @@ class FlowMediaClient:
                 candidate = output.with_name(f'.{output.stem}.api{output.suffix}')
                 client.resume_operation(candidate)
                 return self._finish_daily(stage, output, diagnostics, 'google_api', candidate)
-            if attempts and attempts[-1].get('submit_attempted', True) and not attempts[-1].get('recovery_exhausted'):
+            if attempts and attempts[-1].get('submit_attempted', True):
                 attempt = attempts[-1]
                 recovered = self._recover_pending(stage, diagnostics, attempt, output)
                 if recovered:
@@ -417,9 +417,9 @@ class FlowMediaClient:
                     except FlowCommandError as exc:
                         if self._stops_replacement(exc):
                             raise
-                attempt['recovery_exhausted'] = True
-                self._save_attempt(diagnostics, attempt)
-                continue
+                if not attempt.get('recovery_exhausted'):
+                    attempt['recovery_exhausted'] = True
+                    self._save_attempt(diagnostics, attempt)
             used = sum(a.get('submit_attempted', True) for a in attempts)
             pre_submit = sum(not a.get('submit_attempted', True) for a in attempts)
             skip_flow = error and (error.category in {'auth_required', 'credits_exhausted'} or pre_submit >= 2)
@@ -495,8 +495,47 @@ class FlowMediaClient:
                 f'Paid Google API {stage} completed and validated; continuing the remaining stages.')
         return output
 
+    def _local_result(self, stage: str, result: dict | None, output: Path, expected_hash: str | None) -> dict | None:
+        if result is None:
+            return None
+        try:
+            item = result['images'][0] if stage == 'image' else result
+            local = item.get('local_path')
+        except (KeyError, IndexError, TypeError, AttributeError):
+            raise FlowCommandError(stage, 'request_identity_unverified') from None
+        if local:
+            try:
+                path = self._owned_path(local, output.parent)
+                self._validate_original(stage, path, expected_hash)
+                return result
+            except FlowCommandError as exc:
+                if self._stops_replacement(exc):
+                    raise
+            except (RuntimeError, TypeError, ValueError):
+                raise FlowCommandError(stage, 'request_identity_unverified') from None
+            except OSError:
+                pass
+        return None
+
     def _recover_pending(self, stage: str, diagnostics: Path, attempt: dict, output: Path) -> dict | None:
         saved = json.loads(diagnostics.read_text())
+        # A local file can disappear during handoff; never give its downloader a fresh budget.
+        now = time.time()
+        self._recovery_deadline = min(now if attempt.get('recovery_exhausted') else attempt.get('recovery_deadline', now),
+                                      now + max(0, self._generation_seconds()))
+        image_receipt = self._image_receipt(diagnostics, attempt) if stage == 'image' else None
+        exact_result = saved.get('result') or image_receipt
+        if image_receipt and saved.get('result'):
+            try:
+                if saved['result']['images'][0]['media_name'] != image_receipt['images'][0]['media_name']:
+                    raise ValueError('Conflicting image identities')
+            except (KeyError, IndexError, TypeError, ValueError):
+                raise FlowCommandError(stage, 'request_identity_unverified') from None
+        local = self._local_result(stage, exact_result, output, saved.get('original_sha256'))
+        if local:
+            return local
+        if attempt.get('recovery_exhausted'):
+            return None
         if 'recovery_deadline' not in attempt:
             attempt['recovery_deadline'] = time.time() + min(300, max(0, self._generation_seconds()))
             self._save_attempt(diagnostics, attempt)
@@ -513,7 +552,7 @@ class FlowMediaClient:
                 'checking the original project for the saved request' if stage == 'image' and context_file.exists() else
                 'waiting for an exact result identity; no asset can be downloaded yet') + ' for up to five minutes before replacement.')
         receipt = diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.result.json')
-        exact_result = saved.get('result') or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
+        exact_result = exact_result or self._catalog_result(stage, attempt)
         if stage == 'image' and context_file.exists() and not exact_result:
             recovered = self._readback_image(context_file, saved['request_hash'], output, deadline)
             if recovered:
@@ -528,27 +567,18 @@ class FlowMediaClient:
             result = exact_result or (self._image_receipt(diagnostics, attempt) if stage == 'image' else None) or self._catalog_result(stage, attempt)
             if result:
                 try:
-                    item = result['images'][0] if stage == 'image' else result
-                    local = item.get('local_path')
+                    local = self._local_result(stage, result, output, saved.get('original_sha256'))
                     if local:
-                        try:
-                            path = self._owned_path(local, output.parent)
-                            self._validate_original(stage, path, saved.get('original_sha256'))
-                            return result
-                        except FlowCommandError as exc:
-                            if self._stops_replacement(exc):
-                                raise
-                        except (OSError, RuntimeError):
-                            pass
+                        return local
                     if stage == 'image':
                         media_id = result['images'][0]['media_name']
                         path = self._recover_image(media_id, output.parent)
                         result['images'][0]['local_path'] = str(path)
                     else:
                         result['local_path'] = str(self._recover_video(result['media_id'], output.parent))
-                    path = self._owned_path(item.get('local_path') if stage == 'image' else result['local_path'], output.parent)
-                    self._validate_original(stage, path, saved.get('original_sha256'))
-                    return result
+                    local = self._local_result(stage, result, output, saved.get('original_sha256'))
+                    if local:
+                        return local
                 except FlowCommandError as exc:
                     if self._stops_replacement(exc):
                         raise
@@ -1024,10 +1054,13 @@ class FlowMediaClient:
         recovery_dir = output_dir / "flow_recovered"
         recovery_dir.mkdir(exist_ok=True)
         for _ in (1, 2):
+            remaining = getattr(self, '_recovery_deadline', time.time() + 300) - time.time()
+            if remaining <= 0:
+                break
             try:
                 result = subprocess.run(["gflow", "data", "download", media_id, "--out", str(recovery_dir),
                                          "--profile", self.profile, "--json"], capture_output=True, text=True,
-                                        timeout=max(.01, min(300, getattr(self, '_recovery_deadline', time.time() + 300) - time.time())), check=False)
+                                        timeout=min(300, remaining), check=False)
                 if result.returncode:
                     continue
                 payload = json.loads(result.stdout)

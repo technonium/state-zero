@@ -413,6 +413,211 @@ class DailyFlowPolicyTests(unittest.TestCase):
             self.assertEqual(client._recover_pending('image', diagnostic, {'number': 1}, target), result)
             read.assert_not_called()
 
+    def saved_local_work(self, stage, *, exhausted=False, receipt_only=False):
+        root = Path(tempfile.mkdtemp(dir=self.root))
+        for name in FlowMediaClient._input_names(root):
+            (root / name).write_text('{}' if name.endswith('.json') else 'original')
+        FlowMediaClient.freeze_inputs(root)
+        image = self.save_image({}, root / 'input_art.png')
+        asset = root / ('recovered.png' if stage == 'image' else 'recovered.mp4')
+        if stage == 'image':
+            self.save_image({}, asset)
+        else:
+            asset.write_bytes(b'validated-video')
+        request = {} if stage == 'image' else {
+            'prompt': 'original', 'start_frame_sha256': hashlib.sha256(image.read_bytes()).hexdigest()}
+        identity = {'request': request, 'profile': 'shadow', 'project': '',
+                    'settings': 'Nano Banana 2.1/3:4/x1' if stage == 'image' else 'veo-fast/i2v/9:16/x1/8s'}
+        request_hash = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+        result = ({'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact',
+                   'local_path': str(asset), 'model_name_type': 'BELUGA',
+                   'aspect_ratio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'}]}
+                  if stage == 'image' else {'succeeded': True, 'media_id': 'exact', 'local_path': str(asset),
+                   'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}})
+        attempt = {'number': 1, 'status': 'post_submit_error', 'submit_attempted': True,
+                   'recovery_deadline': 1, 'recovery_exhausted': exhausted}
+        diagnostic = root / f'flow_{stage}_diagnostics.json'
+        diagnostic.write_text(json.dumps({'request_hash': request_hash, 'daily_policy': True,
+            'attempts': [attempt], 'result': None if receipt_only else result,
+            'original_sha256': hashlib.sha256(asset.read_bytes()).hexdigest()}))
+        (root / f'flow_{stage}_attempt_1.submit').write_text(json.dumps({'state': 'forwarded',
+            'selected_model': 'Nano Banana 2.1', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
+        if receipt_only:
+            (root / 'flow_image_attempt_1.result.json').write_text(json.dumps(result | {
+                'request_hash': request_hash, 'profile': 'shadow', 'project_id': ''}))
+        return root, diagnostic, attempt, result, asset
+
+    def test_expired_and_exhausted_recovery_reuses_saved_image_and_video(self):
+        from contextlib import ExitStack
+        import shutil
+        for stage, receipt_only in (('image', False), ('image', True), ('video', False)):
+            for exhausted in (False, True):
+                with self.subTest(stage=stage, receipt=receipt_only, exhausted=exhausted), ExitStack() as stack:
+                    root, diagnostic, attempt, result, asset = self.saved_local_work(
+                        stage, exhausted=exhausted, receipt_only=receipt_only)
+                    target = root / ('generated_art.png' if stage == 'image' else 'generated_video.mp4')
+                    frozen = (root / 'flow_inputs.json').read_bytes()
+                    client = FlowMediaClient()
+                    for name in ('_run_json', '_recover_image', '_recover_video', '_readback_image', '_catalog_result'):
+                        stack.enter_context(patch.object(client, name, side_effect=AssertionError('Remote work forbidden')))
+                    stack.enter_context(patch.object(client, '_notify_transition'))
+                    stack.enter_context(patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)))
+                    for name in ('GoogleImageClient', 'GoogleVideoClient'):
+                        stack.enter_context(patch('flow_media_client.' + name, side_effect=AssertionError('API forbidden')))
+                    def finish(*args):
+                        self.assertIsNotNone(args[-1], 'A new submission was selected instead of saved work')
+                        for key, value in result.items():
+                            self.assertEqual(args[-1][key], value)
+                        shutil.copyfile(asset, target)
+                    generate = stack.enter_context(patch.object(client, '_generate_' + stage, side_effect=finish))
+                    if stage == 'image':
+                        client.generate_image({}, target)
+                    else:
+                        client.generate_video('original', root / 'input_art.png', target)
+                    generate.assert_called_once()
+                    self.assertEqual(target.read_bytes(), asset.read_bytes())
+                    self.assertEqual((root / 'flow_inputs.json').read_bytes(), frozen)
+                    self.assertEqual(json.loads(diagnostic.read_text())['attempts'], [attempt])
+                    self.assertEqual(len(list(root.glob('*.submit'))), 1)
+
+    def test_expired_recovery_does_not_read_remote_for_missing_or_damaged_files(self):
+        for state in ('missing', 'damaged'):
+            with self.subTest(state=state):
+                root, diagnostic, attempt, result, asset = self.saved_local_work('image')
+                saved = json.loads(diagnostic.read_text()); saved.pop('original_sha256')
+                diagnostic.write_text(json.dumps(saved))
+                asset.unlink() if state == 'missing' else asset.write_bytes(b'damaged')
+                client = FlowMediaClient()
+                with patch.object(client, '_recover_image') as download, \
+                        patch.object(client, '_readback_image') as read, \
+                        patch.object(client, '_catalog_result') as catalog:
+                    self.assertIsNone(client._recover_pending('image', diagnostic, attempt, root / 'art.png'))
+                download.assert_not_called(); read.assert_not_called(); catalog.assert_not_called()
+                self.assertEqual(json.loads(diagnostic.read_text())['attempts'], [attempt])
+
+    def test_expired_recovery_still_blocks_changed_checksum_or_receipt(self):
+        for state in ('checksum', 'receipt'):
+            with self.subTest(state=state):
+                root, diagnostic, attempt, result, asset = self.saved_local_work('image', receipt_only=state == 'receipt')
+                if state == 'checksum':
+                    asset.write_bytes(b'changed-original')
+                else:
+                    path = root / 'flow_image_attempt_1.result.json'
+                    saved = json.loads(path.read_text()); saved['profile'] = 'other'; path.write_text(json.dumps(saved))
+                with self.assertRaises(FlowCommandError) as error:
+                    FlowMediaClient()._recover_pending('image', diagnostic, attempt, root / 'art.png')
+                self.assertEqual(error.exception.category,
+                                 'original_asset_changed' if state == 'checksum' else 'request_identity_unverified')
+
+    def test_earlier_attempt_receipt_cannot_displace_latest_attempt(self):
+        root, diagnostic, first, result, asset = self.saved_local_work('image', receipt_only=True)
+        latest = first | {'number': 2, 'recovery_exhausted': True}
+        saved = json.loads(diagnostic.read_text()); saved.update(attempts=[first, latest], original_sha256=None)
+        diagnostic.write_text(json.dumps(saved))
+        (root / 'flow_image_attempt_2.submit').write_bytes((root / 'flow_image_attempt_1.submit').read_bytes())
+        client = FlowMediaClient()
+        with patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'false'}), \
+                patch.object(client, '_generate_image') as generate, self.assertRaises(FlowCommandError) as error:
+            client.generate_image({}, root / 'generated_art.png')
+        self.assertEqual(error.exception.category, 'attempts_exhausted')
+        generate.assert_not_called()
+        self.assertTrue(asset.is_file())
+
+    def test_api_reservation_precedes_expired_local_flow_result(self):
+        root, diagnostic, attempt, result, asset = self.saved_local_work('image')
+        saved = json.loads(diagnostic.read_text()); saved['api_fallback_state'] = 'started'
+        diagnostic.write_text(json.dumps(saved))
+        client = FlowMediaClient()
+        with patch.object(client, '_recover_pending') as recover, \
+                patch.object(client, '_generate_image') as generate, self.assertRaises(FlowCommandError) as error:
+            client.generate_image({}, root / 'generated_art.png')
+        self.assertEqual(error.exception.submission_state, 'api_attempted')
+        recover.assert_not_called(); generate.assert_not_called()
+
+    def test_saved_receipt_is_promoted_after_crash_without_remote_work(self):
+        for stage in ('image', 'video'):
+            with self.subTest(stage=stage):
+                root, diagnostic, attempt, result, asset = self.saved_local_work(stage, receipt_only=stage == 'image')
+                target = root / ('generated_art.png' if stage == 'image' else 'generated_video.mp4')
+                client = FlowMediaClient()
+                with patch.object(client, '_generation_seconds', return_value=0), \
+                        patch.object(client, '_run_json', side_effect=AssertionError('Submission forbidden')), \
+                        patch.object(client, '_readback_image', side_effect=AssertionError('Readback forbidden')), \
+                        patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)), \
+                        patch('flow_media_client.subprocess.run', side_effect=AssertionError('Download/upscale forbidden')):
+                    if stage == 'image':
+                        client.generate_image({}, target)
+                    else:
+                        client.generate_video('original', root / 'input_art.png', target)
+                self.assertTrue(target.is_file())
+                self.assertEqual(json.loads(diagnostic.read_text())['attempts'], [attempt])
+
+    def test_file_disappearing_during_handoff_cannot_reopen_remote_recovery(self):
+        for stage in ('image', 'video'):
+            for exhausted in (False, True):
+                with self.subTest(stage=stage, exhausted=exhausted):
+                    root, diagnostic, attempt, result, asset = self.saved_local_work(stage, exhausted=exhausted)
+                    if exhausted:
+                        attempt['recovery_deadline'] = 10**12
+                    client = FlowMediaClient()
+                    with patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)):
+                        recovered = client._recover_pending(stage, diagnostic, attempt, root / 'generated.png')
+                    self.assertIsNotNone(recovered)
+                    asset.unlink()
+                    with patch('flow_media_client.subprocess.run') as run, \
+                            patch('flow_media_client.subprocess.Popen') as spawn, self.assertRaises(FlowCommandError):
+                        if stage == 'image':
+                            client._generate_image({}, root / 'generated_art.png', recovered)
+                        else:
+                            client._generate_video('original', root / 'input_art.png', root / 'generated_video.mp4', recovered)
+                    run.assert_not_called(); spawn.assert_not_called()
+
+    def test_conflicting_receipt_and_result_block_local_reuse(self):
+        root, diagnostic, attempt, result, asset = self.saved_local_work('image', receipt_only=True)
+        saved = json.loads(diagnostic.read_text())
+        saved['result'] = result | {'images': [result['images'][0] | {'media_name': 'different'}]}
+        diagnostic.write_text(json.dumps(saved))
+        with self.assertRaises(FlowCommandError) as error:
+            FlowMediaClient()._recover_pending('image', diagnostic, attempt, root / 'art.png')
+        self.assertEqual(error.exception.category, 'request_identity_unverified')
+
+    def test_local_reuse_rejects_unowned_or_malformed_paths(self):
+        for state in ('outside', 'symlink', 'malformed'):
+            with self.subTest(state=state):
+                root, diagnostic, attempt, result, asset = self.saved_local_work('image')
+                outside = self.save_image({}, self.root / 'outside.png')
+                saved = json.loads(diagnostic.read_text())
+                if state == 'symlink':
+                    asset.unlink(); asset.symlink_to(outside)
+                else:
+                    saved['result']['images'][0]['local_path'] = str(outside) if state == 'outside' else 7
+                    diagnostic.write_text(json.dumps(saved))
+                with self.assertRaises(FlowCommandError) as error:
+                    FlowMediaClient()._recover_pending('image', diagnostic, attempt, root / 'art.png')
+                self.assertEqual(error.exception.category, 'request_identity_unverified')
+
+    def test_missing_or_damaged_expired_asset_uses_only_remaining_allowance(self):
+        for state in ('missing', 'damaged'):
+            with self.subTest(state=state):
+                root, diagnostic, attempt, result, asset = self.saved_local_work('image')
+                saved = json.loads(diagnostic.read_text()); saved.pop('original_sha256'); diagnostic.write_text(json.dumps(saved))
+                asset.unlink() if state == 'missing' else asset.write_bytes(b'damaged')
+                client = FlowMediaClient()
+                target = root / 'generated_art.png'
+                def replace(request, output, recovered):
+                    self.assertIsNone(recovered)
+                    (root / 'flow_image_attempt_2.submit').write_bytes((root / 'flow_image_attempt_1.submit').read_bytes())
+                    self.save_image({}, output)
+                with patch.object(client, '_generate_image', side_effect=replace) as generate, \
+                        patch.object(client, '_recover_image', side_effect=AssertionError('Expired download forbidden')), \
+                        patch.object(client, '_readback_image', side_effect=AssertionError('Expired readback forbidden')), \
+                        patch.object(client, '_notify_transition'):
+                    client.generate_image({}, target)
+                generate.assert_called_once()
+                attempts = json.loads(diagnostic.read_text())['attempts']
+                self.assertEqual([a['number'] for a in attempts], [1, 2])
+                self.assertEqual(attempts[0]['recovery_deadline'], attempt['recovery_deadline'])
+
     def test_short_window_skips_flow_for_api_then_stops_all_generation(self):
         self.freeze()
         api = Mock()
