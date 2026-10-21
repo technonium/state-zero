@@ -1,0 +1,23 @@
+name: Checks
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  native-arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 ops/check_repo_hygiene.py --check-working-tree
+      - run: git diff --check
+      - name: Build the pinned browser runtime
+        run: docker build -f Dockerfile.flow-shadow --build-arg STATE_ZERO_BUILD_COMMIT="$GITHUB_SHA" -t state-zero-checks .
+      - name: Offline tests, installed patches and dependency consistency
+        run: |
+          docker run --rm --network none state-zero-checks python3 -c '
+          import unittest, sys
+          result = unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover("tests"))
+          sys.exit(not result.wasSuccessful() or bool(result.skipped))'
+          docker run --rm --network none state-zero-checks python3 -m pip check

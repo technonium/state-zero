@@ -1,6 +1,6 @@
 # Google Flow generation and isolated validation
 
-Google Flow is an optional media provider in the main State Zero pipeline.
+Google Flow provides automatic image/video generation in the main State Zero pipeline.
 The existing `shadow` filenames and settings describe an isolated, non-publishing
 validation service. They do not change the regular pipeline's execution modes.
 
@@ -71,8 +71,9 @@ service. Outputs and the SQLite archive stay private. Instagram posting, public
 media delivery, and API media fallback are disabled.
 
 The regular pipeline retains `automatic` and `telegram` modes, its existing
-Instagram and Telegram variables, and emergency rescue. Production's API image
-remains the default. Selecting `MEDIA_GENERATION_PROVIDER=flow` requires the
+Instagram and Telegram variables, and emergency rescue. The public configuration
+retains API generation as its compatibility default; Oracle production explicitly
+selects Flow first. Selecting `MEDIA_GENERATION_PROVIDER=flow` requires the
 browser-capable image and a persistent signed-in profile; merging code alone
 does not activate Flow. A production cutover must use the regular pipeline
 entrypoint under Xvfb with production settings, mounts and schedules. The shadow
@@ -260,6 +261,29 @@ Check start-frame binding and all finished layouts visually. Credit lookup may
 be unavailable; keep observed balances distinct from submission-based estimates.
 
 ## Daily schedules
+
+### Regular production
+
+Use the regular pipeline entrypoint in the running `pipeline` service, not the
+isolated runner. Preserve one shared private execution lock across ordinary and
+rescue jobs. Keep automatic retries in the scheduler disabled; the application
+owns bounded media retries.
+
+| Job | Asia/Kolkata cron | Command inside the container |
+| --- | --- | --- |
+| Instagram token health | `30 6 * * *` | `python3 /app/ops/instagram_token_healthcheck.py` |
+| Normal window | `0,30 10-12 * * *` | `flock -n /opt/state-zero-private/runtime/state/pipeline-execution.lock xvfb-run -a python3 -u /app/src/scripts/pipeline.py` |
+| Final normal trigger | `0 13 * * *` | Same command as the normal window |
+| Emergency rescue | `0 14 * * *` | `python3 -u /app/ops/run_rescue.py` |
+
+Generation ends at 13:30; there is no 13:30 trigger. Rescue waits up to ten
+minutes for ownership and never interrupts publishing. Telegram hands off at
+12:55 or its earlier configured deadline. A later timer reuses saved inputs and
+completed work; a confirmed or uncertain Instagram publication prevents another
+post. Configure these jobs only after authentication and a supervised
+non-publishing validation. Keep trial and retired-server jobs disabled.
+
+### Isolated validation only
 
 Create two Dokploy Compose Schedule Jobs targeting `flow-shadow`. Prepare them
 disabled, validate the first full run, then enable both. Preserve Dokploy's

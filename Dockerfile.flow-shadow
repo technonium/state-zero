@@ -1,4 +1,4 @@
-# Separate image for the non-publishing Google Flow shadow service.
+# Pinned Flow runtime shared by production and isolated non-publishing validation.
 FROM python:3.11-slim
 ARG TARGETARCH
 # Retain the browser validated with the pinned CLI across image rebuilds.
