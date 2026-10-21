@@ -44,6 +44,11 @@ def context():
 
 
 class VideoSelectionTests(unittest.TestCase):
+    def test_project_listing_may_contain_auxiliary_records(self):
+        payload=[None,[],[video_row()],[[None]*5],None,None,None,[[None]*3]]
+        result=readback.decode_listing(payload,PROJECT)
+        self.assertEqual(readback.select_video(result,context(),media_id=MEDIA)['workflow_id'],WORKFLOW)
+
     def test_video_after_unrelated_records_is_selected_by_exact_identity(self):
         self.assertTrue(callable(getattr(readback, 'select_video', None)), 'Independent video selection is missing')
         data = listing(video_row(OTHER, OTHER, OTHER, 'other'), video_row())

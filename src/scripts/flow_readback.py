@@ -59,8 +59,7 @@ def decode_listing(payload, project):
         payload = payload[:1] + [[], []] + payload[3:]
     if (not isinstance(payload, list) or len(payload) != 8 or payload[0] is not None
             or any(payload[i] is not None for i in (4, 5, 6))
-            or not all(isinstance(payload[i], list) for i in (1, 2, 3, 7))
-            or payload[3] or payload[7]):
+            or not all(isinstance(payload[i], list) for i in (1, 2, 3, 7))):
         raise ReadbackUnavailable('Unrecognized or incomplete project listing')
     media = {}
     for row in payload[2]:
