@@ -501,6 +501,10 @@ async def download_video(client, clip, output, *, deadline):
     else:
         await client.page.goto(f'https://flow.google.com/project/{clip["project_id"]}/edit/{clip["media_id"]}',
                               wait_until='domcontentloaded',timeout=max(1,min(60000,(deadline-time.time())*1000)))
+        current=urlsplit(str(client.page.url))
+        if (current.scheme != 'https' or current.hostname != 'flow.google.com'
+                or current.path != f'/project/{clip["project_id"]}/edit/{clip["media_id"]}'):
+            raise ReadbackIdentityError('Original download editor identity differs')
         body = await asyncio.wait_for(_download_original_verified(client.page,expected=expected,
             media_id=clip['media_id']),max(.001,deadline-time.time()))
     if len(body) != expected or body[4:8] != b'ftyp':

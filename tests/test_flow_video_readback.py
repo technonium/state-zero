@@ -95,13 +95,23 @@ class VideoDownloadTests(unittest.IsolatedAsyncioTestCase):
     async def test_non_original_transcode_url_is_never_requested_as_original(self):
         self.assertTrue(callable(getattr(readback, 'download_video', None)), 'Original-video URL validation is missing')
         with tempfile.TemporaryDirectory() as tmp:
-            client=Mock(_context=Mock(request=Mock(get=AsyncMock())),page=Mock(goto=AsyncMock()))
+            client=Mock(_context=Mock(request=Mock(get=AsyncMock())),
+                        page=Mock(url=f'https://flow.google.com/project/{PROJECT}/edit/{MEDIA}',goto=AsyncMock()))
             clip=dict(media_id=MEDIA,workflow_id=WORKFLOW,project_id=PROJECT,bytes=2048,
                       video_url='https://lh3.googleusercontent.com/video=m22')
             with patch('gflow_cli.api.transports.migrated_recover._download_original_verified',new=AsyncMock(side_effect=readback.ReadbackUnavailable('unavailable'))):
                 with self.assertRaises(readback.ReadbackUnavailable):
                     await readback.download_video(client,clip,Path(tmp)/'video.mp4',deadline=10**12)
             client._context.request.get.assert_not_called()
+
+    async def test_native_original_control_requires_exact_clip_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            page=Mock(url=f'https://flow.google.com/project/{PROJECT}/edit/{OTHER}',goto=AsyncMock())
+            clip=dict(media_id=MEDIA,workflow_id=WORKFLOW,project_id=PROJECT,bytes=2048,video_url=None)
+            with patch('gflow_cli.api.transports.migrated_recover._download_original_verified',new=AsyncMock()) as download:
+                with self.assertRaises(readback.ReadbackIdentityError):
+                    await readback.download_video(Mock(page=page),clip,Path(tmp)/'video.mp4',deadline=10**12)
+                download.assert_not_awaited()
 
 
 class VideoSubmissionTests(unittest.IsolatedAsyncioTestCase):
