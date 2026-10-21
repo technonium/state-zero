@@ -57,7 +57,7 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(marker.read_text(), '{"state":"forwarded"}')
 
     async def test_original_image_recovery_uses_only_exact_verified_media(self):
-        from ops.flow_image_recover import download_existing
+        from ops.flow_media_recover import download_existing
         project = '11111111-1111-4111-8111-111111111111'
         media = '22222222-2222-4222-8222-222222222222'
         from types import SimpleNamespace

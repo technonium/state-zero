@@ -19,3 +19,150 @@ index fc9a11c9..7e17901f 100644
      return all(isinstance(node[i], str) and _UUID_RE.match(node[i]) for i in (0, 1, 2))
  
  
+--- a/src/gflow_cli/api/transports/batchexecute.py
++++ b/src/gflow_cli/api/transports/batchexecute.py
+@@ -269,6 +269,11 @@
+     )
+ 
+ 
++
++def _generation_records(rpcid: str, payload: Any) -> list[GenerationRecord]:
++    return [generation_record(rpcid,node) for node in _walk_lists(payload) if _is_record(node)]
++
++
+ def image_records(rpcid: str, payload: Any) -> list[ImageGenerationRecord]:
+     """Decode every completed image in the migrated ``ogiZ0b`` payload.
+ 
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -2249,6 +2249,10 @@
+                     status=status,
+                     route=route,
+                 )
++            if upload_record is not None:
++                upload_record.update(media_id=media_id,state="uploaded")
++                from flow_readback import note_upload_response
++                note_upload_response(upload_record,rpc=UPLOAD_RPC,http_status=status,body_readable=True,decoded=True)
+             log.info("migrated.frame_uploaded", media_id=media_id, status=status)
+             return media_id, display_name
+         finally:
+@@ -2722,6 +2726,21 @@
+         frame (``expect_end_media_id``) switches the submit to the interpolation
+         rpc (``nprQif``), whose name travels in the ``f.req`` body rather than the
+         URL; that body must carry the interpolation key and both frame ids."""
++        from gflow_cli.api.transports.batchexecute import _generation_records
++        data = getattr(self,"_shadow_video_context",None)
++        forwarded = set()
++        async def guard(route,request):
++            from flow_readback import guard_video,video_submit_rpc
++            rpc = video_submit_rpc(request)
++            if rpc not in SUBMIT_RPCS:
++                await route.continue_()
++                return
++            forwarded.add(request)
++            problem = await guard_video(route,request,data,rpc)
++            if problem:
++                forwarded.discard(request)
++                if not route_error.done():
++                    route_error.set_result(WireFormatError(detail=problem,route=f"batchexecute:{rpc}"))
+         loop = asyncio.get_running_loop()
+         submitted: asyncio.Future[GenerationRecord] = loop.create_future()
+         route_error: asyncio.Future[WireFormatError] = loop.create_future()
+@@ -2809,10 +2828,25 @@
+             # its id from the frame itself (measured 2026-09-17).
+             if rpcid is not None and rpcid not in SUBMIT_RPCS and rpcid not in STATUS_RPCS:
+                 return
++            correlated = (response.request in forwarded if data is not None and rpcid in SUBMIT_RPCS else
++                bool(workflow and any(value in _post_data(response.request) for value in workflow.values())))
++            if data is not None and rpcid in SUBMIT_RPCS and not correlated:
++                return
+             try:
+                 text = await response.text()
+-            except Exception:  # noqa: BLE001 - an aborted/streamed body is not our frame
++            except Exception as exc:
++                if correlated and data is not None:
++                    from flow_readback import note_video_response
++                    note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response,exc=exc)
++                    error=WireFormatError(detail=f"video_response_read_failed: {type(exc).__name__}: "
++                        +data["response"]["detail"],route=f"batchexecute:{rpcid}")
++                    target=terminal if workflow else submitted
++                    if not target.done():
++                        target.set_exception(error)
+                 return
++            if correlated and data is not None:
++                from flow_readback import note_video_response
++                note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response)
+             refusal = _submit_refusal(text, SUBMIT_RPCS)
+             # An envelope arriving after an accepted submit is ignored: that run's outcome
+             # is already decided, and it now belongs to the terminal wait.
+@@ -2826,12 +2860,26 @@
+                 # whose absence it is trying to explain (#639).
+                 seen_submit_rpcs.add(rid)
+                 if rid in SUBMIT_RPCS and not submitted.done():
++                    if data is not None and response.request not in forwarded:
++                        continue
+                     try:
+-                        rec = generation_record(rid, payload)
++                        records = [rec for rec in _generation_records(rid,payload) if not project_id or rec.project_id == project_id]
++                        if len(records) != 1:
++                            raise WireFormatError(detail="Video submit response has no unique result",route=f"batchexecute:{rid}")
++                        rec = records[0]
+                     except WireFormatError as exc:
+                         submitted.set_exception(exc)
+                         return
++                    if data is not None:
++                        from flow_readback import video_receipt,context_path,note_video_response
++                        try:
++                            video_receipt(data,rec,context_path(os.environ["GFLOW_SHADOW_SUBMIT_MARKER"]))
++                            note_video_response(data,phase="submit",rpc=rid,response=response,decoded=True)
++                        except Exception as exc:
++                            submitted.set_exception(exc)
++                            return
+                     workflow["id"] = rec.workflow_id
++                    workflow["media"] = rec.media_id
+                     log.info(
+                         "migrated.submit_observed",
+                         rpc=rid,
+@@ -2843,14 +2891,19 @@
+                     _settle(rec)
+                 elif rid in STATUS_RPCS and workflow:
+                     try:
+-                        rec = generation_record(rid, payload)
++                        records = [rec for rec in _generation_records(rid,payload)
++                            if rec.workflow_id == workflow["id"] and rec.media_id == workflow["media"]
++                            and (not project_id or rec.project_id == project_id)]
+                     except WireFormatError:
+                         continue
+-                    if rec.workflow_id != workflow["id"]:
++                    if len(records) != 1:
+                         continue
++                    rec = records[0]
+                     log.info("migrated.status", rpc=rid, status=rec.status, bytes=rec.size_bytes)
+                     _settle(rec)
+ 
++        if data is not None:
++            await page.route("**/*batchexecute*",guard)
+         page.on("response", on_response)
+         # Every body assertion lives in `on_request`, so the listener must be armed for
+         # all of them. Gating it on `expect_media_id` alone left `_r2v_body_problem`
+@@ -2940,6 +2993,10 @@
+                 submitted.exception()
+             page.remove_listener("response", on_response)
+             page.remove_listener("request", on_request)
++            if terminal.done() and not terminal.cancelled():
++                terminal.exception()
++            if data is not None:
++                await page.unroute("**/*batchexecute*",guard)
+ 
+     async def _verify_submit_target(self, page: Page, submit: Locator) -> None:
+         """Prove the submit button is visible and receives pointer events."""
+@@ -3406,6 +3463,9 @@
+                     f"credits on a run that would ignore them"
+                 ),
+             )
++    if os.getenv("GFLOW_SHADOW_SUBMIT_MARKER") and os.getenv("GFLOW_SHADOW_REQUEST_HASH"):
++        from flow_readback import prepare_video
++        composer._shadow_video_context = await prepare_video(page,pid,request.prompt,request.start_image,media_id)
+     record = await composer.submit_and_observe(
+         page,
+         poll_timeout_s=poll_timeout_s,

@@ -422,13 +422,13 @@ class RecoveryCommandTests(unittest.TestCase):
     def test_sdk_logging_cannot_corrupt_machine_readable_result(self):
         from contextlib import redirect_stdout, redirect_stderr
         import io
-        from ops import flow_image_recover
+        from ops import flow_media_recover
         async def download(*args, **kwargs): print('synthetic SDK diagnostic')
         output, errors = io.StringIO(), io.StringIO()
         with patch.object(sys, 'argv', ['recover', PROJECT, MEDIA, '/tmp/original.png']), \
-                patch.object(flow_image_recover, 'download_existing', new=AsyncMock(side_effect=download)), \
+                patch.object(flow_media_recover, 'download_existing', new=AsyncMock(side_effect=download)), \
                 redirect_stdout(output), redirect_stderr(errors):
-            self.assertEqual(flow_image_recover.main(), 0)
+            self.assertEqual(flow_media_recover.main(), 0)
         self.assertEqual(json.loads(output.getvalue())['status'], 'downloaded')
         self.assertIn('synthetic SDK diagnostic', errors.getvalue())
 

@@ -409,7 +409,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         diagnostic.write_text(json.dumps({'attempts': [{'number': 1}], 'result': result}))
         (self.root / 'flow_image_attempt_1.context.json').write_text('{}')
         client = FlowMediaClient()
-        with patch.object(client, '_notify_transition'), patch.object(client, '_readback_image') as read:
+        with patch.object(client, '_notify_transition'), patch.object(client, '_readback_media') as read:
             self.assertEqual(client._recover_pending('image', diagnostic, {'number': 1}, target), result)
             read.assert_not_called()
 
@@ -440,8 +440,10 @@ class DailyFlowPolicyTests(unittest.TestCase):
         diagnostic.write_text(json.dumps({'request_hash': request_hash, 'daily_policy': True,
             'attempts': [attempt], 'result': None if receipt_only else result,
             'original_sha256': hashlib.sha256(asset.read_bytes()).hexdigest()}))
-        (root / f'flow_{stage}_attempt_1.submit').write_text(json.dumps({'state': 'forwarded',
-            'selected_model': 'Nano Banana 2.1', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
+        (root / f'flow_{stage}_attempt_1.submit').write_text(
+            json.dumps({'state': 'forwarded', 'selected_model': 'Nano Banana 2.1',
+                        'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'})
+            if stage == 'image' else 'submit_attempted\n')
         if receipt_only:
             (root / 'flow_image_attempt_1.result.json').write_text(json.dumps(result | {
                 'request_hash': request_hash, 'profile': 'shadow', 'project_id': ''}))
@@ -458,7 +460,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                     target = root / ('generated_art.png' if stage == 'image' else 'generated_video.mp4')
                     frozen = (root / 'flow_inputs.json').read_bytes()
                     client = FlowMediaClient()
-                    for name in ('_run_json', '_recover_image', '_recover_video', '_readback_image', '_catalog_result'):
+                    for name in ('_run_json', '_recover_image', '_recover_video', '_readback_media', '_catalog_result'):
                         stack.enter_context(patch.object(client, name, side_effect=AssertionError('Remote work forbidden')))
                     stack.enter_context(patch.object(client, '_notify_transition'))
                     stack.enter_context(patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)))
@@ -489,7 +491,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                 asset.unlink() if state == 'missing' else asset.write_bytes(b'damaged')
                 client = FlowMediaClient()
                 with patch.object(client, '_recover_image') as download, \
-                        patch.object(client, '_readback_image') as read, \
+                        patch.object(client, '_readback_media') as read, \
                         patch.object(client, '_catalog_result') as catalog:
                     self.assertIsNone(client._recover_pending('image', diagnostic, attempt, root / 'art.png'))
                 download.assert_not_called(); read.assert_not_called(); catalog.assert_not_called()
@@ -542,7 +544,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                 client = FlowMediaClient()
                 with patch.object(client, '_generation_seconds', return_value=0), \
                         patch.object(client, '_run_json', side_effect=AssertionError('Submission forbidden')), \
-                        patch.object(client, '_readback_image', side_effect=AssertionError('Readback forbidden')), \
+                        patch.object(client, '_readback_media', side_effect=AssertionError('Readback forbidden')), \
                         patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)), \
                         patch('flow_media_client.subprocess.run', side_effect=AssertionError('Download/upscale forbidden')):
                     if stage == 'image':
@@ -610,7 +612,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                     self.save_image({}, output)
                 with patch.object(client, '_generate_image', side_effect=replace) as generate, \
                         patch.object(client, '_recover_image', side_effect=AssertionError('Expired download forbidden')), \
-                        patch.object(client, '_readback_image', side_effect=AssertionError('Expired readback forbidden')), \
+                        patch.object(client, '_readback_media', side_effect=AssertionError('Expired readback forbidden')), \
                         patch.object(client, '_notify_transition'):
                     client.generate_image({}, target)
                 generate.assert_called_once()

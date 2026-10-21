@@ -1,4 +1,4 @@
-"""Read existing Flow project media; this module never submits or uploads."""
+"""Bind private submission identity and recover exact, existing Flow media."""
 import asyncio
 import hashlib
 import json
@@ -45,6 +45,8 @@ def context_path(marker):
 
 def identity_hash(data):
     keys = ('version', 'request_hash', 'profile', 'project_id', 'baseline', 'seed', 'prompt_hash', 'model', 'aspect', 'count', 'attempt', 'frozen_inputs_sha256')
+    if data.get('kind') == 'video':
+        keys += ('kind', 'source_hash', 'frame_id', 'duration', 'wire_verified')
     return fingerprint(json.dumps({key: data[key] for key in keys}, sort_keys=True))
 
 
@@ -57,7 +59,8 @@ def decode_listing(payload, project):
         payload = payload[:1] + [[], []] + payload[3:]
     if (not isinstance(payload, list) or len(payload) != 8 or payload[0] is not None
             or any(payload[i] is not None for i in (4, 5, 6))
-            or not all(isinstance(payload[i], list) for i in (1, 2, 3, 7))):
+            or not all(isinstance(payload[i], list) for i in (1, 2, 3, 7))
+            or payload[3] or payload[7]):
         raise ReadbackUnavailable('Unrecognized or incomplete project listing')
     media = {}
     for row in payload[2]:
@@ -233,7 +236,7 @@ def prepare_upload(project, source, name):
         saved = json.loads(path.read_text())
         if any(saved.get(key) != value for key, value in data.items()):
             raise ReadbackIdentityError('Saved upload identity changed')
-        if saved.get('state') not in {'prepared', 'attempted', 'recovered'}:
+        if saved.get('state') not in {'prepared', 'attempted', 'uploaded', 'recovered'}:
             raise ReadbackIdentityError('Saved upload state invalid')
         return saved
     data.update(name=name, state='prepared', readback_deadline=None)
@@ -271,7 +274,7 @@ async def recover_saved_upload(page, project, source, record):
         if (record['project_id'] != project or record['profile'] != os.getenv('GFLOW_PROFILE', 'shadow')
                 or hashlib.sha256(source.read_bytes()).hexdigest() != record['source_hash']):
             raise ReadbackIdentityError('Saved upload identity changed')
-        if record['state'] == 'recovered':
+        if record['state'] in {'uploaded', 'recovered'}:
             if not re.fullmatch(r'[0-9a-f-]{36}', record.get('media_id', '')):
                 raise ReadbackIdentityError('Saved upload media identity invalid')
             return record['media_id']
@@ -292,7 +295,7 @@ def receipt_path(context_file):
     return context_file.with_name(context_file.name.removesuffix('.context.json') + '.result.json')
 
 
-async def recover_context(client, context_file, project, request_hash, deadline, output):
+async def recover_context(client, context_file, project, request_hash, deadline, output, *, media_id=None, workflow_id=None):
     started = time.time()
     marker = context_file.with_name(context_file.name.removesuffix('.context.json') + '.submit')
     try:
@@ -309,41 +312,75 @@ async def recover_context(client, context_file, project, request_hash, deadline,
     number = re.search(r'_attempt_(\d+)\.submit$', marker.name)
     if not number or data.get('attempt') != int(number[1]):
         raise ReadbackIdentityError('Saved attempt identity changed')
-    if (evidence.get('state') != 'forwarded' or evidence.get('actual_model') != 'BELUGA'
+    video = data.get('kind') == 'video'
+    if video:
+        try:
+            source_hash=hashlib.sha256(context_file.with_name('flow_start_frame.png').read_bytes()).hexdigest()
+        except OSError:
+            raise ReadbackIdentityError('Saved video frame unavailable') from None
+        if (source_hash != data.get('source_hash')
+                or evidence.get('state') != 'forwarded' or evidence.get('actual_model') != data.get('model')
+                or evidence.get('readback_hash') != identity_hash(data)):
+            raise ReadbackIdentityError('Submitted video identity differs')
+    elif (evidence.get('state') != 'forwarded' or evidence.get('actual_model') != 'BELUGA'
             or evidence.get('selected_model') != 'Nano Banana 2.1' or evidence.get('expected_model') != 'NARWHAL'
             or evidence.get('readback_hash') != identity_hash(data)):
         raise ReadbackIdentityError('Submitted request not verified')
     deadline = min(deadline, data.get('recovery_deadline') or deadline)
     data['recovery_deadline'] = deadline
     save(context_file, data)
-    if data.get('baseline') is None:
+    if data.get('baseline') is None and not video:
         raise ReadbackUnavailable('Baseline unavailable')
     while time.time() < deadline:
         try:
             listing = await snapshot(client._context, project, deadline)
             data['listed_media_count'] = len(listing['ids'])
-            image = select_image(listing, data)
-            receipt = {'request_hash': request_hash, 'profile': data['profile'], 'project_id': project,
-                       'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': image.media_id,
-                       'workflow_id': image.workflow_id, 'model_name_type': 'BELUGA',
-                       'aspect_ratio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'}]}
+            if video:
+                receipt_file=receipt_path(context_file)
+                known=json.loads(receipt_file.read_text()) if receipt_file.exists() else {}
+                if known and any(known.get(k)!=data[k] for k in ('request_hash','profile','project_id')):
+                    raise ReadbackIdentityError('Video receipt identity changed')
+                if known and (media_id and known.get('media_id') != media_id or
+                              workflow_id and known.get('workflow_id') != workflow_id):
+                    raise ReadbackIdentityError('Known video result conflicts with receipt')
+                clip=select_video(listing,data,media_id=known.get('media_id') or media_id,
+                                  workflow_id=known.get('workflow_id') or workflow_id)
+                from types import SimpleNamespace
+                receipt=video_receipt(data,SimpleNamespace(**clip),context_file)
+                receipt['local_path']=str(output)
+                save(receipt_path(context_file),receipt)
+                if known.get('sha256'):
+                    clip['sha256']=known['sha256']
+                await asyncio.wait_for(download_video(client,clip,output,deadline=deadline),max(.001,deadline-time.time()))
+                receipt.update(local_path=str(output),sha256=hashlib.sha256(output.read_bytes()).hexdigest())
+            else:
+                image = select_image(listing, data)
+                receipt = {'request_hash': request_hash, 'profile': data['profile'], 'project_id': project,
+                           'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': image.media_id,
+                           'workflow_id': image.workflow_id, 'model_name_type': 'BELUGA',
+                           'aspect_ratio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'}]}
+                save(receipt_path(context_file), receipt)
+                await asyncio.wait_for(download_image(client, image, output),max(.001,deadline-time.time()))
+                receipt['images'][0]['local_path'] = str(output)
             save(receipt_path(context_file), receipt)
-            data['readback'] = 'exact_image_recovered'
-            data['media_id'] = image.media_id
-            data.update(candidate_count=1, elapsed_seconds=round(time.time() - started, 3))
-            save(context_file, data)
-            await download_image(client, image, output)
-            receipt['images'][0]['local_path'] = str(output)
-            save(receipt_path(context_file), receipt)
+            data.update(readback='exact_video_recovered' if video else 'exact_image_recovered',
+                        candidate_count=1, elapsed_seconds=round(time.time()-started,3))
+            save(context_file,data)
             return receipt
         except ReadbackIdentityError:
             raise
-        except ReadbackUnavailable:
-            await asyncio.sleep(min(3, max(0, deadline - time.time())))
+        except Exception as exc:
+            # The original generation error stays in adapter diagnostics.
+            data['recovery_errors']=(data.get('recovery_errors',[])+[{'phase':'readback_download','class':type(exc).__name__,
+                'detail':str(exc)[:200] if isinstance(exc,ReadbackUnavailable) else type(exc).__name__}])[-8:]
+            save(context_file,data)
+            if not isinstance(exc,ReadbackUnavailable):
+                raise
+            await asyncio.sleep(min(3,max(0,deadline-time.time())))
     data['readback'] = 'unavailable'
     data['elapsed_seconds'] = round(time.time() - started, 3)
     save(context_file, data)
-    raise ReadbackUnavailable('Image recovery deadline exhausted')
+    raise ReadbackUnavailable('Media recovery deadline exhausted')
 
 
 async def download_image(client, image, output):
@@ -380,3 +417,239 @@ async def download_image(client, image, output):
         temporary.replace(output)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def select_video(listing, data, *, media_id=None, workflow_id=None):
+    """Select one completed original using recorded identities, never list order."""
+    from gflow_cli.api.transports.batchexecute import generation_record
+    from gflow_cli.errors import WireFormatError
+    model = 'veo_3_1_i2v_s_fast_portrait'
+    if (data.get('model') != model or data.get('aspect') != 'portrait'
+            or data.get('count') != 1 or data.get('duration') != 8):
+        raise ReadbackIdentityError('Saved video settings differ')
+    if not media_id and (data.get('baseline') is None or not data.get('frame_id')
+                         or not data.get('prompt_hash') or not data.get('wire_verified')):
+        raise ReadbackUnavailable('Video discovery identity unavailable')
+    if data.get('baseline') is not None and (not isinstance(data['baseline'],list)
+            or any(not isinstance(value,str) for value in data['baseline'])):
+        raise ReadbackIdentityError('Video baseline is corrupt')
+    matches = []
+    for row in listing['media'].values():
+        try:
+            record = generation_record('Zzl0ze', row)
+        except WireFormatError:
+            continue
+        if media_id and record.workflow_id == media_id and record.media_id != media_id:
+            raise ReadbackIdentityError('Video media/workflow identities were interchanged')
+        if media_id and record.media_id != media_id:
+            continue
+        if workflow_id and record.workflow_id != workflow_id:
+            raise ReadbackIdentityError('Video workflow identity differs')
+        if record.project_id != data.get('project_id'):
+            raise ReadbackIdentityError('Video project identity differs')
+        try:
+            settings = row[5][6][1]
+            frames = settings[1]
+            seed = row[7][0][1]
+            duration = row[7][1][2][0]
+            valid_settings = settings[0][0] == model and settings[0][2] == [1] and duration == 8
+            bound_frame = len(frames) == 1 and frames[0][1] == 1 and frames[0][2] == data.get('frame_id')
+            same_prompt = fingerprint(row[5][1]) == data.get('prompt_hash')
+        except (IndexError, TypeError, KeyError):
+            if media_id:
+                raise ReadbackIdentityError('Video listing structure differs') from None
+            continue
+        identity_matches = (not data.get('frame_id') or bound_frame) and (not data.get('prompt_hash') or same_prompt)
+        if data.get('seed') is not None:
+            identity_matches = identity_matches and seed == data['seed']
+        if not valid_settings or not identity_matches:
+            if media_id:
+                raise ReadbackIdentityError('Known video inputs or settings differ')
+            continue
+        if not media_id and record.workflow_id in data['baseline']:
+            continue
+        if record.is_failed:
+            raise ReadbackIdentityError('Exact video reports provider failure; reconcile its verdict')
+        if not record.is_done or not record.size_bytes:
+            continue
+        matches.append({'media_id':record.media_id, 'workflow_id':record.workflow_id,
+                        'project_id':record.project_id, 'bytes':record.size_bytes,
+                        'video_url':record.video_url})
+    if len(matches) != 1:
+        raise ReadbackUnavailable('Exact video absent or ambiguous')
+    return matches[0]
+
+
+async def download_video(client, clip, output, *, deadline):
+    """Download a proven original; keep signed URLs in memory only."""
+    from gflow_cli.api.transports.migrated_recover import _download_original_verified
+    from flow_media_client import FlowMediaClient
+    if time.time() >= deadline:
+        raise ReadbackUnavailable('Video download deadline exhausted')
+    expected = clip.get('bytes')
+    if type(expected) is not int or not 0 < expected <= 100 * 1024 * 1024:
+        raise ReadbackIdentityError('Original video size unavailable')
+    address = urlsplit(clip.get('video_url') or '')
+    if (address.scheme == 'https' and address.hostname == 'flow-content.google'
+            and address.port in (None,443) and address.username is None and address.password is None
+            and address.path == '/video/' + clip['workflow_id']):
+        response = await client._context.request.get(clip['video_url'], max_redirects=0,
+            timeout=max(1,(deadline-time.time())*1000))
+        if response.status != 200:
+            raise ReadbackUnavailable('Original video download unavailable')
+        body = await response.body()
+    else:
+        await client.page.goto(f'https://flow.google.com/project/{clip["project_id"]}/edit/{clip["media_id"]}',
+                              wait_until='domcontentloaded',timeout=max(1,min(60000,(deadline-time.time())*1000)))
+        body = await asyncio.wait_for(_download_original_verified(client.page,expected=expected,
+            media_id=clip['media_id']),max(.001,deadline-time.time()))
+    if len(body) != expected or body[4:8] != b'ftyp':
+        raise ReadbackUnavailable('Original video bytes do not match its receipt')
+    if clip.get('sha256') and hashlib.sha256(body).hexdigest() != clip['sha256']:
+        raise ReadbackIdentityError('Original video checksum changed')
+    output.parent.mkdir(parents=True,exist_ok=True)
+    temporary = output.with_name(output.stem+'.download'+output.suffix)
+    try:
+        temporary.write_bytes(body)
+        remaining=deadline-time.time()
+        if remaining <= 0:
+            raise ReadbackUnavailable('Video validation deadline exhausted')
+        try:
+            width,height,duration,audio=FlowMediaClient._probe_video(temporary,timeout=min(30,remaining))
+        except Exception as exc:
+            raise ReadbackUnavailable('Original video cannot be decoded') from exc
+        if (width,height) not in ((720,1280),(1080,1920)) or not 7.5<=duration<=8.5 or not audio:
+            raise ReadbackUnavailable('Original video properties differ')
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+async def prepare_video(page, project, prompt, source, frame_id):
+    marker = os.getenv('GFLOW_SHADOW_SUBMIT_MARKER')
+    request_hash = os.getenv('GFLOW_SHADOW_REQUEST_HASH', '')
+    if not marker or not re.fullmatch('[0-9a-f]{64}', request_hash):
+        return None
+    path = context_path(marker)
+    number = re.search(r'_attempt_(\d+)\.submit$', marker)
+    if not number or not source or not frame_id:
+        raise ReadbackIdentityError('Video attempt identity unavailable')
+    fixed = dict(version=1, kind='video', attempt=int(number[1]), request_hash=request_hash,
+                 project_id=project, profile=os.getenv('GFLOW_PROFILE', 'shadow'),
+                 frozen_inputs_sha256=hashlib.sha256(path.with_name('flow_inputs.json').read_bytes()).hexdigest(),
+                 source_hash=hashlib.sha256(source.read_bytes()).hexdigest(), frame_id=frame_id,
+                 prompt_hash=fingerprint(prompt), model='veo_3_1_i2v_s_fast_portrait',
+                 aspect='portrait', count=1, duration=8)
+    if path.exists():
+        previous = json.loads(path.read_text())
+        if Path(marker).exists() or any(previous.get(k) != v for k,v in fixed.items()):
+            raise ReadbackIdentityError('Video attempt context conflicts')
+        return previous
+    data = fixed | dict(baseline_deadline=time.time()+30, baseline=None, wire_verified=False,
+                        seed=None, recovery_deadline=None)
+    save(path,data)
+    try:
+        data['baseline'] = (await snapshot(page.context,project,data['baseline_deadline']))['ids']
+    except ReadbackUnavailable:
+        data['readback'] = 'baseline_unavailable'
+    save(path,data)
+    return data
+
+
+def _video_request_rows(body):
+    encoded = parse_qs(body).get('f.req',[None])[0] or body.split('f.req=',1)[1]
+    outer = json.JSONDecoder().raw_decode(encoded)[0]
+    return [row for group in outer for row in group]
+
+
+def video_submit_rpc(request):
+    from gflow_cli.api.transports.migrated_composer import SUBMIT_RPCS
+    try:
+        for row in _video_request_rows(request.post_data or ''):
+            if row[0] in SUBMIT_RPCS:
+                return row[0]
+    except (ValueError,TypeError,IndexError,KeyError):
+        pass
+    for rpc in parse_qs(urlsplit(request.url).query).get('rpcids', [''])[0].split(','):
+        if rpc in SUBMIT_RPCS:
+            return rpc
+    return None
+
+
+async def guard_video(route, request, data, rpc):
+    """One forwarding transition, with durable identity before any paid request."""
+    marker = Path(os.environ['GFLOW_SHADOW_SUBMIT_MARKER'])
+    problem = None
+    try:
+        if marker.read_text() != 'submit_attempted\n':
+            raise ReadbackIdentityError('Existing video submission requires reconciliation')
+        from gflow_cli.api.transports.migrated_composer import _i2v_body_problem
+        body = request.post_data or ''
+        problem = _i2v_body_problem(body,rpc,data['frame_id'])
+        try:
+            rows = _video_request_rows(body)
+            payload = json.loads(rows[0][1]) if len(rows) == 1 and rows[0][0] == rpc else None
+            row = payload[0][0]
+            if len(payload) == 3 and isinstance(payload[0],list) and len(payload[0]) != 1:
+                problem = 'Video actual output count differs'
+            recognized = len(payload) == 3 and len(payload[0]) == 1 and len(row) == 6
+            if not recognized:
+                problem = 'Video actual request structure is unverified'
+            if recognized:
+                if (rpc != 'eb1hJf' or row[1] != data['model'] or row[2] != 1
+                        or row[4][1] != data['frame_id'] or payload[1][5] != data['project_id']
+                        or fingerprint(row[0][2][0][0][0]) != data['prompt_hash']
+                        or row[3] is not None and (type(row[3]) is not int or not 0 <= row[3] < 2**32)):
+                    problem = 'Video actual request inputs or settings differ'
+                else:
+                    data.update(wire_verified=True, seed=row[3])
+        except (ValueError,TypeError,IndexError,KeyError):
+            data['wire_verified'] = False
+            problem = 'Video actual request structure is unverified'
+        save(context_path(marker),data)
+        evidence = {'version':1, 'state':'blocked_before_submission' if problem else 'forwarded',
+                    'readback_hash':identity_hash(data), 'actual_model':data['model']}
+        if problem:
+            evidence['reason'] = 'video_request_settings_mismatch'
+        save(marker,evidence)
+    except (OSError,ValueError,KeyError) as exc:
+        problem = 'Video evidence unavailable; reconciliation required: '+type(exc).__name__
+    if problem:
+        await route.abort()
+    else:
+        await route.continue_()
+    return problem
+
+
+def video_receipt(data, record, context_file):
+    if record.project_id != data['project_id']:
+        raise ReadbackIdentityError('Video result project differs')
+    result = {'request_hash':data['request_hash'], 'profile':data['profile'],
+              'project_id':data['project_id'], 'media_id':record.media_id, 'workflow_id':record.workflow_id,
+              'succeeded':True, 'request':{'count':1,'model':'veo_3_1_fast','mode':'i2v','aspect':'portrait'}}
+    path = receipt_path(context_file)
+    if path.exists():
+        previous=json.loads(path.read_text())
+        if any(previous.get(k)!=v for k,v in result.items()):
+            raise ReadbackIdentityError('Video result identity changed')
+        result=previous
+    save(path,result)
+    return result
+
+
+def note_video_response(data, *, phase, rpc, response, exc=None, decoded=False):
+    if data is None:
+        return
+    fields=dict(phase=phase,rpc=rpc,http_status=response.status,
+                body_readable=exc is None,decoded=decoded)
+    if exc is not None:
+        from gflow_cli.data.redaction import redact_error_detail
+        import sys
+        detail=str(exc).split('\n',1)[0]
+        for argument in sys.argv[1:]:
+            if len(argument)>10:
+                detail=detail.replace(argument,'[private argument]')
+        fields.update(error_class=type(exc).__name__,detail=re.sub(r'https?://\S+','[url]',redact_error_detail(detail))[:300])
+        data.setdefault('original_response_failure',fields.copy())
+    data['response']=fields
+    note_response(data,**fields)
