@@ -59,7 +59,7 @@ class ExecutionHardeningTests(unittest.TestCase):
     def test_upload_error_name_does_not_invent_policy_rejection(self):
         payload = {'status': 'error', 'error': {'class': 'MediaUploadRejectedError',
             'detail': 'migrated host: maseQ answered 200 without a media id'}}
-        with patch('flow_media_client.subprocess.run', return_value=subprocess.CompletedProcess([], 27, json.dumps(payload), '')):
+        with patch('flow_media_client.run_bounded', return_value=subprocess.CompletedProcess([], 27, json.dumps(payload), '')):
             with self.assertRaises(FlowCommandError) as error:
                 FlowMediaClient._run_json(['gflow', 'video'], 10)
         self.assertEqual(error.exception.category, 'pre_submit_transient')
@@ -360,7 +360,7 @@ class ExecutionHardeningTests(unittest.TestCase):
             target.write_bytes(b'valid-video')
         with patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'true'}), \
                 patch.object(FlowMediaClient, '_generation_seconds', return_value=7200), \
-                patch('flow_media_client.subprocess.run', return_value=subprocess.CompletedProcess([], 27, json.dumps(payload), '')) as flow, \
+                patch('flow_media_client.run_bounded', return_value=subprocess.CompletedProcess([], 27, json.dumps(payload), '')) as flow, \
                 patch.object(GoogleVideoClient, 'generate_from_image', side_effect=video) as api, \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080, 1920, 8, True)), \
                 patch.object(FlowMediaClient, '_notify_transition'):

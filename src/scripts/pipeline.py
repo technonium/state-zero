@@ -28,6 +28,7 @@ from utils import (
     ensure_path,
     pipeline_seconds_remaining,
     run_bounded,
+    sanitize_error,
     get_pipeline_run_date_str,
     get_live_vps_config_error,
     load_project_dotenv,
@@ -761,6 +762,8 @@ class WHOOPPipeline:
         details_tail: str = None,
         failure_classification: str | None = None,
     ):
+        error_msg = sanitize_error(error_msg)
+        details_tail = sanitize_error(details_tail) if details_tail else None
         if self.post_to_instagram and self.daily_run.is_owner():
             try:
                 self.daily_run.mark_fatal_failure(
@@ -1666,14 +1669,17 @@ class WHOOPPipeline:
 
     def _telegram_api(self, method: str, *, data=None, files=None, timeout=60, use_get=False) -> dict:
         url = f'https://api.telegram.org/bot{self.bot_token}/{method}'
-        if use_get:
-            resp = requests.get(url, params=data or {}, timeout=timeout)
-        else:
-            resp = requests.post(url, data=data or {}, files=files, timeout=timeout)
+        try:
+            if use_get:
+                resp = requests.get(url, params=data or {}, timeout=timeout)
+            else:
+                resp = requests.post(url, data=data or {}, files=files, timeout=timeout)
+        except requests.RequestException as exc:
+            raise RuntimeError(f'Telegram {method}: {type(exc).__name__}: {sanitize_error(str(exc))}') from None
 
         payload = resp.json()
         if not payload.get('ok'):
-            raise RuntimeError(f'Telegram API {method} failed: {payload}')
+            raise RuntimeError(f'Telegram API {method} failed (HTTP {resp.status_code})')
         return payload
 
     def _get_latest_update_id(self) -> int:
@@ -1688,7 +1694,7 @@ class WHOOPPipeline:
             if updates:
                 return int(updates[-1].get('update_id', 0))
         except Exception as e:
-            print(f"{Fore.YELLOW}⚠ Could not fetch Telegram update cursor: {e}{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}⚠ Could not fetch Telegram update cursor: {sanitize_error(str(e))}{Style.RESET_ALL}")
         return 0
 
     def _send_telegram_message(self, text: str) -> int | None:
@@ -2174,7 +2180,7 @@ class WHOOPPipeline:
                     return manual_assets
             except Exception as e:
                 poll_error_streak += 1
-                print(f"{Fore.YELLOW}⚠ Telegram polling error: {e}{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}⚠ Telegram polling error: {sanitize_error(str(e))}{Style.RESET_ALL}")
                 now_epoch = time.time()
                 if poll_error_streak >= 3 and (now_epoch - last_poll_warning_epoch) >= 300:
                     notifier = get_notifier()

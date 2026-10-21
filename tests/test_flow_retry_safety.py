@@ -422,7 +422,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
                 result = subprocess.CompletedProcess([], 1, stdout=json.dumps({
                     'status': 'fail', 'failure_reasons': [reason],
                     'error': {'class': 'ServiceError', 'retryable': True, 'detail': 'Unavailable'}}))
-                with patch('flow_media_client.subprocess.run', return_value=result) as flow, \
+                with patch('flow_media_client.run_bounded', return_value=result) as flow, \
                         patch('google_image_client.GoogleImageClient.generate_from_json') as api:
                     with self.assertRaises(FlowCommandError):
                         FlowMediaClient().generate_image({}, Path(tmp) / 'art.png')

@@ -20,6 +20,8 @@ from emergency_fallback_manager import EmergencyFallbackManager, PORTFOLIO_MEDIA
 from pipeline import WHOOPPipeline
 from portfolio_metadata import build_metadata, media_revision, publish_metadata
 
+TOOL_PATH = os.environ.get('PATH', os.defpath)
+
 
 class FallbackPortfolioDeliveryTests(unittest.TestCase):
     def setUp(self):
@@ -30,6 +32,7 @@ class FallbackPortfolioDeliveryTests(unittest.TestCase):
         self.public = self.root / 'public'
         self.addCleanup(os.umask, os.umask(0o077))
         self.env = patch.dict(os.environ, {
+            'PATH': TOOL_PATH,
             'STATE_ZERO_PRIVATE_ROOT': str(self.private), 'EMERGENCY_FALLBACK_ENABLED': 'true',
             'VPS_PUBLIC_BASE_URL': 'https://media.example.test', 'PIPELINE_MEDIA_MODE': 'live_vps',
             'VPS_SSH_HOST': 'media.example.test', 'VPS_SSH_USER': 'fixture', 'VPS_SSH_PATH': str(self.public),

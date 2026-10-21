@@ -721,7 +721,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
             with self.subTest(reasons=reasons):
                 payload = {'status': 'error', 'failure_reasons': reasons,
                            'error': {'class': 'ServiceError', 'detail': 'Unavailable', 'retryable': True}}
-                with patch('flow_media_client.subprocess.run', return_value=subprocess.CompletedProcess(
+                with patch('flow_media_client.run_bounded', return_value=subprocess.CompletedProcess(
                         ['gflow'], 1, json.dumps(payload), '')):
                     with self.assertRaises(FlowCommandError) as caught:
                         FlowMediaClient._run_json(['gflow', 'image', 'test'], 10)

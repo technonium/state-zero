@@ -22,7 +22,7 @@ from typing import Optional
 
 import requests
 from zoneinfo import ZoneInfo
-from utils import load_project_dotenv
+from utils import load_project_dotenv, sanitize_error
 
 load_project_dotenv()
 
@@ -101,7 +101,7 @@ class Notifier:
     
     def _escape_html(self, text: str) -> str:
         """Escape text for Telegram HTML parse mode."""
-        return html.escape(text or "", quote=True)
+        return html.escape(sanitize_error(text), quote=True)
     
     def _should_send(self, dedupe_key: str) -> bool:
         """Check if notification should be sent (deduplication)."""
@@ -127,11 +127,12 @@ class Notifier:
         
         payload = resp.json()
         if not payload.get('ok'):
-            raise NotificationError(f"Telegram API {method} failed: {payload}")
+            raise NotificationError(f"Telegram API {method} failed (HTTP {resp.status_code})")
         return payload
     
     def _send_message(self, text: str, parse_mode: str = None) -> bool:
         """Send text message to Telegram with retry logic."""
+        text = sanitize_error(text)
         if not self._is_enabled():
             if os.getenv("FLOW_SHADOW_ALERTS_OWNED_BY_RUNNER") == "true":
                 return False
@@ -174,7 +175,7 @@ class Notifier:
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay * (attempt + 1))
                 else:
-                    LOCAL_LOG.error(f"Failed to send Telegram document after {self.max_retries} attempts: {e}")
+                    LOCAL_LOG.error(f"Failed to send Telegram document after {self.max_retries} attempts: {sanitize_error(str(e))}")
                     return False
         return False
     
@@ -202,7 +203,7 @@ class Notifier:
             bool: True if notification sent successfully
         """
         if not self.notify_errors:
-            LOCAL_LOG.info(f"Error notifications disabled. Would send: [{step}] {message}")
+            LOCAL_LOG.info(f"Error notifications disabled. Would send: [{step}] {sanitize_error(message)}")
             return False
         
         dedupe_key = self._make_dedupe_key(step, error_type, message)
@@ -223,8 +224,7 @@ class Notifier:
         text += f"<b>Message:</b> {message_escaped}\n"
         
         if details_tail:
-            details_escaped = self._escape_html(details_tail[-2000:])
-            text += f"\n<b>Details:</b>\n<pre>{details_escaped}</pre>"
+            text += "\nAdditional diagnostics retained privately."
         
         text += f"\n<i>{self._escape_html(timestamp)}</i>"
         
@@ -264,8 +264,7 @@ class Notifier:
         text += f"<b>Message:</b> {message_escaped}\n"
 
         if details_tail:
-            details_escaped = self._escape_html(details_tail[-1000:])
-            text += f"\n<b>Details:</b>\n<pre>{details_escaped}</pre>"
+            text += "\nAdditional diagnostics retained privately."
 
         text += f"\n<i>{self._escape_html(timestamp)}</i>"
 
@@ -507,7 +506,7 @@ def safe_send_telegram_message(text: str, run_date: str = None, context: str = '
         notifier = get_notifier()
         return notifier._send_message(text)
     except Exception as e:
-        LOCAL_LOG.warning(f"Telegram send failed{context}: {e}")
+        LOCAL_LOG.warning(f"Telegram send failed{context}: {sanitize_error(str(e))}")
         if run_date:
             LOCAL_LOG.warning(f"[RUN {run_date}] Telegram dispatch failure - pipeline continues automatically")
         return False
@@ -523,5 +522,5 @@ def safe_notify_status(run_date: str, status: str, message: str) -> bool:
         notifier = get_notifier()
         return notifier.notify_status(run_date, status, message)
     except Exception as e:
-        LOCAL_LOG.warning(f"Status notification failed: {e}")
+        LOCAL_LOG.warning(f"Status notification failed: {sanitize_error(str(e))}")
         return False

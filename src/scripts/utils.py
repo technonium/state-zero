@@ -37,6 +37,22 @@ def env_bool(name: str, default: bool = False) -> bool:
     return val.strip().lower() in ("1", "true", "yes", "on")
 
 
+def sanitize_error(text: str) -> str:
+    """Keep operational errors useful without exposing credentials or signed URLs."""
+    text = str(text or '')
+    text = re.sub(r'(https://api\.telegram\.org/(?:file/)?bot)[^/\s]+', r'\1[redacted]', text)
+    for key, value in os.environ.items():
+        if any(word in key.upper() for word in ('KEY', 'TOKEN', 'SECRET', 'PASSWORD')) and len(value) >= 8:
+            text = text.replace(value, '[redacted]')
+    text = re.sub(r'(?:(?:Authorization|Cookie|Set-Cookie)["\']?\s*[:=]\s*[^\r\n<>]+'
+                  r'|(?:Bearer|Basic|OAuth)\s+[^\s<>]+)',
+                  '[redacted]', text, flags=re.I)
+    text = re.sub(r'https?://[^\s<>"\']+',
+                  lambda match: re.sub(r'[?#].*', '?[redacted]',
+                      re.sub(r'(?<=//)[^/@]+@', '[redacted]@', match[0])), text)
+    return re.sub(r'(?:sk-(?:or-v1-)?[\w-]{10,}|AIza[\w-]+|ghp_[\w-]+)', '[redacted]', text)
+
+
 def pipeline_seconds_remaining(*, generation: bool = False, maximum: float = 600) -> float:
     import time
     deadline, _ = get_pipeline_deadline()
@@ -56,10 +72,22 @@ def run_bounded(command, *, timeout, **kwargs):
             stdout, stderr = child.communicate(timeout=timeout)
         except BaseException:
             try:
-                os.killpg(child.pid, signal.SIGKILL)
+                os.killpg(child.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            child.communicate()
+            needs_reap = False
+            try:
+                child.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                needs_reap = True
+            finally:
+                # The parent can exit before an owned descendant that ignored TERM.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if needs_reap:
+                child.communicate()
             raise
         return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
 

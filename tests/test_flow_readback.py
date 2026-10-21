@@ -416,7 +416,8 @@ class RecoveryCommandTests(unittest.TestCase):
         with patch('flow_media_client.subprocess.Popen', return_value=process), \
                 patch('flow_media_client.os.killpg') as kill:
             self.assertEqual(FlowMediaClient._recovery_command(['recover'], 1), (-1, {}))
-        kill.assert_called_once_with(1234, signal.SIGTERM)
+        self.assertEqual(kill.call_args_list, [unittest.mock.call(1234, signal.SIGTERM),
+                                             unittest.mock.call(1234, signal.SIGKILL)])
         self.assertEqual(process.communicate.call_count, 2)
 
     def test_sdk_logging_cannot_corrupt_machine_readable_result(self):

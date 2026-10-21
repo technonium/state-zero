@@ -44,6 +44,12 @@ def context():
 
 
 class VideoSelectionTests(unittest.TestCase):
+    def test_missing_discovery_baseline_is_unsupported_but_known_identity_still_recovers(self):
+        with self.assertRaises(readback.ReadbackUnsupported):
+            readback.select_video(listing(), context() | {'baseline':None})
+        result=readback.select_video(listing(),context() | {'baseline':None},media_id=MEDIA,workflow_id=WORKFLOW)
+        self.assertEqual(result['media_id'],MEDIA)
+
     def test_project_listing_may_contain_auxiliary_records(self):
         payload=[None,[],[video_row()],[[None]*5],None,None,None,[[None]*3]]
         result=readback.decode_listing(payload,PROJECT)

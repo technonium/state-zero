@@ -17,6 +17,7 @@ from PIL import Image
 
 from google_image_client import GoogleImageClient
 from google_video_client import GoogleVideoClient
+from utils import run_bounded, sanitize_error
 
 
 class FlowCommandError(RuntimeError):
@@ -603,41 +604,33 @@ class FlowMediaClient:
             command.append(known['media_id'])
             if known.get('workflow_id'):
                 command.append(known['workflow_id'])
-        remaining = deadline - time.time()
-        if remaining <= 0:
-            return None
-        code, payload = self._recovery_command(command, remaining)
-        if payload.get('status') == 'identity_unverified':
-            raise FlowCommandError(stage, 'request_identity_unverified', detail=f'Saved {stage} readback evidence requires reconciliation.')
-        if code != 0:
+        while time.time() < deadline:
+            code, payload = self._recovery_command(command, deadline - time.time())
+            if payload.get('status') == 'identity_unverified':
+                raise FlowCommandError(stage, 'request_identity_unverified', detail=f'Saved {stage} readback evidence requires reconciliation.')
+            if code == 0:
+                return payload.get('result')
             self._write_diagnostics(output.with_name(f'flow_{stage}_diagnostics.json'),
                 {'last_recovery_error':{'class':payload.get('error_class','RecoveryWorkerTimeout' if code == -1 else 'RecoveryWorkerError'),
                                         'phase':'project_readback_download'}})
-        return payload.get('result') if code == 0 else None
+            if payload.get('error_class') in {'ContentPolicyError', 'WafRejectionError',
+                    'AccountRestrictedError', 'RecaptchaError'}:
+                raise FlowCommandError(stage, 'provider_rejected', error_class=payload['error_class'],
+                                       detail='Flow recovery encountered a provider restriction; replacement is blocked.')
+            if payload.get('error_class') not in {'TargetClosedError', 'BrowserSessionClosedError',
+                    'ProfileLockedError', 'NetworkError', 'TimeoutError', 'ConnectionError', 'OSError'}:
+                return None
+            time.sleep(min(3, max(0, deadline - time.time())))
+        return None
 
     @staticmethod
     def _recovery_command(command: list[str], timeout: float) -> tuple[int, dict]:
-        import signal
-        with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                              start_new_session=True) as process:
-            try:
-                stdout, _ = process.communicate(timeout=max(.01, timeout))
-            except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.communicate(timeout=5)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    process.communicate()
-                return -1, {}
         try:
-            payload = json.loads(stdout)
+            process = run_bounded(command, timeout=max(.01, timeout))
+        except subprocess.TimeoutExpired:
+            return -1, {}
+        try:
+            payload = json.loads(process.stdout)
         except ValueError:
             return process.returncode, {}
         return process.returncode, payload if isinstance(payload, dict) else {}
@@ -769,7 +762,7 @@ class FlowMediaClient:
                 env['GFLOW_SHADOW_REQUEST_HASH'] = json.loads(marker.with_name(f'flow_{command[1]}_diagnostics.json').read_text())['request_hash']
                 timeout = min(timeout, max(.01, FlowMediaClient._generation_seconds()))
         try:
-            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False, env=env)
+            result = run_bounded(command, timeout=timeout, env=env)
         except subprocess.TimeoutExpired:
             submitted = bool(marker and marker.exists())
             raise FlowCommandError(command[1], "submission_uncertain" if submitted else "pre_submit_timeout",
@@ -803,10 +796,8 @@ class FlowMediaClient:
             for value in command[2:]:
                 if len(value) > 10 and not value.startswith("--"):
                     detail = detail.replace(value, "[redacted]")
-            detail = re.sub(r"https?://\S+|Bearer\s+\S+|(?:SAPISID|SID|Cookie)\s*[:=]\s*\S+|sk-or-v1-[\w-]+|AIza[\w-]+", "[redacted]", detail, flags=re.I)[:500]
-            for key, value in env.items():
-                if any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")) and len(value) >= 8:
-                    detail = detail.replace(value, "[redacted]")
+            detail = re.sub(r"https?://\S+|Bearer\s+\S+|(?:SAPISID|SID|Cookie)\s*[:=]\s*\S+|sk-or-v1-[\w-]+|AIza[\w-]+", "[redacted]", detail, flags=re.I)
+            detail = sanitize_error(detail)[:500]
             remote_operation_id = str(payload.get("operation_id") or "")
             operation_id = ''
             if marker is not None:

@@ -17,6 +17,10 @@ class ReadbackIdentityError(ReadbackUnavailable):
     pass
 
 
+class ReadbackUnsupported(ReadbackUnavailable):
+    pass
+
+
 def fingerprint(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -60,7 +64,7 @@ def decode_listing(payload, project):
     if (not isinstance(payload, list) or len(payload) != 8 or payload[0] is not None
             or any(payload[i] is not None for i in (4, 5, 6))
             or not all(isinstance(payload[i], list) for i in (1, 2, 3, 7))):
-        raise ReadbackUnavailable('Unrecognized or incomplete project listing')
+        raise ReadbackUnsupported('Unrecognized or incomplete project listing')
     media = {}
     for row in payload[2]:
         if (not isinstance(row, list) or len(row) not in (7, 8) or not isinstance(row[0], str)
@@ -111,9 +115,10 @@ async def snapshot(context, project, deadline):
                 for rpc, payload in parse_frames(await response.text()):
                     if rpc == 'Zzl0ze' and not future.done():
                         future.set_result(decode_listing(payload, project))
-            except Exception:
+            except Exception as exc:
                 if not future.done():
-                    future.set_exception(ReadbackUnavailable('Project response unavailable'))
+                    future.set_exception(exc if isinstance(exc, ReadbackUnsupported) else
+                                         ReadbackUnavailable('Project response unavailable'))
 
         def response_handler(response):
             task = asyncio.create_task(observe(response))
@@ -126,6 +131,8 @@ async def snapshot(context, project, deadline):
                             timeout=max(1, min(15000, (deadline - time.time()) * 1000)))
             return await asyncio.wait_for(asyncio.shield(future), max(.001, deadline - time.time()))
         except Exception as exc:
+            if isinstance(exc, ReadbackUnsupported):
+                raise
             last = ReadbackUnavailable(type(exc).__name__)
         finally:
             page.remove_listener('response', response_handler)
@@ -189,7 +196,7 @@ def bind_request(data, marker, payload, prompt):
 
 def select_image(listing, data):
     if data.get('baseline') is None:
-        raise ReadbackUnavailable('Baseline unavailable')
+        raise ReadbackUnsupported('Baseline unavailable')
     if (data.get('version') != 1 or not isinstance(data.get('baseline'), list)
             or any(not isinstance(item, str) for item in data['baseline'])
             or data.get('model') != 'BELUGA' or data.get('aspect') != 4 or data.get('count') != 1
@@ -329,7 +336,7 @@ async def recover_context(client, context_file, project, request_hash, deadline,
     data['recovery_deadline'] = deadline
     save(context_file, data)
     if data.get('baseline') is None and not video:
-        raise ReadbackUnavailable('Baseline unavailable')
+        raise ReadbackUnsupported('Baseline unavailable')
     while time.time() < deadline:
         try:
             listing = await snapshot(client._context, project, deadline)
@@ -373,7 +380,7 @@ async def recover_context(client, context_file, project, request_hash, deadline,
             data['recovery_errors']=(data.get('recovery_errors',[])+[{'phase':'readback_download','class':type(exc).__name__,
                 'detail':str(exc)[:200] if isinstance(exc,ReadbackUnavailable) else type(exc).__name__}])[-8:]
             save(context_file,data)
-            if not isinstance(exc,ReadbackUnavailable):
+            if isinstance(exc,ReadbackUnsupported) or not isinstance(exc,ReadbackUnavailable):
                 raise
             await asyncio.sleep(min(3,max(0,deadline-time.time())))
     data['readback'] = 'unavailable'
@@ -428,7 +435,7 @@ def select_video(listing, data, *, media_id=None, workflow_id=None):
         raise ReadbackIdentityError('Saved video settings differ')
     if not media_id and (data.get('baseline') is None or not data.get('frame_id')
                          or not data.get('prompt_hash') or not data.get('wire_verified')):
-        raise ReadbackUnavailable('Video discovery identity unavailable')
+        raise ReadbackUnsupported('Video discovery identity unavailable')
     if data.get('baseline') is not None and (not isinstance(data['baseline'],list)
             or any(not isinstance(value,str) for value in data['baseline'])):
         raise ReadbackIdentityError('Video baseline is corrupt')

@@ -71,7 +71,7 @@ class FlowProviderTests(unittest.TestCase):
         from flow_media_client import FlowMediaClient
 
         command = ["gflow", "image", "t2i", "private WHOOP prompt"]
-        with patch("flow_media_client.subprocess.run", side_effect=subprocess.TimeoutExpired(command, 1)):
+        with patch("flow_media_client.run_bounded", side_effect=subprocess.TimeoutExpired(command, 1)):
             with self.assertRaises(RuntimeError) as failure:
                 FlowMediaClient._run_json(command, 1)
         self.assertNotIn("private WHOOP prompt", str(failure.exception))
@@ -84,7 +84,7 @@ class FlowProviderTests(unittest.TestCase):
             marker.touch()
             payload = {"status": "fail", "error": {"class": "AuthExpiredError"}}
             result = subprocess.CompletedProcess([], 1, stdout=json.dumps(payload), stderr="")
-            with patch("flow_media_client.subprocess.run", return_value=result):
+            with patch("flow_media_client.run_bounded", return_value=result):
                 with self.assertRaises(FlowCommandError) as failure:
                     FlowMediaClient._run_json(["gflow", "video", "i2v"], 1, marker)
             self.assertEqual(failure.exception.category, "auth_required")
@@ -588,7 +588,7 @@ class SubmissionEvidenceTests(unittest.TestCase):
             result=subprocess.CompletedProcess([],7,stdout=json.dumps({'status':'fail','error':{'class':'WireFormatError','detail':'migrated host: image submit model differs from requested NARWHAL'}}),stderr='')
             for state,expected in [('blocked_before_submission','blocked_before_submission'),('forwarded','post_submit_error')]:
                 marker.write_text(json.dumps({'state':state}))
-                with patch('flow_media_client.subprocess.run',return_value=result):
+                with patch('flow_media_client.run_bounded',return_value=result):
                     with self.assertRaises(FlowCommandError) as failure:
                         FlowMediaClient._run_json(['gflow','image','t2i','private prompt'],1,marker)
                 self.assertEqual(failure.exception.category,expected)
@@ -598,7 +598,7 @@ class SubmissionEvidenceTests(unittest.TestCase):
         from flow_media_client import FlowMediaClient, FlowCommandError
         prompt='private WHOOP prompt';payload={'status':'fail','error':{'class':'WireFormatError','detail':prompt+' https://example.com/?Signature=secret Bearer secret'}}
         result=subprocess.CompletedProcess([],7,stdout=json.dumps(payload),stderr='')
-        with patch('flow_media_client.subprocess.run',return_value=result):
+        with patch('flow_media_client.run_bounded',return_value=result):
             with self.assertRaises(FlowCommandError) as failure:
                 FlowMediaClient._run_json(['gflow','image','t2i',prompt],1)
         self.assertNotIn(prompt,failure.exception.detail)
@@ -725,7 +725,7 @@ class UpgradeValidationTests(unittest.TestCase):
         payload = {'status': 'fail', 'error': {'class': 'RecaptchaMintError',
             'type': 'https://example/errors/recaptcha-mint', 'retryable': True}}
         result = subprocess.CompletedProcess([], 1, stdout=json.dumps(payload), stderr='')
-        with tempfile.TemporaryDirectory() as tmp, patch('flow_media_client.subprocess.run', return_value=result):
+        with tempfile.TemporaryDirectory() as tmp, patch('flow_media_client.run_bounded', return_value=result):
             marker = Path(tmp) / 'submit'
             with self.assertRaises(FlowCommandError) as pre:
                 FlowMediaClient._run_json(['gflow', 'image', 't2i'], 1, marker)

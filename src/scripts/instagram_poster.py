@@ -15,10 +15,10 @@ from typing import Optional, Tuple
 # Import token manager - works both as script and module
 try:
     from .instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
-    from .utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy
+    from .utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy, sanitize_error
 except ImportError:
     from instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
-    from utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy
+    from utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy, sanitize_error
 
 
 class InstagramPublishDiagnosticsError(RuntimeError):
@@ -639,11 +639,11 @@ class InstagramPoster:
             except requests.exceptions.RequestException as e:
                 if attempt < max_attempts - 1:
                     wait_time = backoff_seconds[attempt]
-                    print(f"⚠ Network error creating container: {e}")
+                    print(f"⚠ Network error creating container: {sanitize_error(str(e))}")
                     print(f"▶ Retrying in {wait_time}s... (attempt {attempt + 1}/{max_attempts})")
                     time.sleep(wait_time)
                     continue
-                message = f"Failed to create container after {max_attempts} attempts: {e}"
+                message = f"Failed to create container after {max_attempts} attempts: {sanitize_error(str(e))}"
                 diagnostics = self._base_diagnostics(
                     "create_container",
                     video_url=video_url,
@@ -788,7 +788,7 @@ class InstagramPoster:
                 delay = self._get_poll_retry_delay(transient_errors)
                 print(
                     "⚠ Transient network error while polling status "
-                    f"(streak {transient_errors}): {e}"
+                    f"(streak {transient_errors}): {sanitize_error(str(e))}"
                 )
                 if polls >= max_polls:
                     break
@@ -1031,7 +1031,7 @@ class InstagramPoster:
                 if attempt < max_retries - 1:
                     time.sleep(2)
                 else:
-                    print(f"⚠ Error fetching permalink: {e}")
+                    print(f"⚠ Error fetching permalink: {sanitize_error(str(e))}")
                     return None
         
         return None

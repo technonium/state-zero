@@ -63,9 +63,10 @@ def main():
                 result = asyncio.run(download_existing(args.project,args.media,args.output,video=args.video,
                     workflow_id=args.workflow,deadline=args.deadline))
     except (ValueError, KeyError, TypeError) as exc:
-        from flow_readback import ReadbackUnavailable, ReadbackIdentityError
+        from flow_readback import ReadbackUnavailable, ReadbackIdentityError, ReadbackUnsupported
         print(json.dumps({'status': 'identity_unverified' if isinstance(exc, ReadbackIdentityError)
-                          or not isinstance(exc, ReadbackUnavailable) else 'recovery_unavailable',
+                          or not isinstance(exc, ReadbackUnavailable) else
+                          'recovery_unsupported' if isinstance(exc, ReadbackUnsupported) else 'recovery_unavailable',
                           'error_class': type(exc).__name__}))
         return 3
     except Exception as exc:
