@@ -648,21 +648,32 @@ class FlowMediaClient:
             command.append(known['media_id'])
             if known.get('workflow_id'):
                 command.append(known['workflow_id'])
+        diagnostic=output.with_name(f'flow_{stage}_diagnostics.json')
+        saved=json.loads(diagnostic.read_text()) if diagnostic.exists() else {}
+        workers=saved.get('recovery_workers',{'version':1,'attempts':{}})
+        if workers.get('version')!=1:
+            raise FlowCommandError(stage,'request_identity_unverified')
+        count=workers['attempts'].setdefault(context_file.stem,{'invocations':0,'technical_failures':0})
+        technical_errors={'TargetClosedError','BrowserSessionClosedError','ProfileLockedError',
+            'NetworkError','TimeoutError','ConnectionError','OSError'}
         while time.time() < deadline:
+            count['invocations']+=1
+            self._write_diagnostics(diagnostic,{'recovery_workers':workers})
             code, payload = self._recovery_command(command, deadline - time.time())
             if payload.get('status') == 'identity_unverified':
                 raise FlowCommandError(stage, 'request_identity_unverified', detail=f'Saved {stage} readback evidence requires reconciliation.')
             if code == 0:
                 return payload.get('result')
-            self._write_diagnostics(output.with_name(f'flow_{stage}_diagnostics.json'),
-                {'last_recovery_error':{'class':payload.get('error_class','RecoveryWorkerTimeout' if code == -1 else 'RecoveryWorkerError'),
+            if code == -1 or payload.get('error_class') in technical_errors:
+                count['technical_failures']+=1
+            self._write_diagnostics(diagnostic,
+                {'recovery_workers':workers,'last_recovery_error':{'class':payload.get('error_class','RecoveryWorkerTimeout' if code == -1 else 'RecoveryWorkerError'),
                                         'phase':'project_readback_download'}})
             if payload.get('error_class') in {'ContentPolicyError', 'WafRejectionError',
                     'AccountRestrictedError', 'RecaptchaError'}:
                 raise FlowCommandError(stage, 'provider_rejected', error_class=payload['error_class'],
                                        detail='Flow recovery encountered a provider restriction; replacement is blocked.')
-            if payload.get('error_class') not in {'TargetClosedError', 'BrowserSessionClosedError',
-                    'ProfileLockedError', 'NetworkError', 'TimeoutError', 'ConnectionError', 'OSError'}:
+            if payload.get('error_class') not in technical_errors:
                 return None
             time.sleep(min(3, max(0, deadline - time.time())))
         return None

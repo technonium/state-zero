@@ -419,3 +419,31 @@ class InheritedClockTests(unittest.TestCase):
                 acquired=time.time()-20
                 with patch.dict(os.environ,{'STATE_ZERO_EXECUTION_FD':str(parent.fileno()),'STATE_ZERO_EXECUTION_ACQUIRED_AT':str(acquired)}):
                     with execution_lock() as child:self.assertEqual(child.acquired_at,acquired)
+
+class OperationalReviewTests(unittest.TestCase):
+    def test_worker_restarts_are_counted_across_the_original_attempt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);context=root/'flow_video_attempt_1.context.json';context.write_text('{}')
+            diagnostic=root/'flow_video_diagnostics.json';diagnostic.write_text('{}')
+            client=FlowMediaClient()
+            with patch.object(client,'_recovery_command',side_effect=[(3,{'error_class':'TargetClosedError'}),(0,{'result':{'media_id':'exact'}})]), \
+                    patch('flow_media_client.time.sleep'):
+                result=client._readback_media(context,'fingerprint',root/'video.mp4',__import__('time').time()+300,stage='video')
+            self.assertEqual(result,{'media_id':'exact'})
+            evidence=json.loads(diagnostic.read_text())['recovery_workers']
+            self.assertEqual(evidence['version'],1)
+            self.assertEqual(evidence['attempts'][context.stem]['invocations'],2)
+            self.assertEqual(evidence['attempts'][context.stem]['technical_failures'],1)
+            with patch.object(client,'_recovery_command',return_value=(0,{'result':{'media_id':'exact'}})):
+                client._readback_media(context,'fingerprint',root/'video.mp4',__import__('time').time()+300,stage='video')
+            self.assertEqual(json.loads(diagnostic.read_text())['recovery_workers']['attempts'][context.stem]['invocations'],3)
+
+    def test_repeated_busy_rescue_sends_one_actionable_alert(self):
+        from ops.run_rescue import main
+        from utils import ExecutionBusy,execution_lock_path
+        with tempfile.TemporaryDirectory() as tmp,patch.dict(os.environ,{'STATE_ZERO_PRIVATE_ROOT':tmp,'DISPLAY':':synthetic'}), \
+                patch('utils.execution_lock',side_effect=ExecutionBusy()),patch('utils.get_pipeline_run_date_str',return_value='2026-10-22'), \
+                patch('notifier.safe_notify_status',return_value=True) as notify:
+            execution_lock_path().parent.mkdir(parents=True,exist_ok=True)
+            self.assertEqual(main(),75);self.assertEqual(main(),75)
+            self.assertEqual(notify.call_count,1)

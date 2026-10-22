@@ -25,10 +25,13 @@ def main():
                 env=env, pass_fds=(lock.fileno(),)).returncode
     except ExecutionBusy:
         day = get_pipeline_run_date_str()
-        FlowMediaClient._write_diagnostics(execution_lock_path().parent / f'rescue-lock-{day}.json',
-            {'status': 'skipped_execution_busy', 'wait_seconds': 600})
-        safe_notify_status(day, 'RESCUE_EXECUTION_BUSY',
-            '14:00 rescue waited ten minutes for the active pipeline; human review required.')
+        diagnostic=execution_lock_path().parent / f'rescue-lock-{day}.json'
+        message='14:00 rescue waited ten minutes for the active pipeline; human review required.'
+        try:
+            FlowMediaClient._write_diagnostics(diagnostic,{'status':'skipped_execution_busy','wait_seconds':600})
+            FlowMediaClient()._notify_transition(diagnostic,'RESCUE_EXECUTION_BUSY',message)
+        except (OSError,ValueError,TypeError):
+            safe_notify_status(day,'RESCUE_EXECUTION_BUSY',message)
         return 75
 
 
