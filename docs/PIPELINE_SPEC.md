@@ -146,6 +146,9 @@ regular pipeline's publishing lifecycle.
 - Stop new generation by 13:30 IST, retaining thirty minutes for finalization. The
   14:00 rescue command `python3 ops/run_rescue.py` waits up to ten minutes for the
   shared execution lock, alerts if still busy, and never interrupts a publisher.
+  The pipeline entrypoint owns the lock; ordinary schedules must not wrap it in
+  another flock. Rescue may finish validated local normal artwork for five minutes
+  after ownership, without generation, remote recovery, or optional upscaling.
 - `EMERGENCY_FALLBACK_ENABLED=true` permits the existing private `error_404_v1`
   fallback package for eligible terminal failures. Its manifest and prehosted
   media must validate; missing fallback assets produce an alert rather than a

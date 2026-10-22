@@ -266,13 +266,13 @@ be unavailable; keep observed balances distinct from submission-based estimates.
 
 Use the regular pipeline entrypoint in the running `pipeline` service, not the
 isolated runner. Preserve one shared private execution lock across ordinary and
-rescue jobs. Keep automatic retries in the scheduler disabled; the application
+rescue jobs. The entrypoint acquires this lock; do not wrap it in a second flock. Keep automatic retries in the scheduler disabled; the application
 owns bounded media retries.
 
 | Job | Asia/Kolkata cron | Command inside the container |
 | --- | --- | --- |
-| Instagram token health | `30 6 * * *` | `python3 /app/ops/instagram_token_healthcheck.py` |
-| Normal window | `0,30 10-12 * * *` | `flock -n /opt/state-zero-private/runtime/state/pipeline-execution.lock xvfb-run -a python3 -u /app/src/scripts/pipeline.py` |
+| Instagram token health | `30 6 * * *` | `flock -n -E 0 /opt/state-zero-private/runtime/state/pipeline-execution.lock python3 -u /app/src/scripts/instagram_token_healthcheck.py` |
+| Normal window | `0,30 10-12 * * *` | `xvfb-run -a python3 -u /app/src/scripts/pipeline.py` |
 | Final normal trigger | `0 13 * * *` | Same command as the normal window |
 | Emergency rescue | `0 14 * * *` | `python3 -u /app/ops/run_rescue.py` |
 
@@ -357,3 +357,25 @@ After recovery, technical failures may use remaining Flow allowance and eligible
 API fallback. An ambiguous API generation POST cannot create another operation;
 accepted video operations resume polling/download. The isolated shadow runner's
 claim policy remains separate from production's daily retry policy.
+
+### Bounded completion and operator reconciliation
+
+Prompt preparation commits validated stages to private `prompt_progress.json` and
+resumes unchanged stages after a timeout. Do not edit prepared inputs after the
+media manifest has been frozen.
+
+At 14:00, rescue can finish an already validated local normal image/video pair
+for up to five minutes after taking ownership. It cannot generate prompts or
+media, recover remotely, or request an optional upscale. Publication uncertainty
+continues to block a second post after that window expires.
+
+For an unresolved publication, run
+`python3 /app/ops/instagram_publication_report.py YYYY-MM-DD` inside the container.
+It reads that date's receipt and exact container status without publishing,
+refreshing credentials, or changing reconciliation deadlines. A `PUBLISHED`
+container without a saved post ID still requires human reconciliation; do not
+reset it or associate a different post by title or recency.
+
+Retain the verified release image: the pinned Chrome package may become
+unavailable for a future rebuild, and Flow UI/model changes require reviewing
+the pinned patches and repeating acceptance before an upgrade.
