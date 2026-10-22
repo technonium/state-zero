@@ -272,7 +272,8 @@ async def recover_upload(page, project, source, record):
 
 
 async def recover_saved_upload(page, project, source, record):
-    from gflow_cli.errors import MediaUploadRejectedError, WireFormatError
+    from gflow_cli.errors import WireFormatError
+    from gflow_cli.api.transports.migrated_composer import UploadResponseUnavailableError
     if record['readback_deadline'] is None:
         record['readback_deadline'] = time.time() + 30
         save(upload_path(), record)
@@ -293,7 +294,7 @@ async def recover_saved_upload(page, project, source, record):
     except ReadbackUnavailable:
         record['readback'] = 'unavailable'
         save(upload_path(), record)
-        raise MediaUploadRejectedError(detail='upload_response_read_failed: exact upload readback unavailable',
+        raise UploadResponseUnavailableError(detail='Exact upload readback unavailable',
                                        status=200, route='batchexecute:maseQ') from None
 
 
@@ -647,19 +648,34 @@ def video_receipt(data, record, context_file):
     return result
 
 
-def note_video_response(data, *, phase, rpc, response, exc=None, decoded=False):
+def note_video_response(data, *, phase, rpc, response, exc=None, decoded=False, read_started=None, event_received=None):
     if data is None:
         return
     fields=dict(phase=phase,rpc=rpc,http_status=response.status,
                 body_readable=exc is None,decoded=decoded)
+    if read_started is not None:
+        fields['read_ms']=max(0,round((time.monotonic()-read_started)*1000))
+        if event_received is not None:
+            fields['event_to_read_ms']=max(0,round((read_started-event_received)*1000))
+    observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
+    key=f'{phase}:{rpc}:readable' if exc is None else f'{phase}:{rpc}:unreadable'
+    if not decoded and len(observation['counters'])<32:
+        observation['counters'][key]=min(100000,observation['counters'].get(key,0)+1)
     if exc is not None:
-        from gflow_cli.data.redaction import redact_error_detail
-        import sys
-        detail=str(exc).split('\n',1)[0]
-        for argument in sys.argv[1:]:
-            if len(argument)>10:
-                detail=detail.replace(argument,'[private argument]')
-        fields.update(error_class=type(exc).__name__,detail=re.sub(r'https?://\S+','[url]',redact_error_detail(detail))[:300])
+        detail=('Network.getResponseBody: body unavailable' if 'Network.getResponseBody' in str(exc)
+                else 'Response body unavailable')
+        fields.update(error_class=type(exc).__name__,detail=detail)
         data.setdefault('original_response_failure',fields.copy())
     data['response']=fields
     note_response(data,**fields)
+
+
+def note_video_lifecycle(data, event):
+    if data is None or event not in {'routing_active','routing_removed','request_finished','request_failed',
+            'page_closed','context_closed','browser_disconnected'}:
+        return
+    observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
+    observation['counters'][event]=min(100000,observation['counters'].get(event,0)+1)
+    observation['events']=(observation['events']+[{'event':event,'at':round(time.time(),3)}])[-24:]
+    observation['routing_active']=event=='routing_active' if event in {'routing_active','routing_removed'} else observation.get('routing_active',False)
+    note_response(data,observer=observation)

@@ -89,7 +89,7 @@ def call_google_gemini_generate_content(
     }
 
     try:
-        response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+        response = requests.post(url, headers=headers, json=payload, timeout=OpenRouterClient._remaining_timeout(timeout))
         response.raise_for_status()
     except requests.exceptions.HTTPError as e:
         raise LLMProviderError(
@@ -161,6 +161,14 @@ class OpenRouterClient:
         self.thinking_budget = thinking_budget or self.DEFAULT_THINKING_BUDGET
         self.fallback_api_key = fallback_api_key
         
+    @staticmethod
+    def _remaining_timeout(maximum):
+        deadline=os.getenv('STATE_ZERO_PROMPT_DEADLINE')
+        remaining=float(deadline)-time.time() if deadline else maximum
+        if remaining<=0:
+            raise TimeoutError('Prompt preparation budget exhausted')
+        return min(maximum,remaining)
+
     def generate(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
         Generate text using OpenRouter API.
@@ -184,9 +192,10 @@ class OpenRouterClient:
         try:
             for attempt in range(2 if deadline else 1):
                 if deadline:
+                    call_timeout = self._remaining_timeout(deadline)
                     previous_handler = signal.getsignal(signal.SIGALRM)
                     signal.signal(signal.SIGALRM, on_deadline)
-                    signal.setitimer(signal.ITIMER_REAL, deadline)
+                    signal.setitimer(signal.ITIMER_REAL, call_timeout)
                 try:
                     try:
                         return self._call_openrouter(prompt, system_prompt)
@@ -287,7 +296,7 @@ class OpenRouterClient:
                     f"⚠️  OpenRouter returned empty content — retrying in {wait}s "
                     f"(attempt {attempt + 2}/{total_attempts})..."
                 )
-                time.sleep(wait)
+                time.sleep(self._remaining_timeout(wait))
                 continue
 
             raise OpenRouterError(f"No content in response message after {total_attempts} attempts")
@@ -296,7 +305,7 @@ class OpenRouterClient:
         """Execute a single OpenRouter request, including 429 retry handling."""
         timeout = int(os.getenv("OPENROUTER_CALL_DEADLINE_SECONDS", "0")) or 120
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+            response = requests.post(url, headers=headers, json=payload, timeout=self._remaining_timeout(timeout))
             response.raise_for_status()
         except requests.exceptions.Timeout as exc:
             raise OpenRouterTimeoutError(f"Request timed out after {timeout} seconds") from exc
@@ -307,9 +316,9 @@ class OpenRouterClient:
                 except (ValueError, TypeError):
                     retry_after = 10
                 print(f"⏳ OpenRouter 429 — retrying in {retry_after}s...")
-                time.sleep(retry_after)
+                time.sleep(self._remaining_timeout(retry_after))
                 try:
-                    response = requests.post(url, headers=headers, json=payload, timeout=timeout)
+                    response = requests.post(url, headers=headers, json=payload, timeout=self._remaining_timeout(timeout))
                     response.raise_for_status()
                 except requests.exceptions.Timeout as retry_e:
                     raise OpenRouterTimeoutError(f"Retry after 429 timed out after {timeout} seconds") from retry_e
@@ -373,7 +382,7 @@ class OpenRouterClient:
             temperature=self.temperature,
             max_output_tokens=self.max_tokens,
             thinking_budget=self.thinking_budget,
-            timeout=GEMINI_TIMEOUT_SECONDS,
+            timeout=self._remaining_timeout(GEMINI_TIMEOUT_SECONDS),
         )
         print(f"   ✅ Fallback response: {len(result)} chars")
         return result

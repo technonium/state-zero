@@ -326,7 +326,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
                         'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
             def command(cmd, **kwargs):
                 if 'flow_video_upscale.py' in str(cmd):
-                    Path(cmd[-1]).write_bytes(b'corrupt')
+                    Path(cmd[4]).write_bytes(b'corrupt')
                     return subprocess.CompletedProcess(cmd, 0, stdout='{"status":"downloaded"}')
                 Path(cmd[-1]).write_bytes(b'canonical')
                 return subprocess.CompletedProcess(cmd, 0)
@@ -337,7 +337,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
             with patch.object(FlowMediaClient, '_run_json', side_effect=generated), \
                     patch.object(FlowMediaClient, '_catalog_position', return_value=0), \
                     patch.object(FlowMediaClient, '_probe_video', side_effect=probe), \
-                    patch('flow_media_client.subprocess.run', side_effect=command):
+                    patch('flow_media_client.run_bounded', side_effect=command):
                 FlowMediaClient().generate_video('move', art, root / 'video.mp4')
             report = json.loads((root / 'flow_video_diagnostics.json').read_text())
             self.assertTrue(report['locally_scaled_to_1080p'])
@@ -346,7 +346,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
     def test_image_upscale_is_off_by_default_and_request_model_is_recorded(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), \
                 patch.object(FlowMediaClient, '_run_json', side_effect=self.image_response), \
-                patch('flow_media_client.subprocess.run') as upscale:
+                patch('flow_media_client.run_bounded') as upscale:
             FlowMediaClient().generate_image({'scene': 'cloud'}, Path(tmp) / 'art.png')
             upscale.assert_not_called()
             d = json.loads((Path(tmp) / 'flow_image_diagnostics.json').read_text())
@@ -405,7 +405,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
     def test_policy_detail_survives_a_later_invocation(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_API_FALLBACK_ENABLED': 'true'}, clear=True):
-            error = FlowCommandError('image', 'generation_failed', media_id='id', retryable=True,
+            error = FlowCommandError('image', 'provider_rejected', error_class='ContentPolicyError', media_id='id',
                                      detail='Safety policy rejected this generation')
             with patch.object(FlowMediaClient, '_run_json', side_effect=error) as flow, \
                     patch('google_image_client.GoogleImageClient.generate_from_json') as api:

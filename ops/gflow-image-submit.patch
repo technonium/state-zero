@@ -342,7 +342,7 @@ index 6b253ff3..339f6f5b 100644
 +                        note_upload_response(upload_record, body_readable=True, response_finished=True)
                  except Exception as exc:
                      from gflow_cli.data.redaction import redact_error_detail
-                     reply.set_exception(MediaUploadRejectedError(
+                     reply.set_exception(UploadResponseUnavailableError(
                          detail=f"upload_response_read_failed: HTTP 200 rpc={UPLOAD_RPC} {type(exc).__name__}: "
 @@ -2137,16 +2145,20 @@
              # A FilePayload, not a path: the display name Flow lists the asset under is

@@ -334,7 +334,7 @@ class InstalledVideoObserverTests(unittest.IsolatedAsyncioTestCase):
     async def test_completion_body_loss_retains_remote_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp)
-            with self.assertRaisesRegex(Exception,'video_response_read_failed'):
+            with self.assertRaisesRegex(Exception,'not terminal within the poll timeout'):
                 await self.observe(root,lose_completion=True)
             saved=json.loads((root/'flow_video_attempt_1.result.json').read_text())
             self.assertEqual((saved['media_id'],saved['workflow_id']),(MEDIA,WORKFLOW))

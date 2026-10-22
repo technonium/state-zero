@@ -56,7 +56,8 @@ def sanitize_error(text: str) -> str:
 def pipeline_seconds_remaining(*, generation: bool = False, maximum: float = 600) -> float:
     import time
     deadline, _ = get_pipeline_deadline()
-    remaining = deadline.timestamp() - time.time() - (1800 if generation else 0)
+    local_deadline = os.getenv('STATE_ZERO_LOCAL_ONLY_DEADLINE') if not generation else None
+    remaining = (float(local_deadline) if local_deadline else deadline.timestamp()) - time.time() - (1800 if generation else 0)
     if remaining <= 0:
         raise TimeoutError('Pipeline window exhausted; saved work is preserved.')
     return min(maximum, remaining)
@@ -379,3 +380,64 @@ def ensure_path(path: Path) -> Path:
     """Ensure an arbitrary directory exists."""
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+class ExecutionBusy(RuntimeError):
+    pass
+
+
+def execution_lock_path() -> Path:
+    # Profile ownership spans production and isolated output namespaces.
+    return get_runtime_root() / 'state' / 'pipeline-execution.lock'
+
+
+def verify_execution_fd(fd: int) -> None:
+    import fcntl
+    actual, expected = os.fstat(fd), execution_lock_path().stat()
+    if (actual.st_dev, actual.st_ino) != (expected.st_dev, expected.st_ino):
+        raise ValueError('Inherited execution descriptor is not the canonical lock')
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise ExecutionBusy('Canonical execution lock is owned by another process') from None
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def execution_lock(wait_seconds: float = 0):
+    import fcntl
+    import time
+    raw = os.environ.get('STATE_ZERO_EXECUTION_FD')
+    if raw is not None:
+        try:
+            fd = int(raw)
+            verify_execution_fd(fd)
+            os.set_inheritable(fd, False)
+            lock = os.fdopen(os.dup(fd), 'a')
+        except (ValueError, OSError) as exc:
+            raise ValueError('Invalid inherited execution ownership') from exc
+    else:
+        path = execution_lock_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = path.open('a')
+        os.chmod(path, 0o600)
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    lock.close()
+                    raise ExecutionBusy('Another pipeline owns execution') from None
+                time.sleep(min(1, remaining))
+    try:
+        os.set_inheritable(lock.fileno(), False)
+        lock.acquired_at = min(time.time(),float(os.getenv('STATE_ZERO_EXECUTION_ACQUIRED_AT',str(time.time())))) if raw is not None else time.time()
+        yield lock
+    finally:
+        # Closing this copy must not unlock the parent's inherited description.
+        lock.close()

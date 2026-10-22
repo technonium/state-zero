@@ -246,7 +246,10 @@ def _run_logged(command: list[str], log: Path, extra_env: dict[str, str] | None 
     if extra_env:
         environment.update(extra_env)
     with log.open("ab") as handle:
-        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=handle, stderr=subprocess.STDOUT, check=False)
+        owned = 'STATE_ZERO_EXECUTION_FD' in environment and any(Path(arg).name in {'pipeline.py', 'flow_shadow_recover.py'} for arg in command)
+        descriptors = (int(environment['STATE_ZERO_EXECUTION_FD']),) if owned else ()
+        result = subprocess.run(command, cwd=ROOT, env=environment, stdout=handle,
+            stderr=subprocess.STDOUT, check=False, pass_fds=descriptors)
     if result.returncode:
         script = next((Path(arg).name for arg in command[1:] if arg.endswith(".py")), command[0])
         raise RuntimeError(f"{script} exited {result.returncode}; inspect private log")
@@ -538,7 +541,27 @@ def main(argv: list[str] | None = None) -> int:
         print("Another Flow shadow check or run is active; skipping this schedule tick")
         return 0
     try:
-        return _run_locked(args, private_root, run_date, current, start, day_number, output, state, marker)
+        from utils import execution_lock, ExecutionBusy
+        try:
+            with execution_lock() as ownership:
+                previous_fd = os.environ.get('STATE_ZERO_EXECUTION_FD')
+                previous_acquired = os.environ.get('STATE_ZERO_EXECUTION_ACQUIRED_AT')
+                os.environ['STATE_ZERO_EXECUTION_FD'] = str(ownership.fileno())
+                os.environ['STATE_ZERO_EXECUTION_ACQUIRED_AT'] = str(ownership.acquired_at)
+                try:
+                    return _run_locked(args, private_root, run_date, current, start, day_number, output, state, marker)
+                finally:
+                    if previous_fd is None:
+                        os.environ.pop('STATE_ZERO_EXECUTION_FD', None)
+                    else:
+                        os.environ['STATE_ZERO_EXECUTION_FD'] = previous_fd
+                    if previous_acquired is None:
+                        os.environ.pop('STATE_ZERO_EXECUTION_ACQUIRED_AT',None)
+                    else:
+                        os.environ['STATE_ZERO_EXECUTION_ACQUIRED_AT']=previous_acquired
+        except ExecutionBusy:
+            print('Production profile is owned; validation skipped without remote work.')
+            return 0
     finally:
         lock_file.close()
 

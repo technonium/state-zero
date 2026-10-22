@@ -686,6 +686,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                         name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
                         if not (pipeline.output_dir / name).exists():
                             (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
+                    pipeline._is_terminal_rescue_run = lambda: False
                     pipeline.run()
 
     def test_instagram_post_mock_mode_returns_consistent_dict(self):
@@ -1403,6 +1404,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
                     name = name.replace('environment_selected.txt', 'environment.txt').replace('creature_selected.txt', 'creature.txt')
                     if not (pipeline.output_dir / name).exists():
                         (pipeline.output_dir / name).write_text('{}' if name.endswith('.json') else 'original')
+                pipeline._is_terminal_rescue_run = lambda: False
                 pipeline.run()
 
         self.assertEqual(ctx.exception.stage, "Instagram Posting")

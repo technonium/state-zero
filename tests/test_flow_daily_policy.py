@@ -106,7 +106,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         with patch.object(client, '_run_json', side_effect=submit) as submit_mock, \
                 patch.object(client, '_probe_video', side_effect=probe), \
                 patch.object(client, '_recover_video', return_value=recovered) as recover, \
-                patch('flow_media_client.subprocess.run') as upscale, \
+                patch('flow_media_client.run_bounded') as upscale, \
                 patch('flow_media_client.GoogleVideoClient.generate_from_image') as api:
             client.generate_video('original', art, self.root / 'generated_video.mp4')
         submit_mock.assert_called_once()
@@ -213,7 +213,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, {'FLOW_IMAGE_UPSCALE_2K': 'true'}):
             self.freeze()
             with patch.object(client, '_run_json', side_effect=submit), \
-                    patch('flow_media_client.subprocess.run', side_effect=upscale):
+                    patch('flow_media_client.run_bounded', side_effect=upscale):
                 client.generate_image({}, self.root / 'generated_art.png')
         saved = json.loads((self.root / 'flow_image_diagnostics.json').read_text())
         self.assertFalse(saved['flow_2k_upscaled'])
@@ -546,7 +546,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                         patch.object(client, '_run_json', side_effect=AssertionError('Submission forbidden')), \
                         patch.object(client, '_readback_media', side_effect=AssertionError('Readback forbidden')), \
                         patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)), \
-                        patch('flow_media_client.subprocess.run', side_effect=AssertionError('Download/upscale forbidden')):
+                        patch('flow_media_client.run_bounded', side_effect=AssertionError('Download/upscale forbidden')):
                     if stage == 'image':
                         client.generate_image({}, target)
                     else:
@@ -674,14 +674,14 @@ class DailyFlowPolicyTests(unittest.TestCase):
         pipeline.output_dir = self.root
         pipeline.mode, pipeline.post_to_instagram = 'automatic', False
         pipeline.media_mode, pipeline.run_token = 'local_test', 'test'
-        with patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'flow'}), \
+        with patch.dict(os.environ, {'MEDIA_GENERATION_PROVIDER': 'flow', 'STATE_ZERO_PRIVATE_ROOT':str(self.root)}), \
                 patch.object(pipeline, '_claim_daily_run_or_exit'), \
                 patch.object(pipeline, '_ensure_owner_runtime_dirs'), \
                 patch.object(pipeline, '_stop_heartbeat_thread'), \
                 patch.object(pipeline, '_cleanup_non_authoritative_daily_state'), \
                 patch('pipeline._setup_global_exception_handler'), \
                 patch.object(pipeline, '_handle_runtime_stage_error', return_value=True), \
-                patch.object(pipeline, 'step_1_validate'), \
+                patch.object(pipeline, 'step_1_validate'), patch.object(pipeline,'_is_terminal_rescue_run',return_value=False), \
                 patch.object(pipeline, '_revalidate_whoop_checkpoint'), \
                 patch.object(pipeline, 'step_2_3_lookups') as lookups, \
                 patch.object(pipeline, 'step_4_6_prompts') as prompts, \

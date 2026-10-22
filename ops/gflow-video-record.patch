@@ -68,7 +68,15 @@ index fc9a11c9..7e17901f 100644
          loop = asyncio.get_running_loop()
          submitted: asyncio.Future[GenerationRecord] = loop.create_future()
          route_error: asyncio.Future[WireFormatError] = loop.create_future()
-@@ -2809,10 +2828,25 @@
+@@ -2798,6 +2817,7 @@
+         async def on_response(response: Any) -> None:
++            event_received = time.monotonic()
+             url = str(getattr(response, "url", ""))
+             rpcid = _rpcid(url) if "batchexecute" in url else None
+             if rpcid is not None:
+                 seen_submit_rpcs.add(rpcid)
+             if "batchexecute" not in url:
+@@ -2809,10 +2828,26 @@
              # its id from the frame itself (measured 2026-09-17).
              if rpcid is not None and rpcid not in SUBMIT_RPCS and rpcid not in STATUS_RPCS:
                  return
@@ -76,22 +84,23 @@ index fc9a11c9..7e17901f 100644
 +                bool(workflow and any(value in _post_data(response.request) for value in workflow.values())))
 +            if data is not None and rpcid in SUBMIT_RPCS and not correlated:
 +                return
++            read_started=time.monotonic()
              try:
                  text = await response.text()
 -            except Exception:  # noqa: BLE001 - an aborted/streamed body is not our frame
 +            except Exception as exc:
 +                if correlated and data is not None:
 +                    from flow_readback import note_video_response
-+                    note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response,exc=exc)
++                    note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response,exc=exc,read_started=read_started,event_received=event_received)
 +                    error=WireFormatError(detail=f"video_response_read_failed: {type(exc).__name__}: "
 +                        +data["response"]["detail"],route=f"batchexecute:{rpcid}")
-+                    target=terminal if workflow else submitted
-+                    if not target.done():
-+                        target.set_exception(error)
++                    # Accepted status polls repeat; one unreadable body is not a terminal verdict.
++                    if not workflow and not submitted.done():
++                        submitted.set_exception(error)
                  return
 +            if correlated and data is not None:
 +                from flow_readback import note_video_response
-+                note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response)
++                note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response,read_started=read_started,event_received=event_received)
              refusal = _submit_refusal(text, SUBMIT_RPCS)
              # An envelope arriving after an accepted submit is ignored: that run's outcome
              # is already decided, and it now belongs to the terminal wait.
@@ -123,7 +132,7 @@ index fc9a11c9..7e17901f 100644
                      log.info(
                          "migrated.submit_observed",
                          rpc=rid,
-@@ -2843,14 +2891,19 @@
+@@ -2843,14 +2891,42 @@
                      _settle(rec)
                  elif rid in STATUS_RPCS and workflow:
                      try:
@@ -138,21 +147,52 @@ index fc9a11c9..7e17901f 100644
                          continue
 +                    rec = records[0]
                      log.info("migrated.status", rpc=rid, status=rec.status, bytes=rec.size_bytes)
++                    if data is not None:
++                        from flow_readback import note_video_response
++                        note_video_response(data,phase="poll",rpc=rid,response=response,decoded=True)
                      _settle(rec)
  
++        listeners=[]
 +        if data is not None:
++            from flow_readback import note_video_lifecycle
++            def lifecycle(event):
++                return lambda *args: note_video_lifecycle(data,event)
++            def request_event(event):
++                def record(request):
++                    if request in forwarded or workflow and any(v in _post_data(request) for v in workflow.values()):
++                        note_video_lifecycle(data,event)
++                return record
++            for emitter,event,callback in [(page,'close',lifecycle('page_closed')),
++                    (page.context,'close',lifecycle('context_closed')),
++                    (page,'requestfinished',request_event('request_finished')),
++                    (page,'requestfailed',request_event('request_failed'))]:
++                emitter.on(event,callback)
++                listeners.append((emitter,event,callback))
++            if page.context.browser is not None:
++                callback=lifecycle('browser_disconnected')
++                page.context.browser.on('disconnected',callback)
++                listeners.append((page.context.browser,'disconnected',callback))
 +            await page.route("**/*batchexecute*",guard)
++            note_video_lifecycle(data,'routing_active')
          page.on("response", on_response)
          # Every body assertion lives in `on_request`, so the listener must be armed for
          # all of them. Gating it on `expect_media_id` alone left `_r2v_body_problem`
-@@ -2940,6 +2993,10 @@
+@@ -2940,6 +2993,18 @@
                  submitted.exception()
              page.remove_listener("response", on_response)
              page.remove_listener("request", on_request)
 +            if terminal.done() and not terminal.cancelled():
 +                terminal.exception()
 +            if data is not None:
-+                await page.unroute("**/*batchexecute*",guard)
++                for emitter,event,callback in listeners:
++                    emitter.remove_listener(event,callback)
++                try:
++                    await page.unroute("**/*batchexecute*",guard)
++                except Exception as exc:
++                    from flow_readback import note_response
++                    note_response(data,cleanup_error_class=type(exc).__name__)
++                finally:
++                    note_video_lifecycle(data,'routing_removed')
  
      async def _verify_submit_target(self, page: Page, submit: Locator) -> None:
          """Prove the submit button is visible and receives pointer events."""

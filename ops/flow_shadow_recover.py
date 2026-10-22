@@ -53,7 +53,9 @@ def recover_media(pipeline):
 
 
 if __name__ == '__main__':
-    if os.getenv('FLOW_SHADOW_RECOVERY_LOCKED') != 'true':
+    if os.getenv('FLOW_SHADOW_RECOVERY_LOCKED') != 'true' or 'STATE_ZERO_EXECUTION_FD' not in os.environ:
         raise SystemExit('Use flow_shadow_run.py --recover-date YYYY-MM-DD')
     from pipeline import WHOOPPipeline
-    recover_media(WHOOPPipeline())
+    from utils import execution_lock
+    with execution_lock():
+        recover_media(WHOOPPipeline())

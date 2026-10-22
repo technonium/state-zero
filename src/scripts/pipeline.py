@@ -342,7 +342,8 @@ class WHOOPPipeline:
     def _claim_daily_run_or_exit(self):
         if hasattr(self, 'output_dir') and self.post_to_instagram:
             self._check_publication_before_claim()
-        decision, state = self.daily_run.acquire()
+        decision, state = self.daily_run.acquire(**({'execution_fd': self.execution_lock_fd}
+            if getattr(self, 'execution_lock_fd', None) is not None else {}))
         if decision == 'owner':
             self.generation_started_at = state.get('claimed_at') or getattr(self, 'generation_started_at', None)
             self._set_heartbeat_context(
@@ -359,6 +360,8 @@ class WHOOPPipeline:
             print(f"{Fore.YELLOW}⚠ Daily run already POSTED for {self.run_date}. Exiting cleanly.{Style.RESET_ALL}")
             raise SystemExit(0)
         if decision == 'skip_failed_fatal':
+            self.daily_run.notify_once('FAILED_FATAL',lambda:safe_notify_status(self.run_date,'FAILED_FATAL',
+                'Daily run remains blocked by a recorded safety failure; human review required.'))
             print(
                 f"{Fore.YELLOW}⚠ Daily run is blocked by FAILED_FATAL for {self.run_date}. "
                 f"Manual intervention required.{Style.RESET_ALL}"
@@ -391,6 +394,19 @@ class WHOOPPipeline:
                 self.daily_run.mark_posted_after_publish(post_id=next(iter(ids)),
                     permalink=state.get('instagram_permalink') or (records[0].get('instagram_permalink') if records else None),
                     note='Recovered confirmed publication identity before claiming the date.', extra={'asset_source': source})
+                return
+        if not ids and receipt.get('publication_state') in {'intent','uncertain'}:
+            from instagram_poster import InstagramPoster, InstagramPublishDiagnosticsError
+            poster=InstagramPoster()
+            poster.diagnostics_output_dir=self.output_dir
+            poster.run_date=self.run_date
+            try:
+                poster.reconcile_publication(receipt)
+            except InstagramPublicationUncertain:
+                raise
+            except InstagramPublishDiagnosticsError as exc:
+                if exc.phase!='publish_rejected':
+                    raise
                 return
         if ids or receipt.get('publication_state') in {'intent', 'uncertain', 'published_unidentified', 'confirmed'}:
             raise InstagramPublicationUncertain('publication_evidence',
@@ -907,9 +923,13 @@ class WHOOPPipeline:
             env = os.environ.copy()
             if env_overrides:
                 env.update(env_overrides)
-            result = run_bounded(cmd, env=env, timeout=pipeline_seconds_remaining(
+            budget = pipeline_seconds_remaining(
                 generation=step_name in {'Image Generation', 'LLM Prompts (Interpretation -> Video)'},
-                maximum=2400 if step_name == 'Image Generation' else 900))
+                maximum=2400 if step_name == 'Image Generation' else 900)
+            if step_name == 'LLM Prompts (Interpretation -> Video)':
+                import time
+                env['STATE_ZERO_PROMPT_DEADLINE'] = str(time.time()+budget)
+            result = run_bounded(cmd, env=env, timeout=budget)
             if result.stdout:
                 print(f"{Fore.LIGHTBLACK_EX}   STDOUT: {result.stdout.strip()}{Style.RESET_ALL}")
             if result.returncode != 0:
@@ -953,12 +973,14 @@ class WHOOPPipeline:
             self.log_error(step_name, str(e), str(e))
 
     def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
+        os.environ.pop('STATE_ZERO_LOCAL_ONLY_DEADLINE', None)
         if exc.failure_classification == 'instagram_publication_uncertain':
             self._stop_heartbeat_thread()
             try:
                 self.daily_run.mark_retryable_failure(step=exc.stage, message=exc.message,
                     failure_classification=exc.failure_classification)
-                safe_notify_status(self.run_date, 'INSTAGRAM_RECONCILIATION_REQUIRED', exc.message)
+                self.daily_run.notify_once('INSTAGRAM_RECONCILIATION_REQUIRED',lambda:safe_notify_status(
+                    self.run_date,'INSTAGRAM_RECONCILIATION_REQUIRED',exc.message))
             finally:
                 self.daily_run.release_claim()
             return True
@@ -967,7 +989,8 @@ class WHOOPPipeline:
             try:
                 self.daily_run.mark_retryable_failure(step=exc.stage, message=exc.message,
                     details_tail=exc.details, failure_classification=exc.failure_classification)
-                safe_notify_status(self.run_date, 'FLOW_RECONCILIATION_REQUIRED', exc.message)
+                self.daily_run.notify_once('FLOW_RECONCILIATION_REQUIRED',lambda:safe_notify_status(
+                    self.run_date,'FLOW_RECONCILIATION_REQUIRED',exc.message))
             finally:
                 self.daily_run.release_claim()
             return True
@@ -1369,6 +1392,29 @@ class WHOOPPipeline:
                 failure_classification='flow_reconciliation_required')
 
     def run(self):
+        from utils import execution_lock, ExecutionBusy
+        from instagram_poster import InstagramPublicationUncertain
+        import time
+        try:
+            with execution_lock() as lock:
+                self.execution_lock_fd = lock.fileno()
+                self.execution_acquired_at = lock.acquired_at
+                previous_local_deadline = os.environ.pop('STATE_ZERO_LOCAL_ONLY_DEADLINE', None)
+                try:
+                    try:
+                        self._run_owned()
+                    except InstagramPublicationUncertain:
+                        self.daily_run.notify_once('INSTAGRAM_RECONCILIATION_REQUIRED',lambda:safe_notify_status(
+                            self.run_date,'INSTAGRAM_RECONCILIATION_REQUIRED',
+                            'Recorded publication requires exact-container reconciliation; no new post is safe.'))
+                finally:
+                    os.environ.pop('STATE_ZERO_LOCAL_ONLY_DEADLINE', None)
+                    if previous_local_deadline is not None:
+                        os.environ['STATE_ZERO_LOCAL_ONLY_DEADLINE'] = previous_local_deadline
+        except ExecutionBusy:
+            print('Another pipeline owns execution; skipping this slot.')
+
+    def _run_owned(self):
         try:
             self._claim_daily_run_or_exit()
             self._ensure_owner_runtime_dirs()
@@ -1385,6 +1431,15 @@ class WHOOPPipeline:
 
             try:
                 resume_flow = self._check_flow_submission_state()
+                local_rescue = False
+                manual_assets = {}
+                if self._is_terminal_rescue_run():
+                    from flow_media_client import FlowMediaClient
+                    manual_assets = self._manual_local_assets() if self.mode=='telegram' else {}
+                    local_rescue = FlowMediaClient().local_pair_available(self.output_dir,manual_assets=manual_assets)
+                    if not local_rescue:
+                        raise PipelineStageError(stage='Local rescue',message='No eligible completed local normal artwork.',fallback_eligible=True)
+                    os.environ['STATE_ZERO_LOCAL_ONLY_DEADLINE'] = str(self.execution_acquired_at+300)
                 self.step_1_validate()
 
                 # Only validate Instagram token when posting is enabled
@@ -1407,7 +1462,24 @@ class WHOOPPipeline:
                 metadata = self._load_required_json(self.output_dir / 'card_metadata.json', 'card_metadata.json')
                 blend_option, creature, environment = self._load_required_text_outputs()
 
-                if self.mode == 'telegram':
+                if local_rescue:
+                    from flow_media_client import FlowMediaClient
+                    client = FlowMediaClient()
+                    art_path = self.output_dir/'generated_art.png'
+                    video_path = self.output_dir/'generated_video.mp4'
+                    if len(manual_assets)==2:
+                        self.asset_source='manual_telegram'
+                    if os.getenv('MEDIA_GENERATION_PROVIDER','google_api').lower()=='flow':
+                        if 'image' not in manual_assets:
+                            client.generate_image(image_json,art_path)
+                        if 'video' not in manual_assets:
+                            client.generate_video((self.output_dir/'video_prompt.txt').read_text().strip(),art_path,video_path)
+                    else:
+                        if 'image' not in manual_assets:
+                            client.generate_api_stage('image',image_json,art_path)
+                        if 'video' not in manual_assets:
+                            client.generate_api_stage('video',(self.output_dir/'video_prompt.txt').read_text().strip(),video_path,art_path)
+                elif self.mode == 'telegram':
                     # In telegram mode: always do manual wait + fallback (not skipped in dry run).
                     # daily_data is passed so the wait loop can periodically revalidate WHOOP
                     # zones/IDs and bail fast if the data drifts across a zone boundary mid-wait.
@@ -1439,6 +1511,10 @@ class WHOOPPipeline:
                 else:
                     print(f"{Fore.YELLOW}⚠ Dry-run mode: skipping Instagram post.{Style.RESET_ALL}")
                     post_result = None
+
+                if local_rescue:
+                    import time
+                    os.environ['STATE_ZERO_LOCAL_ONLY_DEADLINE']=str(time.time()+900)
 
                 if isinstance(post_result, dict) and post_result.get('already_posted'):
                     print(f"{Fore.YELLOW}⚠ State already marked POSTED. Repairing archive/database work if needed.{Style.RESET_ALL}")
@@ -1965,6 +2041,37 @@ class WHOOPPipeline:
         session['updated_at'] = self._now().isoformat()
         self._save_manual_session(session)
 
+    def _remember_manual_assets(self, session, assets):
+        manifest=self.output_dir/'flow_inputs.json'
+        if not manifest.exists():
+            return
+        session['local_assets']={'version':1,'frozen_inputs_sha256':hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            'files':{stage:{'file':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()} for stage,path in assets.items()}}
+        self._save_manual_session(session)
+
+    def _manual_local_assets(self):
+        if not self.session_file.exists():
+            return {}
+        try:
+            saved=json.loads(self.session_file.read_text()).get('local_assets')
+            if not saved:
+                return {}
+            if saved['version']!=1 or saved['frozen_inputs_sha256']!=hashlib.sha256((self.output_dir/'flow_inputs.json').read_bytes()).hexdigest():
+                raise ValueError('Manual frozen inputs changed')
+            assets={}
+            for stage,record in saved['files'].items():
+                if stage not in {'image','video'} or record['file'] != ('generated_art.png' if stage=='image' else 'generated_video.mp4'):
+                    raise ValueError('Invalid manual selection')
+                path=self.output_dir/record['file']
+                if hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+                    raise ValueError('Manual media changed')
+                (self._validate_image_file if stage=='image' else self._validate_video_file)(path)
+                assets[stage]=path
+            return assets
+        except (OSError,ValueError,KeyError,TypeError,AttributeError) as exc:
+            raise PipelineStageError(stage='Manual local identity',message='Saved manual media requires reconciliation.',
+                fallback_eligible=False,emergency_fallback_allowed=False) from exc
+
     def _try_fetch_manual_assets(self, session: dict, *, allow_partial: bool = False) -> tuple[Path, Path | None] | None:
         tg = session['telegram']
         if not tg.get('image_file_id') or not allow_partial and not tg.get('video_file_id'):
@@ -2001,6 +2108,7 @@ class WHOOPPipeline:
                 self._clear_manual_asset(session, 'image', 'Manual image validation failed. Waiting for resend.')
                 raise
 
+            self._remember_manual_assets(session,{'image':art_path})
             if not tg.get('video_file_id'):
                 return art_path, None
             try:
@@ -2015,6 +2123,7 @@ class WHOOPPipeline:
             if video_path.exists():
                 video_path.unlink()
             shutil.move(str(raw_video_path), str(video_path))
+            self._remember_manual_assets(session,{'image':art_path,'video':video_path})
             return art_path, video_path
         finally:
             # Always clean transient raw files once they're no longer needed.

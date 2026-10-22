@@ -8,10 +8,28 @@
  import re
  import time
  import unicodedata
-@@ -715,8 +716,43 @@
+@@ -678,6 +679,6 @@
+ def _submit_refusal(
+     text: str, rpcids: tuple[str, ...]
+-) -> WafRejectionError | ContentPolicyError | None:
++) -> WafRejectionError | ContentPolicyError | WireFormatError | None:
+     """The typed refusal a submit reply states on the wire, or ``None``.
+ 
+     flow.google.com refuses a submit with HTTP 200 and an error envelope whose payload
+@@ -715,8 +716,55 @@
                  detail=f"Flow refused the submit: {safety} (gRPC {err.code})", route=route
              )
++        if err.reasons:
++            return UnknownFlowRefusalError(detail="Flow returned an unrecognized refusal verdict",route=route)
      return None
++
++
++class UnknownFlowRefusalError(WireFormatError):
++    """A decoded provider verdict requires reconciliation, not inferred restriction text."""
++
++
++class UploadResponseUnavailableError(MediaUploadRejectedError):
++    """Upload transport was unreadable; no provider restriction was decoded."""
 +
 +
 +def _mark_shadow_submit_attempt() -> None:
@@ -32,7 +50,9 @@
 +    if not raw or not Path(raw).exists():
 +        return
 +    from gflow_cli.data.redaction import redact_error_detail
-+    from gflow_cli.errors import GFlowError
++    from gflow_cli.errors import GFlowError, ContentPolicyError, InsufficientCreditsError, RecaptchaError, WafRejectionError
++    if isinstance(exc,(ContentPolicyError,InsufficientCreditsError,RecaptchaError,WafRejectionError,UnknownFlowRefusalError)):
++        raise exc
 +    import sys
 +    original = str(exc.to_problem_details().get("detail", "")) if isinstance(exc, GFlowError) else str(exc).split("\n", 1)[0]
 +    for argument in sys.argv[1:]:
@@ -102,7 +122,7 @@
 -                    text = ""
 +                except Exception as exc:
 +                    from gflow_cli.data.redaction import redact_error_detail
-+                    reply.set_exception(MediaUploadRejectedError(
++                    reply.set_exception(UploadResponseUnavailableError(
 +                        detail=f"upload_response_read_failed: HTTP 200 rpc={UPLOAD_RPC} {type(exc).__name__}: "
 +                               + redact_error_detail(str(exc).split("\n", 1)[0]), status=status, route=route))
 +                    return
@@ -112,7 +132,8 @@
 @@ -2183,7 +2187,7 @@
              media_id = _first_uuid(text)
              if media_id is None:
-                 raise MediaUploadRejectedError(
+-                raise MediaUploadRejectedError(
++                raise UploadResponseUnavailableError(
 -                    detail=f"migrated host: {UPLOAD_RPC} answered 200 without a media id",
 +                    detail=f"upload_response_unrecognized: HTTP 200 rpc={UPLOAD_RPC} bytes={len(text)} frames={len(parse_frames(text))}",
                      status=status,
@@ -155,7 +176,7 @@
              try:
                  status, text = await asyncio.wait_for(reply, timeout=FRAME_UPLOAD_S)
 +            except MediaUploadRejectedError as original:
-+                if upload_record is not None and "upload_response_read_failed:" in original.detail:
++                if upload_record is not None and isinstance(original,UploadResponseUnavailableError):
 +                    try:
 +                        media_id = await recover_saved_upload(page, project_id, image_path, upload_record)
 +                        return media_id, display_name

@@ -521,7 +521,7 @@ class InstagramPoster:
                 "fields": "config,quota_usage",
                 "access_token": self.access_token,
             },
-            timeout=self.REQUEST_TIMEOUT,
+            timeout=self._prepublication_timeout(self.REQUEST_TIMEOUT),
         )
         try:
             data = response.json()
@@ -598,7 +598,7 @@ class InstagramPoster:
         
         for attempt in range(max_attempts):
             try:
-                response = requests.post(url, data=payload, timeout=self.REQUEST_TIMEOUT)
+                response = requests.post(url, data=payload, timeout=self._prepublication_timeout(self.REQUEST_TIMEOUT))
                 try:
                     response_data = response.json()
                 except Exception:
@@ -676,7 +676,7 @@ class InstagramPoster:
         response = requests.post(
             f"{self.base_url}/{self.user_id}/media",
             data=payload,
-            timeout=self.REQUEST_TIMEOUT,
+            timeout=self._prepublication_timeout(self.REQUEST_TIMEOUT),
         )
         try:
             response_data = response.json()
@@ -729,7 +729,7 @@ class InstagramPoster:
                     "Content-Length": str(file_size),
                 },
                 data=handle,
-                timeout=(self.REQUEST_TIMEOUT[0], 300),
+                timeout=self._prepublication_timeout((self.REQUEST_TIMEOUT[0], 300)),
             )
         elapsed = round(time.monotonic() - started, 3)
         try:
@@ -781,7 +781,7 @@ class InstagramPoster:
         while polls < max_polls and time.monotonic() < deadline:
             print(f"▶ Polling status (Attempt {polls+1}/{max_polls})...")
             try:
-                response = requests.get(url, timeout=self.REQUEST_TIMEOUT)
+                response = requests.get(url, timeout=self._prepublication_timeout(self.REQUEST_TIMEOUT))
             except requests.exceptions.RequestException as e:
                 transient_errors += 1
                 polls += 1
@@ -953,6 +953,16 @@ class InstagramPoster:
         raise InstagramPublicationUncertain('publish_media',
             'Instagram publication is unresolved; no alternate or emergency post is safe.', record)
 
+    def _prepublication_timeout(self, timeout):
+        deadline=os.getenv('STATE_ZERO_LOCAL_ONLY_DEADLINE')
+        if not deadline:
+            return timeout
+        remaining=float(deadline)-time.time()
+        if remaining<=0:
+            raise InstagramPublishDiagnosticsError('prepublication_budget',
+                'Local completion window expired before publication started.',{})
+        return tuple(min(v,remaining) for v in timeout) if isinstance(timeout,tuple) else min(timeout,remaining)
+
     def publish_media(self, creation_id: str) -> str:
         if self.mock_mode:
             return 'mock_ig_post_456'
@@ -962,12 +972,15 @@ class InstagramPoster:
             if previous.get('creation_id') != creation_id:
                 raise InstagramPublicationUncertain('publish_media', 'Another container may already be published.', previous)
             return self.reconcile_publication(previous)
+        self._prepublication_timeout(self.REQUEST_TIMEOUT)
         # The receipt must reach disk before crossing the irreversible boundary.
         self._persist_diagnostics({'phase': 'publish_media', 'creation_id': creation_id,
             'publication_state': 'intent', 'reconciliation_deadline': None})
+        # After durable intent, uncertainty must finish reconciliation even if the local window expires.
+        os.environ.pop('STATE_ZERO_LOCAL_ONLY_DEADLINE', None)
         try:
             response = requests.post(f'{self.base_url}/{self.user_id}/media_publish',
-                data={'creation_id': creation_id, 'access_token': self.access_token}, timeout=self.REQUEST_TIMEOUT)
+                data={'creation_id': creation_id, 'access_token': self.access_token}, timeout=self._prepublication_timeout(self.REQUEST_TIMEOUT))
             try:
                 data = response.json()
             except ValueError as exc:
@@ -979,10 +992,6 @@ class InstagramPoster:
                 post_id = str(data['id'])
                 self._persist_diagnostics({'publication_state': 'confirmed', 'post_id': post_id})
                 return post_id
-            if 400 <= response.status_code < 500 and isinstance(data, dict) and data.get('error'):
-                self._persist_diagnostics({'publication_state': 'rejected'})
-                raise self._raise_diagnostics_error(phase='publish_media', message='Instagram rejected publication.',
-                    creation_id=creation_id, response=response)
         except requests.RequestException:
             pass
         self._persist_diagnostics({'publication_state': 'uncertain'})
@@ -1013,7 +1022,7 @@ class InstagramPoster:
         
         for attempt in range(max_retries):
             try:
-                response = requests.get(url, params=params, timeout=self.REQUEST_TIMEOUT)
+                response = requests.get(url, params=params, timeout=self._prepublication_timeout(self.REQUEST_TIMEOUT))
                 data = response.json()
                 
                 if 'permalink' in data:

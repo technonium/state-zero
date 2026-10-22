@@ -87,11 +87,8 @@ class FlowMediaClient:
 
     @staticmethod
     def _stops_replacement(error: FlowCommandError) -> bool:
-        reason = error.detail.upper()
         return (error.category in {'request_identity_unverified', 'original_asset_changed', 'execution_busy', 'validation_failed', 'provider_rejected', 'pre_submit_terminal'} or
-                error.category == 'generation_failed' and not error.retryable or
-                any(word in reason for word in ('SAFETY', 'POLICY', 'RESTRICT', 'REFUSAL', 'MODEL', 'SETTING')) or
-                'RECAPTCHA' in reason and error.category not in {'pre_submit_transient', 'pre_submit_timeout'})
+                error.category == 'generation_failed' and not error.retryable)
 
     def _notify_transition(self, diagnostics: Path, status: str, message: str) -> None:
         saved = json.loads(diagnostics.read_text())
@@ -144,8 +141,7 @@ class FlowMediaClient:
     def _api_fallback_allowed(error: Exception) -> bool:
         if not isinstance(error, FlowCommandError):
             return False
-        reason = error.detail.upper()
-        if any(word in reason for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT", "MODEL", "SETTING", "RECAPTCHA")):
+        if FlowMediaClient._stops_replacement(error):
             return False
         if error.category == "generation_failed":
             return error.retryable
@@ -387,6 +383,40 @@ class FlowMediaClient:
         self._write_diagnostics(diagnostics, {'attempts': attempts, 'pending_attempt': None,
                                               **({'failure': attempt['failure']} if attempt.get('failure') else {})})
 
+    def local_pair_available(self, directory: Path, *, manual_assets=None) -> bool:
+        if not self.validate_inputs(directory):
+            return False
+        for stage,name in (('image','generated_art.png'),('video','generated_video.mp4')):
+            if stage in (manual_assets or {}):
+                continue
+            output=directory/name
+            flow=directory/f'flow_{stage}_diagnostics.json'
+            api=directory/f'google_{stage}_diagnostics.json'
+            path=flow if flow.exists() else api
+            if not path.exists():
+                return False
+            saved=json.loads(path.read_text())
+            failure=saved.get('failure') or {}
+            if failure and self._stops_replacement(FlowCommandError(stage,**failure)):
+                return False
+            digest=saved.get('selected_sha256') or saved.get('output_sha256')
+            if digest and output.is_file():
+                self._validate_original(stage,output,digest)
+                continue
+            if path==api or saved.get('api_fallback_state') or not saved.get('original_sha256'):
+                return False
+            attempts=self._daily_attempts(stage,path)
+            if not attempts:
+                return False
+            receipt=(self._image_receipt if stage=='image' else self._video_receipt)(path,attempts[-1])
+            local=self._local_result(stage,saved.get('result'),output,saved['original_sha256'])
+            if not receipt or not local:
+                return False
+            key='media_name' if stage=='image' else 'media_id'
+            if (receipt['images'][0][key] if stage=='image' else receipt[key]) != (local['images'][0][key] if stage=='image' else local[key]):
+                raise FlowCommandError(stage,'request_identity_unverified')
+        return True
+
     def _generate_daily(self, stage: str, request: dict, output: Path, generate, image_path: Path | None) -> Path:
         diagnostics = output.with_name(f'flow_{stage}_diagnostics.json')
         flow_timeout = 600 if stage == 'image' else 1500
@@ -399,13 +429,21 @@ class FlowMediaClient:
             if any(a.get('validation_block') for a in attempts):
                 raise FlowCommandError(stage, 'provider_rejected', detail='Recorded Flow SETTINGS validation failed before forwarding.')
             last = attempts[-1] if attempts else {}
-            failure = saved.get('failure') or last.get('failure') or {}
+            failure = saved.get('processing_failure') or saved.get('failure') or last.get('failure') or {}
             if not failure and last.get('status') not in (None, 'reserved', 'complete', 'recovered_existing_media'):
                 failure = {'category': last['status']} | {k: last[k] for k in
                     ('error_class', 'detail', 'operation_id', 'submission_state', 'retryable') if k in last}
             error = FlowCommandError(stage, **failure) if failure else None
             if error and self._stops_replacement(error):
                 raise error
+            if os.getenv('STATE_ZERO_LOCAL_ONLY_DEADLINE'):
+                if time.time() >= float(os.environ['STATE_ZERO_LOCAL_ONLY_DEADLINE']) or saved.get('api_fallback_state'):
+                    raise FlowCommandError(stage, 'local_completion_unavailable', retryable=True)
+                local = self._local_result(stage, saved.get('result'), output, saved.get('original_sha256'))
+                if not local:
+                    raise FlowCommandError(stage, 'local_completion_unavailable', retryable=True)
+                generate(local)
+                return self._finish_daily(stage, output, diagnostics, 'flow')
             if saved.get('api_fallback_state'):
                 if stage != 'video':
                     raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted')
@@ -414,6 +452,12 @@ class FlowMediaClient:
                 candidate = output.with_name(f'.{output.stem}.api{output.suffix}')
                 client.resume_operation(candidate)
                 return self._finish_daily(stage, output, diagnostics, 'google_api', candidate)
+            if error and error.category == 'local_processing_failed':
+                local = self._local_result(stage, saved.get('result'), output, saved.get('original_sha256'))
+                if not local:
+                    raise error
+                generate(local)
+                return self._finish_daily(stage, output, diagnostics, 'flow')
             if attempts and attempts[-1].get('submit_attempted', True):
                 attempt = attempts[-1]
                 recovered = self._recover_pending(stage, diagnostics, attempt, output)
@@ -422,7 +466,7 @@ class FlowMediaClient:
                         generate(recovered)
                         return self._finish_daily(stage, output, diagnostics, 'flow')
                     except FlowCommandError as exc:
-                        if self._stops_replacement(exc):
+                        if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                             raise
                 if not attempt.get('recovery_exhausted'):
                     attempt['recovery_exhausted'] = True
@@ -451,7 +495,7 @@ class FlowMediaClient:
                                    recovery_exhausted=exc.category == 'generation_failed' and exc.retryable)
                     self._save_attempt(diagnostics, attempt)
                     self._write_diagnostics(diagnostics, {'failure': failure})
-                    if self._stops_replacement(exc):
+                    if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                         raise
                     if not submitted and exc.category not in {'pre_submit_transient', 'pre_submit_timeout',
                                                                'blocked_before_submission', 'auth_required', 'credits_exhausted'}:
@@ -496,7 +540,7 @@ class FlowMediaClient:
             candidate.replace(output)
         output.touch()
         self._write_diagnostics(diagnostics, {'output_sha256': digest,
-            'failure': None, 'provider': provider, **({'api_fallback_state': 'complete'} if provider == 'google_api' else {})})
+            'failure': None, 'processing_failure': None, 'provider': provider, **({'api_fallback_state': 'complete'} if provider == 'google_api' else {})})
         if provider == 'google_api':
             self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_API_COMPLETE',
                 f'Paid Google API {stage} completed and validated; continuing the remaining stages.')
@@ -516,7 +560,7 @@ class FlowMediaClient:
                 self._validate_original(stage, path, expected_hash or result.get('sha256'))
                 return result
             except FlowCommandError as exc:
-                if self._stops_replacement(exc):
+                if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                     raise
             except (RuntimeError, TypeError, ValueError):
                 raise FlowCommandError(stage, 'request_identity_unverified') from None
@@ -778,21 +822,24 @@ class FlowMediaClient:
             error_class = re.sub(r"[^A-Za-z0-9_]", "", str(error.get("class", "")))[:80]
             media_id = str(payload.get("media_id") or "")
             failed = payload.get("generation_status") == "MEDIA_GENERATION_STATUS_FAILED" and bool(media_id)
-            reasons = (" ".join(map(str, payload.get("failure_reasons") or [])) + " " + str(error.get("detail", ""))).upper()
-            policy_or_quota = (error_class in {'ContentPolicyError', 'WafRejectionError', 'AccountRestrictedError', 'RecaptchaError'} or
-                               any(word in reasons for word in ("SAFETY", "POLICY", "REJECT", "REFUSAL", "QUOTA", "CREDIT", "RESTRICT")) or
-                               any('RECAPTCHA' in str(reason).upper() for reason in payload.get('failure_reasons') or []))
-            clicked = bool(marker and marker.exists())
-            submission_state = "attempted" if clicked else "not_attempted"
-            if clicked:
+            # Only decoded provider verdicts may restrict spending, never exception prose.
+            verdicts = payload.get("failure_reasons") or []
+            if not isinstance(verdicts, list) or any(not isinstance(v, str) for v in verdicts):
+                verdicts = ['UNRECOGNIZED_VERDICT']
+            credits = error_class == 'InsufficientCreditsError' or bool(verdicts) and set(verdicts) <= {'QUOTA', 'QUOTA_EXCEEDED', 'INSUFFICIENT_CREDITS'}
+            policy_or_quota = bool(verdicts) and not credits or error_class in {
+                'ContentPolicyError', 'WafRejectionError', 'AccountRestrictedError', 'RecaptchaError'}
+            marker_exists = bool(marker and marker.exists())
+            clicked = marker_exists or bool(media_id)
+            submission_state = "attempted" if marker_exists else "uncertain" if media_id else "not_attempted"
+            if marker_exists:
                 try:
                     submission_state = json.loads(marker.read_text()).get("state", "attempted")
                 except (ValueError, OSError):
                     pass
             detail = str(error.get("detail") or "")
-            tags = [tag for tag in ('SAFETY', 'POLICY', 'RESTRICT', 'REJECT', 'REFUSAL', 'RECAPTCHA', 'QUOTA', 'CREDIT') if tag in reasons]
-            if tags:
-                detail += ' [provider reason: ' + ', '.join(tags) + ']'
+            if verdicts:
+                detail += ' [provider reason: decoded verdict requires reconciliation]'
             for value in command[2:]:
                 if len(value) > 10 and not value.startswith("--"):
                     detail = detail.replace(value, "[redacted]")
@@ -816,13 +863,13 @@ class FlowMediaClient:
                 "AuthExpiredError", "AisandboxAuthError", "AuthMissingError",
                 "AuthLoginTimeoutError", "IdentityRecheckPendingError", "FlowAccountChooserError",
             }
-            if (error_class == 'InsufficientCreditsError' or 'QUOTA' in reasons or 'CREDIT' in reasons) and not any(w in reasons for w in ('SAFETY', 'POLICY', 'RESTRICT', 'REJECT', 'REFUSAL', 'RECAPTCHA')):
+            if credits and not policy_or_quota:
                 category = 'credits_exhausted'
             elif policy_or_quota:
                 category = "provider_rejected"
-            elif error_class == 'MediaUploadRejectedError' and not clicked and (
-                    detail.startswith(('upload_response_read_failed:', 'upload_response_unrecognized:')) or
-                    'answered 200 without a media id' in detail or 'no maseQ reply within' in detail):
+            elif error_class == "UnknownFlowRefusalError":
+                category = "request_identity_unverified"
+            elif error_class == 'UploadResponseUnavailableError' and not clicked:
                 category = 'pre_submit_transient'
             elif failed:
                 category = "generation_failed"
@@ -830,8 +877,6 @@ class FlowMediaClient:
                 category = "auth_required"
             elif submission_state == "blocked_before_submission":
                 category = "blocked_before_submission"
-            elif detail.startswith("submitted_request_uncertain:"):
-                category = "submission_uncertain"
             elif clicked:
                 category = "post_submit_error"
             elif bool(error.get("retryable")):
@@ -847,13 +892,13 @@ class FlowMediaClient:
                     except (ValueError, OSError):
                         raise FlowCommandError(command[1], 'request_identity_unverified') from None
                 FlowMediaClient._write_diagnostics(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
-                    {'last_cli_error': {'phase': 'upload' if error_class == 'MediaUploadRejectedError' else 'submit_response',
+                    {'last_cli_error': {'phase': 'upload' if error_class in {'MediaUploadRejectedError','UploadResponseUnavailableError'} else 'submit_response',
                         'class': error_class, 'detail': detail, 'http_status': error.get('status') or response.get('http_status'),
                         'catalog_operation_id': operation_id, 'remote_operation_id': remote_operation_id,
                         'rpc': re.sub(r'[^A-Za-z0-9:._-]', '', str(error.get('route') or response.get('rpc') or ''))[:80],
                         'response': response}})
             raise FlowCommandError(command[1], category, error_class=error_class,
-                                   media_id=media_id, retryable=failed and not policy_or_quota and "RECAPTCHA" not in reasons,
+                                   media_id=media_id, retryable=failed and not policy_or_quota,
                                    detail=detail, operation_id=operation_id, submission_state=submission_state)
         return payload
 
@@ -978,45 +1023,54 @@ class FlowMediaClient:
         original = source.name
         width, height = self._validate_original('image', source, saved.get('original_sha256'))
         source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        self._write_diagnostics(diagnostics, {"original_sha256": source_hash})
-        upscaled = False
-        if not recovered and os.getenv("FLOW_IMAGE_UPSCALE_2K", "false").lower() == "true" and (not daily or self._generation_seconds() >= 300):
-            media_id, project_id = item.get("media_name"), payload.get("project_id")
-            if media_id and project_id:
-                upscale_dir = output_path.parent / "flow_upscale"
-                upscale_dir.mkdir(exist_ok=True)
-                command = [
-                    "gflow", "image", "upscale", media_id, "--scale", "2k",
-                    "--project", project_id, "--out", str(upscale_dir), "--profile", self.profile,
-                ]
-                try:
-                    result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
-                    matches = list(upscale_dir.rglob(f"{media_id}_2k.*")) if result.returncode == 0 else []
-                    if len(matches) == 1:
-                        candidate = self._owned_path(str(matches[0]), output_path.parent)
-                        self._validate_original('image', candidate)
-                        source = candidate
-                        upscaled = True
-                except (FlowCommandError, OSError, subprocess.SubprocessError):
-                    pass  # Keep the original image; the resolution gap stays visible in diagnostics.
-        with Image.open(source) as image:
-            image.load()
-            width, height = image.size
-            if width < 512 or height < 512 or abs(width / height - 0.75) > 0.015:
-                raise RuntimeError(f"Flow image has invalid dimensions: {width}x{height}")
-            staged = output_path.with_name('.generated_art.staged.png')
-            image.convert("RGB").save(staged, "PNG")
-            staged.replace(output_path)
-        self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"), {
-            "provider": "flow", "started_at": started_at,
-            "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
-            "model": "Nano Banana 2.1", "selected_model": submission.get("selected_model"), "wire_model": submission.get("actual_model"), "response_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
-            "aspect": "3:4", "source_width": width,
-            "source_height": height, "flow_2k_upscaled": upscaled,
-            "media_id": item.get("media_name"), "project_id": payload.get("project_id"),
-            "original_file": original, "source_file": str(source.relative_to(output_path.parent.resolve())),
-            "attempts": attempts,
-        })
+        self._write_diagnostics(diagnostics, {"original_sha256": source_hash, "result": payload})
+        try:
+            upscaled = False
+            if not recovered and os.getenv("FLOW_IMAGE_UPSCALE_2K", "false").lower() == "true" and (not daily or self._generation_seconds() >= 300):
+                media_id, project_id = item.get("media_name"), payload.get("project_id")
+                if media_id and project_id:
+                    upscale_dir = output_path.parent / "flow_upscale"
+                    upscale_dir.mkdir(exist_ok=True)
+                    command = [
+                        "gflow", "image", "upscale", media_id, "--scale", "2k",
+                        "--project", project_id, "--out", str(upscale_dir), "--profile", self.profile,
+                    ]
+                    try:
+                        result = run_bounded(command, timeout=300)
+                        matches = list(upscale_dir.rglob(f"{media_id}_2k.*")) if result.returncode == 0 else []
+                        if len(matches) == 1:
+                            candidate = self._owned_path(str(matches[0]), output_path.parent)
+                            self._validate_original('image', candidate)
+                            source = candidate
+                            upscaled = True
+                    except (FlowCommandError, OSError, subprocess.SubprocessError):
+                        pass  # Keep the original image; the resolution gap stays visible in diagnostics.
+            with Image.open(source) as image:
+                image.load()
+                width, height = image.size
+                if width < 512 or height < 512 or abs(width / height - 0.75) > 0.015:
+                    raise RuntimeError(f"Flow image has invalid dimensions: {width}x{height}")
+                staged = output_path.with_name('.generated_art.staged.png')
+                image.convert("RGB").save(staged, "PNG")
+                staged.replace(output_path)
+            self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"), {
+                "provider": "flow", "started_at": started_at,
+                "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
+                "model": "Nano Banana 2.1", "selected_model": submission.get("selected_model"), "wire_model": submission.get("actual_model"), "response_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
+                "aspect": "3:4", "source_width": width,
+                "source_height": height, "flow_2k_upscaled": upscaled,
+                "media_id": item.get("media_name"), "project_id": payload.get("project_id"),
+                "original_file": original, "source_file": str(source.relative_to(output_path.parent.resolve())),
+                "attempts": attempts,
+            })
+        except (OSError, subprocess.SubprocessError) as exc:
+            try:
+                self._write_diagnostics(diagnostics, {'processing_failure': {'category':'local_processing_failed',
+                    'error_class':type(exc).__name__,'retryable':True,'submission_state':'attempted'}})
+            except OSError:
+                pass  # Preserve the local failure class even when the failing disk cannot record it.
+            raise FlowCommandError('image', 'local_processing_failed',
+                error_class=type(exc).__name__, submission_state='attempted', retryable=True) from exc
         return output_path
 
     @staticmethod
@@ -1097,8 +1151,9 @@ class FlowMediaClient:
             raise ValueError("Video prompt is empty")
         output_path.parent.mkdir(parents=True, exist_ok=True)
         start_frame = output_path.with_name("flow_start_frame.png")
-        framed, _ = GoogleVideoClient._to_letterboxed_png_bytes(image_path)
-        start_frame.write_bytes(framed)
+        if recovered is None:
+            framed, _ = GoogleVideoClient._to_letterboxed_png_bytes(image_path)
+            start_frame.write_bytes(framed)
         raw_path = output_path.with_name("flow_raw_video.mp4")
         diagnostics = output_path.with_name("flow_video_diagnostics.json")
         saved = json.loads(diagnostics.read_text()) if diagnostics.exists() else {}
@@ -1181,51 +1236,62 @@ class FlowMediaClient:
             raise FlowCommandError('video', 'provider_rejected', detail='Flow video MODEL or SETTINGS differ')
         width, height, duration, has_audio = self._validate_original('video', source, saved.get('original_sha256'))
         source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        self._write_diagnostics(diagnostics, {"original_sha256": source_hash})
-        if source.resolve() != raw_path.resolve():
-            shutil.copyfile(source, raw_path)
-        selected = source
-        upscale_status = "not_needed" if width == 1080 else "disabled"
-        if not recovered and width == 720 and os.getenv("FLOW_VIDEO_UPSCALE_1080P", "true").lower() == "true" and (not daily or self._generation_seconds() >= 240):
-            project_id = os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip()
-            media_id = str(payload.get("media_id") or "")
-            upscale_status = "unavailable"
-            if project_id and media_id:
-                candidate = output_path.with_name("flow_1080p_download.mp4")
-                script = Path(__file__).resolve().parents[2] / "ops" / "flow_video_upscale.py"
-                try:
-                    result = subprocess.run([sys.executable, str(script), project_id, media_id, str(candidate)],
-                                            capture_output=True, text=True, timeout=240, check=False)
-                    upscale_status = json.loads(result.stdout).get("status", "unavailable")
-                    if result.returncode == 0 and candidate.is_file():
-                        up_width, up_height, up_duration, up_audio = self._probe_video(candidate)
-                        if ((up_width, up_height) == (1080, 1920) and abs(up_duration - duration) <= 0.5
-                                and up_audio == has_audio):
-                            selected = candidate
-                            upscale_status = "validated"
-                        else:
-                            upscale_status = "invalid_media"
-                except (OSError, ValueError, subprocess.SubprocessError, KeyError, IndexError, StopIteration):
-                    upscale_status = "invalid_media" if candidate.exists() else "unavailable"
-        staged = output_path.with_name(".generated_video.staged.mp4")
-        if selected == source and (width, height) == (720, 1280):
-            subprocess.run(
-                ["ffmpeg", "-nostdin", "-y", "-i", str(source), "-vf",
-                 "scale=1080:1920:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
-                 "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags",
-                 "+faststart", str(staged)],
-                capture_output=True, timeout=600, check=True,
-            )
-        else:
-            shutil.copyfile(selected, staged)
-        staged.replace(output_path)
-        self._write_diagnostics(output_path.with_name("flow_video_diagnostics.json"), {
-            "provider": "flow", "started_at": started_at,
-            "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
-            "model": "veo-fast", "aspect": "9:16", "media_id": payload.get("media_id"),
-            "source_width": width, "source_height": height, "duration_seconds": duration,
-            "source_has_audio": has_audio, "locally_scaled_to_1080p": selected == source and width == 720,
-            "upscale_status": upscale_status, "selected_video_file": selected.name,
-            "start_frame": start_frame.name, "attempts": attempts, "submissions_estimated": submitted,
-        })
+        payload = payload | {"local_path": str(source)}
+        self._write_diagnostics(diagnostics, {"original_sha256": source_hash, "result": payload})
+        try:
+            if source.resolve() != raw_path.resolve():
+                shutil.copyfile(source, raw_path)
+            selected = source
+            upscale_status = "not_needed" if width == 1080 else "disabled"
+            if not recovered and width == 720 and os.getenv("FLOW_VIDEO_UPSCALE_1080P", "true").lower() == "true" and (not daily or self._generation_seconds() >= 240):
+                project_id = os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip()
+                media_id = str(payload.get("media_id") or "")
+                upscale_status = "unavailable"
+                if project_id and media_id:
+                    candidate = output_path.with_name("flow_1080p_download.mp4")
+                    script = Path(__file__).resolve().parents[2] / "ops" / "flow_video_upscale.py"
+                    try:
+                        result = run_bounded([sys.executable, str(script), project_id, media_id, str(candidate),
+                            '--workflow', str(payload.get('workflow_id') or ''), '--deadline', str(time.time()+240)], timeout=240)
+                        upscale_status = json.loads(result.stdout).get("status", "unavailable")
+                        if result.returncode == 0 and candidate.is_file():
+                            up_width, up_height, up_duration, up_audio = self._probe_video(candidate)
+                            if ((up_width, up_height) == (1080, 1920) and abs(up_duration - duration) <= 0.5
+                                    and up_audio == has_audio):
+                                selected = candidate
+                                upscale_status = "validated"
+                            else:
+                                upscale_status = "invalid_media"
+                    except (OSError, ValueError, subprocess.SubprocessError, KeyError, IndexError, StopIteration):
+                        upscale_status = "invalid_media" if candidate.exists() else "unavailable"
+            staged = output_path.with_name(".generated_video.staged.mp4")
+            if selected == source and (width, height) == (720, 1280):
+                result = run_bounded(
+                    ["ffmpeg", "-nostdin", "-y", "-i", str(source), "-vf",
+                     "scale=1080:1920:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
+                     "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags",
+                     "+faststart", str(staged)],
+                    timeout=min(600, max(.001,float(os.getenv("STATE_ZERO_LOCAL_ONLY_DEADLINE", str(time.time()+600)))-time.time())),
+                )
+                result.check_returncode()
+            else:
+                shutil.copyfile(selected, staged)
+            staged.replace(output_path)
+            self._write_diagnostics(output_path.with_name("flow_video_diagnostics.json"), {
+                "provider": "flow", "started_at": started_at,
+                "ended_at": datetime.now(timezone.utc).isoformat(), "retry_count": len(attempts) - 1,
+                "model": "veo-fast", "aspect": "9:16", "media_id": payload.get("media_id"),
+                "source_width": width, "source_height": height, "duration_seconds": duration,
+                "source_has_audio": has_audio, "locally_scaled_to_1080p": selected == source and width == 720,
+                "upscale_status": upscale_status, "selected_video_file": selected.name,
+                "start_frame": start_frame.name, "attempts": attempts, "submissions_estimated": submitted,
+            })
+        except (OSError, subprocess.SubprocessError) as exc:
+            try:
+                self._write_diagnostics(diagnostics, {'processing_failure': {'category':'local_processing_failed',
+                    'error_class':type(exc).__name__,'retryable':True,'submission_state':'attempted'}})
+            except OSError:
+                pass  # Preserve the local failure class even when the failing disk cannot record it.
+            raise FlowCommandError('video', 'local_processing_failed',
+                error_class=type(exc).__name__, submission_state='attempted', retryable=True) from exc
         return output_path

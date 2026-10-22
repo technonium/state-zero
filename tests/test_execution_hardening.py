@@ -57,7 +57,7 @@ class ExecutionHardeningTests(unittest.TestCase):
         self.assertEqual(call.call_count, 1)
 
     def test_upload_error_name_does_not_invent_policy_rejection(self):
-        payload = {'status': 'error', 'error': {'class': 'MediaUploadRejectedError',
+        payload = {'status': 'error', 'error': {'class': 'UploadResponseUnavailableError',
             'detail': 'migrated host: maseQ answered 200 without a media id'}}
         with patch('flow_media_client.run_bounded', return_value=subprocess.CompletedProcess([], 27, json.dumps(payload), '')):
             with self.assertRaises(FlowCommandError) as error:
@@ -234,14 +234,11 @@ class ExecutionHardeningTests(unittest.TestCase):
         self.assertIn(f'chmod 755 {remote} {remote}/portfolio ', activation)
 
     def test_rescue_lock_wait_is_bounded(self):
-        import fcntl
-        from ops.run_rescue import acquire_execution_lock
-        path = self.root / 'execution.lock'
-        with path.open('a') as owner, path.open('a') as contender:
-            fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with patch('ops.run_rescue.time.monotonic', side_effect=[0, 0, 601]), \
-                    patch('ops.run_rescue.time.sleep'):
-                self.assertFalse(acquire_execution_lock(contender, 600))
+        from utils import execution_lock, ExecutionBusy
+        with execution_lock():
+            with patch('time.monotonic',side_effect=[0,0,601]),patch('time.sleep'):
+                with self.assertRaises(ExecutionBusy):
+                    with execution_lock(wait_seconds=600):pass
 
     def test_notification_exception_cannot_stop_emergency_publish_or_archive(self):
         from pipeline import WHOOPPipeline
@@ -354,7 +351,7 @@ class ExecutionHardeningTests(unittest.TestCase):
         self.freeze()
         art = self.root / 'generated_art.png'; Image.new('RGB', (768, 1024)).save(art)
         output = self.root / 'generated_video.mp4'
-        payload = {'status': 'error', 'error': {'class': 'MediaUploadRejectedError',
+        payload = {'status': 'error', 'error': {'class': 'UploadResponseUnavailableError',
             'detail': 'upload_response_unrecognized: HTTP 200 rpc=maseQ bytes=0 frames=0'}}
         def video(prompt, image, target):
             target.write_bytes(b'valid-video')

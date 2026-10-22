@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import argparse
+import hashlib
+import time
 import re
 from pathlib import Path
 from database_manager import CardDatabase
@@ -995,12 +997,21 @@ class PromptOrchestrator:
             'raw_payload': {},
         }
 
+    @staticmethod
+    def _prompt_seconds_remaining():
+        deadline=os.getenv('STATE_ZERO_PROMPT_DEADLINE')
+        remaining=float(deadline)-time.time() if deadline else 900
+        if remaining<=0:
+            raise TimeoutError('Prompt preparation budget exhausted; committed stages are preserved')
+        return remaining
+
     def call_llm(self, prompt: str) -> str:
         """
         Call LLM API to generate text.
         
         Uses OpenRouter (Minimax) as primary with Google Gemini 2.5 Pro as fallback.
         """
+        self._prompt_seconds_remaining()
         # Mock mode only when no real API is available (OpenRouter takes priority)
         if (not self.google_api_key or self.google_api_key == 'mock') and not self.use_openrouter:
             print("⚠️  Running LLM in Mock Mode")
@@ -1058,22 +1069,107 @@ class PromptOrchestrator:
                 temperature=1.0,
                 max_output_tokens=12000,
                 thinking_budget=8000,
-                timeout=GEMINI_TIMEOUT_SECONDS,
+                timeout=min(GEMINI_TIMEOUT_SECONDS, self._prompt_seconds_remaining()),
             )
         except LLMProviderError as e:
             print(f"❌ Gemini API Error: {e}")
             raise
 
     def save_output(self, filename: str, content: str):
-        """Save LLM output to output/ directory"""
-        output_path = self.output_dir / filename
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        output = self.output_dir / filename
+        temporary = output.with_suffix(output.suffix + '.tmp')
+        with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w', encoding='utf-8') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(output)
+        if getattr(self, '_checkpoint_files', None) is not None and filename != 'template_fill_warnings.json':
+            self._checkpoint_files.add(filename)
 
     def save_json_output(self, filename: str, payload: dict):
-        output_path = self.output_dir / filename
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
+        self.save_output(filename, json.dumps(payload, indent=2, ensure_ascii=False))
+
+    @staticmethod
+    def _prompt_hash(value):
+        encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), default=lambda v: sorted(v) if isinstance(v, set) else str(v))
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
+    def _run_prompt_stage(self, name, prerequisites, generate):
+        if not hasattr(self, '_prompt_progress'):
+            return generate()
+        templates = {'image':'json_builder','title':'title_builder','scene':'scene_description_builder'}
+        stages = self._prompt_progress['stages']
+        key = self._prompt_hash({'base':self._prompt_base,
+            'template':self.load_template(templates.get(name,name)),
+            'prerequisites':{k:stages[k] for k in prerequisites}})
+        saved = stages.get(name)
+        if saved and saved.get('key') == key:
+            try:
+                if not saved['outputs'] or any(hashlib.sha256((self.output_dir / f).read_bytes()).hexdigest()!=h
+                    for f,h in saved['outputs'].items() if Path(f).name==f):
+                    raise ValueError('Checkpoint output changed')
+                if any(Path(f).name!=f for f in saved['outputs']):
+                    raise ValueError('Invalid checkpoint path')
+                if name == 'creature':
+                    self.latest_creature_fragment = saved['fragment']
+                    self.latest_creature_fragment_why_unique = saved['fragment_why']
+                print(f'▶ Reusing validated {name} preparation.')
+                return saved['value']
+            except (OSError,KeyError,ValueError,TypeError):
+                pass
+        # Removing an old commitment before work prevents crash-time reuse of partial output.
+        stages.pop(name, None)
+        from flow_readback import save
+        save(self.output_dir/'prompt_progress.json',self._prompt_progress)
+        self._checkpoint_files = set()
+        try:
+            value = generate()
+            if not isinstance(value,(dict,str)) or not value or isinstance(value,str) and not value.strip():
+                raise ValueError('Prompt stage returned incomplete output')
+            outputs={f:hashlib.sha256((self.output_dir/f).read_bytes()).hexdigest() for f in self._checkpoint_files}
+            if not outputs:
+                raise ValueError('Prompt stage produced no validated output files')
+            # Normalize sets in title selection context for durable JSON; callers use its values as collections.
+            value=json.loads(json.dumps(value,default=lambda v:sorted(v) if isinstance(v,set) else str(v)))
+            stages[name]={'key':key,'value':value,'outputs':outputs,
+                'fragment':self.latest_creature_fragment,'fragment_why':self.latest_creature_fragment_why_unique}
+            save(self.output_dir/'prompt_progress.json',self._prompt_progress)
+            return value
+        finally:
+            self._checkpoint_files = None
+
+    def prepare_all(self, daily_data, *, persist_environment_history=False):
+        if ((self.output_dir/'flow_inputs.json').exists() or list(self.output_dir.glob('flow_*_attempt_*.submit'))
+                or list(self.output_dir.glob('google_*_diagnostics.json'))
+                or any((self.output_dir/n).exists() for n in ('generated_art.png','generated_video.mp4'))):
+            raise RuntimeError('Frozen media evidence prevents prompt preparation from being rewritten')
+        path=self.output_dir/'prompt_progress.json'
+        self._prompt_progress=json.loads(path.read_text()) if path.exists() else {'version':1,'stages':{}}
+        if self._prompt_progress.get('version')!=1 or not isinstance(self._prompt_progress.get('stages'),dict):
+            raise ValueError('Unsupported prompt checkpoint evidence')
+        snapshot=self.output_dir/'whoop_snapshot.json'
+        client=getattr(self,'llm_client',None)
+        self._prompt_base={'daily':daily_data,'whoop':{k:v for k,v in json.loads(snapshot.read_text()).items() if not k.endswith('_updated_at')} if snapshot.exists() else None,
+            'settings':{'primary':getattr(client,'model',GEMINI_MODEL),'temperature':getattr(client,'temperature',1.0),
+                'tokens':getattr(client,'max_tokens',12000),'thinking':getattr(client,'thinking_budget',8000),
+                'fallback':GEMINI_MODEL,'openrouter':self.use_openrouter,'persist_history':persist_environment_history}}
+        stage=self._run_prompt_stage
+        interpretation=stage('interpretation',[],lambda:self.generate_interpretation(daily_data))
+        creature=stage('creature',['interpretation'],lambda:self.generate_creature(daily_data,interpretation))
+        environment=stage('environment',['interpretation'],lambda:self.generate_environment(daily_data,interpretation,
+            persist_environment_history=persist_environment_history))
+        if persist_environment_history and daily_data.get('date'):
+            try:
+                CardDatabase().upsert_environment_history(run_date=daily_data['date'],
+                    energy_zone=daily_data.get('energy_zone','MEDIUM'),environment_name=split_environment_output(environment)[0],
+                    environment_text=environment,selection_stage='environment_selected')
+            except Exception as exc:
+                print(f'Environment history persist unavailable: {type(exc).__name__}')
+        image=stage('image',['interpretation','creature','environment'],lambda:self.build_image_json(daily_data,interpretation,creature,environment))
+        self.extract_metadata(daily_data,daily_data.get('date_display','Today'),environment,image)
+        blend=(self.output_dir/'blend_option.txt').read_text().strip()
+        stage('video',['image','environment'],lambda:self.build_video_prompt(daily_data,environment,blend))
 
     def format_natal_chart(self, natal_context: dict) -> str:
         PLANET_ORDER = ['Sun', 'Moon', 'Mars', 'Mercury', 'Jupiter', 'Venus', 'Saturn', 'Rahu', 'Ketu']
@@ -1775,8 +1871,7 @@ class PromptOrchestrator:
             print(f"   Art keywords: {placeholders.get('art_keywords', '')}")
             print(f"   Proceeding with LLM choice (allowing creative flexibility)")
 
-        with open(self.output_dir / 'blend_option.txt', 'w') as f:
-            f.write(blend_option)
+        self.save_output('blend_option.txt', blend_option)
 
         return image_json
 
@@ -2119,8 +2214,9 @@ class PromptOrchestrator:
     def extract_metadata(self, daily_data: dict, date_display: str, environment: str = "", image_json: dict = None) -> dict:
         """Extract card metadata by generating title and scene description separately."""
         run_date = daily_data.get('date') or os.getenv('PIPELINE_DATE')
-        title_result = self.generate_title(daily_data, date_display, environment)
-        scene_result = self.generate_scene_description(daily_data, date_display, environment, image_json=image_json)
+        title_result = self._run_prompt_stage('title',['environment'],lambda:self.generate_title(daily_data,date_display,environment))
+        scene_result = self._run_prompt_stage('scene',['environment','image'],lambda:self.generate_scene_description(
+            daily_data,date_display,environment,image_json=image_json))
 
         combined_prompt = (
             "# Metadata Prompt Trace\n\n"
@@ -2160,8 +2256,7 @@ class PromptOrchestrator:
                 ),
             },
         )
-        with open(self.output_dir / 'card_metadata.json', 'w', encoding='utf-8') as f:
-            json.dump(final_metadata, f, indent=2)
+        self.save_json_output('card_metadata.json', final_metadata)
 
         return final_metadata
 
@@ -2921,29 +3016,7 @@ def main():
         daily_data = json.load(f)
 
     if args.step == 'all':
-        print("▶ Generating Interpretation...")
-        interpretation = orchestrator.generate_interpretation(daily_data)
-        print("▶ Generating Creature...")
-        creature = orchestrator.generate_creature(daily_data, interpretation)
-        print("▶ Generating Environment...")
-        environment = orchestrator.generate_environment(
-            daily_data,
-            interpretation,
-            persist_environment_history=persist_environment_history,
-        )
-        print("▶ Building Image JSON...")
-        image_json = orchestrator.build_image_json(daily_data, interpretation, creature, environment)
-        print("▶ Extracting Metadata...")
-        metadata = orchestrator.extract_metadata(daily_data, daily_data.get('date_display', 'Today'), environment, image_json)
-
-        try:
-            with open(orchestrator.output_dir / 'blend_option.txt', 'r') as f:
-                blend_option = f.read().strip()
-        except FileNotFoundError:
-            blend_option = "Option A"
-            
-        print("▶ Building Video Prompt...")
-        video_prompt = orchestrator.build_video_prompt(daily_data, environment, blend_option)
+        orchestrator.prepare_all(daily_data,persist_environment_history=persist_environment_history)
 
         print("✅ All prompts completed successfully.")
     else:

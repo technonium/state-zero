@@ -76,7 +76,10 @@ class DailyRunStateManager:
     def is_posted(self) -> bool:
         return self.current_status() == "POSTED"
 
-    def acquire(self) -> tuple[str, dict | None]:
+    def acquire(self, *, execution_fd: int | None = None) -> tuple[str, dict | None]:
+        if execution_fd is not None:
+            from utils import verify_execution_fd
+            verify_execution_fd(execution_fd)
         for _ in range(3):
             state = self.load_state() or {}
             status = str(state.get("status") or "").strip().upper()
@@ -93,14 +96,25 @@ class DailyRunStateManager:
             claim = self.load_claim() or {}
             state = self.load_state() or {}
             status = str(state.get("status") or "").strip().upper()
-            if status in ACTIVE_STATUSES and self._has_fresh_heartbeat(state):
+            if execution_fd is None and status in ACTIVE_STATUSES and self._has_fresh_heartbeat(state):
                 return "skip_active", state
-            if not status and self._has_fresh_claim(claim):
+            if execution_fd is None and not status and self._has_fresh_claim(claim):
                 return "skip_active", state or claim
 
             self._remove_claim_if_present()
 
         return "skip_active", self.load_state()
+
+    def notify_once(self, transition: str, notify) -> None:
+        state=self.load_state() or {}
+        if state.get('last_actionable_alert')==transition:
+            return
+        try:
+            if notify():
+                self._write_json_atomic(self.state_path,state | {'date':self.run_date,
+                    'status':state.get('status','FAILED_RETRYABLE'),'last_actionable_alert':transition})
+        except Exception:
+            pass
 
     def heartbeat(self, *, status: str | None = None, note: str | None = None, extra: dict | None = None) -> dict:
         return self._update_state(status=status, note=note, extra=extra, touch_heartbeat=True)
@@ -228,7 +242,7 @@ class DailyRunStateManager:
     def _become_owner(self) -> dict:
         previous = self.load_state() or {}
         now_iso = self.now_iso()
-        state = {
+        state = previous | {
             "date": self.run_date,
             "status": "STARTING",
             "run_token": self.run_token,

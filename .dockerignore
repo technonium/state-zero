@@ -46,3 +46,6 @@ docs/STATE_ZERO_ORACLE_MIGRATION_PRIVATE.md
 .env.*
 !.env.example
 .build-provenance.json
+
+# Other-agent handoffs and local scratch evidence are not runtime sources
+tmp/
