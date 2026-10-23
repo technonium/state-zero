@@ -63,34 +63,143 @@ def pipeline_seconds_remaining(*, generation: bool = False, maximum: float = 600
     return min(maximum, remaining)
 
 
+class OwnedProcessCleanupError(RuntimeError):
+    """An owned descendant survived cleanup; another browser launch is unsafe."""
+
+
+def _process_snapshot():
+    """Linux start ticks prevent killing a PID reused after its owner exited."""
+    found = {}
+    for path in Path('/proc').glob('[0-9]*/stat'):
+        try:
+            raw = path.read_text()
+            fields = raw.rsplit(')', 1)[1].split()
+            name=raw.split('(',1)[1].rsplit(')',1)[0]
+            found[int(path.parent.name)] = dict(ppid=int(fields[1]), pgid=int(fields[2]),
+                sid=int(fields[3]), start=fields[19], state=fields[0],
+                name=name if name in {'chrome','chrome_crashpad','node','python3','ffmpeg'} else 'OTHER')
+        except (OSError, ValueError, IndexError):
+            pass
+    return found
+
+
+def process_cleanup_verified(evidence):
+    """Recheck recorded owners without signalling a PID that may have been reused."""
+    current = _process_snapshot()
+    return not any(current.get(entry['pid'], {}).get('start') == entry['start']
+        and current[entry['pid']]['state'] != 'Z'
+        for entry in evidence.get('owned', []) + evidence.get('unverified_chrome', []))
+
+
 def run_bounded(command, *, timeout, **kwargs):
-    """Kill and reap the whole pre-publication process group on timeout."""
+    """Bound work and verify cleanup of its observed, including detached, children."""
     import signal
     import subprocess
+    import threading
+    import time
+    launched_at=time.time()
+    before = [dict(pid=pid, **entry) for pid, entry in _process_snapshot().items()
+              if entry["name"].startswith("chrome")][:64]
     with subprocess.Popen(command, start_new_session=True, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True, **kwargs) as child:
+        owned = {}
+        stop = threading.Event()
+
+        def observe():
+            current = _process_snapshot()
+            parents = {child.pid} | {pid for pid, entry in owned.items()
+                if current.get(pid, {}).get('start') == entry['start']}
+            while True:
+                additions = {pid: entry for pid, entry in current.items()
+                    if pid not in parents and (entry['ppid'] in parents or entry['pgid'] == child.pid)}
+                if not additions:
+                    break
+                for entry in additions.values():entry['seen_at']=time.time()
+                owned.update(additions)
+                parents.update(additions)
+
+        def watch():
+            while not stop.wait(.1):
+                observe()
+
+        tracker = threading.Thread(target=watch, daemon=True)
+        tracker.start()
+        failure = None
+        stdout = stderr = None
         try:
             stdout, stderr = child.communicate(timeout=timeout)
-        except BaseException:
+        except BaseException as exc:
+            failure = exc
+            stdout, stderr = getattr(exc, 'stdout', None), getattr(exc, 'stderr', None)
+        finally:
+            stop.set()
+            tracker.join()
+            observe()
+        evidence = {'version': 1, 'parent_pid': child.pid,'launched_at':launched_at,
+            'before': before, 'owned': [dict(pid=pid, **entry) for pid, entry in owned.items()]}
+        # A closing Chrome may outlive its CLI briefly while releasing the profile.
+        grace = failure is None
+        deadline = time.monotonic() + (1 if grace else 0)
+        while grace and time.monotonic() < deadline:
+            current = _process_snapshot()
+            if not any(current.get(pid,{}).get('start')==entry['start'] and current[pid]['state']!='Z'
+                       for pid,entry in owned.items()):
+                break
+            time.sleep(.1)
+        # Chrome uses a detached group; the CLI's killpg alone cannot clean it.
+        for sig, seconds in ((signal.SIGTERM, 1 if grace else 2), (signal.SIGKILL, 3)):
             try:
-                os.killpg(child.pid, signal.SIGTERM)
+                os.killpg(child.pid, sig)
             except ProcessLookupError:
                 pass
-            needs_reap = False
-            try:
-                child.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                needs_reap = True
-            finally:
-                # The parent can exit before an owned descendant that ignored TERM.
+            current = _process_snapshot()
+            for pid, entry in owned.items():
+                if current.get(pid, {}).get('start') != entry['start']:
+                    continue
                 try:
-                    os.killpg(child.pid, signal.SIGKILL)
+                    os.kill(pid, sig)
                 except ProcessLookupError:
                     pass
-            if needs_reap:
-                child.communicate()
-            raise
-        return subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+            deadline = time.monotonic() + seconds
+            while True:
+                child.poll()
+                current = _process_snapshot()
+                alive = [pid for pid, entry in owned.items()
+                    if current.get(pid, {}).get('start') == entry['start']
+                    and current[pid]['state'] != 'Z']
+                if not alive and child.returncode is not None or time.monotonic() >= deadline:
+                    break
+                time.sleep(.1)
+            if not alive and child.returncode is not None:
+                break
+        previous_chrome = {(entry['pid'],entry['start']) for entry in before}
+        unverified = [dict(pid=pid, **entry) for pid, entry in current.items()
+            if entry['name'].startswith('chrome') and entry['state'] != 'Z'
+            and (pid,entry['start']) not in previous_chrome and pid not in owned]
+        evidence['unverified_chrome'] = unverified
+        evidence['cleanup_verified'] = not alive and not unverified and child.returncode is not None
+        if not evidence['cleanup_verified']:
+            error = OwnedProcessCleanupError('Owned process cleanup could not be verified')
+            error.process_evidence = evidence
+            error.returncode, error.stdout, error.stderr = child.returncode, stdout, stderr
+            raise error from failure
+        try:
+            final_stdout, final_stderr = child.communicate(timeout=1)
+        except subprocess.TimeoutExpired as exc:
+            evidence['cleanup_verified'] = False
+            error = OwnedProcessCleanupError('An owned output pipe remained open after cleanup')
+            error.process_evidence = evidence
+            error.returncode = child.returncode
+            error.stdout, error.stderr = stdout or exc.stdout, stderr or exc.stderr
+            raise error from exc
+        if failure is not None:
+            failure.process_evidence = evidence
+            if isinstance(failure, subprocess.TimeoutExpired):
+                failure.output, failure.stderr = final_stdout, final_stderr
+            raise failure
+        result = subprocess.CompletedProcess(command, child.returncode, stdout, stderr)
+        result.process_evidence = evidence
+        return result
 
 
 def resolve_instagram_publish_strategy(strategy: str | None = None) -> str:

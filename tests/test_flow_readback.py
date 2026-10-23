@@ -415,16 +415,20 @@ class RecoveryCommandTests(unittest.TestCase):
         process.__exit__ = Mock(return_value=False)
         with patch('flow_media_client.subprocess.Popen', return_value=process), \
                 patch('flow_media_client.os.killpg') as kill:
-            self.assertEqual(FlowMediaClient._recovery_command(['recover'], 1), (-1, {}))
-        self.assertEqual(kill.call_args_list, [unittest.mock.call(1234, signal.SIGTERM),
-                                             unittest.mock.call(1234, signal.SIGKILL)])
+            code,payload=FlowMediaClient._recovery_command(['recover'], 1)
+            self.assertEqual(code,-1)
+            self.assertEqual(payload['error_class'],'RecoveryWorkerTimeout')
+            self.assertTrue(payload['worker']['processes']['cleanup_verified'])
+        self.assertEqual(kill.call_args_list, [unittest.mock.call(1234, signal.SIGTERM)])
         self.assertEqual(process.communicate.call_count, 2)
 
     def test_sdk_logging_cannot_corrupt_machine_readable_result(self):
         from contextlib import redirect_stdout, redirect_stderr
         import io
         from ops import flow_media_recover
-        async def download(*args, **kwargs): print('synthetic SDK diagnostic')
+        async def download(*args, **kwargs):
+            print('synthetic SDK diagnostic')
+            print(json.dumps({'status':'downloaded','result':None}),file=kwargs['result_stream'],flush=True)
         output, errors = io.StringIO(), io.StringIO()
         with patch.object(sys, 'argv', ['recover', PROJECT, MEDIA, '/tmp/original.png']), \
                 patch.object(flow_media_recover, 'download_existing', new=AsyncMock(side_effect=download)), \

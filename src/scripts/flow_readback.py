@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 import time
 from pathlib import Path
 from urllib.parse import parse_qs, unquote_plus, urljoin, urlsplit, urlunsplit
@@ -19,6 +20,17 @@ class ReadbackIdentityError(ReadbackUnavailable):
 
 class ReadbackUnsupported(ReadbackUnavailable):
     pass
+
+
+def recovery_phase(phase):
+    """Only structural events cross the worker boundary; telemetry cannot abort work."""
+    if phase not in {'launch','lease','browser','listing','match','editor','download','hash'}:
+        return
+    try:
+        print('STATE_ZERO_PHASE '+json.dumps({'phase':phase,'at':round(time.time(),3)}),
+              file=sys.stderr,flush=True)
+    except Exception:
+        pass
 
 
 def fingerprint(text):
@@ -95,6 +107,7 @@ def decode_listing(payload, project):
 async def snapshot(context, project, deadline):
     """Reload in a separate page; retry only reads, under one caller-owned deadline."""
     from gflow_cli.api.transports.batchexecute import parse_frames
+    recovery_phase('listing')
     last = ReadbackUnavailable('Project read deadline exhausted')
     while time.time() < deadline:
         try:
@@ -302,7 +315,8 @@ def receipt_path(context_file):
     return context_file.with_name(context_file.name.removesuffix('.context.json') + '.result.json')
 
 
-async def recover_context(client, context_file, project, request_hash, deadline, output, *, media_id=None, workflow_id=None):
+async def recover_context(client, context_file, project, request_hash, deadline, output, *, media_id=None, workflow_id=None,
+                          mode=None, candidate=None):
     started = time.time()
     marker = context_file.with_name(context_file.name.removesuffix('.context.json') + '.submit')
     try:
@@ -333,6 +347,9 @@ async def recover_context(client, context_file, project, request_hash, deadline,
             or evidence.get('selected_model') != 'Nano Banana 2.1' or evidence.get('expected_model') != 'NARWHAL'
             or evidence.get('readback_hash') != identity_hash(data)):
         raise ReadbackIdentityError('Submitted request not verified')
+    if mode is not None:
+        return await recover_candidate(client,context_file,data,deadline,output,mode,candidate,
+                                       media_id=media_id,workflow_id=workflow_id)
     deadline = min(deadline, data.get('recovery_deadline') or deadline)
     data['recovery_deadline'] = deadline
     save(context_file, data)
@@ -388,6 +405,58 @@ async def recover_context(client, context_file, project, request_hash, deadline,
     data['elapsed_seconds'] = round(time.time() - started, 3)
     save(context_file, data)
     raise ReadbackUnavailable('Media recovery deadline exhausted')
+
+
+async def recover_candidate(client, context_file, data, deadline, output, mode, candidate, *, media_id=None, workflow_id=None):
+    """Search and retrieval report evidence to the parent; child records are read-only."""
+    context_hash=hashlib.sha256(context_file.read_bytes()).hexdigest()
+    video=data.get('kind')=='video'
+    if mode not in {'search','retrieve','recover'} or mode=='retrieve' and (
+            not isinstance(candidate,dict) or candidate.get('context_sha256')!=context_hash
+            or candidate.get('kind')!=('video' if video else 'image')):
+        raise ReadbackIdentityError('Retrieval candidate identity changed')
+    while time.time()<deadline:
+        try:
+            listing=await snapshot(client._context,data['project_id'],deadline)
+            if video:
+                known=candidate['result'] if candidate else {}
+                clip=select_video(listing,data,media_id=known.get('media_id') or media_id,
+                                  workflow_id=known.get('workflow_id') or workflow_id)
+                result=dict(request_hash=data['request_hash'],profile=data['profile'],project_id=data['project_id'],
+                    succeeded=True,media_id=clip['media_id'],workflow_id=clip['workflow_id'],
+                    request={'count':1,'model':'veo_3_1_fast','mode':'i2v','aspect':'portrait'})
+                selected={'bytes':clip['bytes']}
+            else:
+                image=select_image(listing,data)
+                if media_id and image.media_id!=media_id:
+                    raise ReadbackIdentityError('Known image result conflicts with exact match')
+                result=dict(request_hash=data['request_hash'],profile=data['profile'],project_id=data['project_id'],
+                    count=1,model='NARWHAL',images=[dict(media_name=image.media_id,workflow_id=image.workflow_id,
+                    model_name_type='BELUGA',aspect_ratio='IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR')])
+                selected={'dimensions':list(image.dimensions)}
+            recovery_phase('match')
+            found=dict(kind='video' if video else 'image',context_sha256=context_hash,result=result,**selected)
+            if mode=='search':
+                return found | {'observed_at':time.time()}
+            if mode=='retrieve' and found!={k:v for k,v in candidate.items() if k!='observed_at'}:
+                raise ReadbackIdentityError('Completed candidate changed before retrieval')
+            if video:
+                await asyncio.wait_for(download_video(client,clip,output,deadline=deadline),max(.001,deadline-time.time()))
+                result['local_path']=str(output)
+            else:
+                recovery_phase('download')
+                await asyncio.wait_for(download_image(client,image,output),max(.001,deadline-time.time()))
+                result['images'][0]['local_path']=str(output)
+            recovery_phase('hash')
+            result['sha256']=hashlib.sha256(output.read_bytes()).hexdigest()
+            return result
+        except ReadbackIdentityError:
+            raise
+        except ReadbackUnavailable:
+            if mode=='retrieve':
+                raise
+            await asyncio.sleep(min(3,max(0,deadline-time.time())))
+    raise ReadbackUnavailable('Exact search deadline exhausted')
 
 
 async def download_image(client, image, output):
@@ -500,18 +569,21 @@ async def download_video(client, clip, output, *, deadline):
     if (address.scheme == 'https' and address.hostname == 'flow-content.google'
             and address.port in (None,443) and address.username is None and address.password is None
             and address.path == '/video/' + clip['workflow_id']):
+        recovery_phase('download')
         response = await client._context.request.get(clip['video_url'], max_redirects=0,
             timeout=max(1,(deadline-time.time())*1000))
         if response.status != 200:
             raise ReadbackUnavailable('Original video download unavailable')
         body = await response.body()
     else:
+        recovery_phase('editor')
         await client.page.goto(f'https://flow.google.com/project/{clip["project_id"]}/edit/{clip["media_id"]}',
                               wait_until='domcontentloaded',timeout=max(1,min(60000,(deadline-time.time())*1000)))
         current=urlsplit(str(client.page.url))
         if (current.scheme != 'https' or current.hostname != 'flow.google.com'
                 or current.path != f'/project/{clip["project_id"]}/edit/{clip["media_id"]}'):
             raise ReadbackIdentityError('Original download editor identity differs')
+        recovery_phase('download')
         body = await asyncio.wait_for(_download_original_verified(client.page,expected=expected,
             media_id=clip['media_id']),max(.001,deadline-time.time()))
     if len(body) != expected or body[4:8] != b'ftyp':
@@ -629,6 +701,7 @@ async def guard_video(route, request, data, rpc):
         await route.abort()
     else:
         await route.continue_()
+        note_video_lifecycle(data,"route_continued")
     return problem
 
 
@@ -648,34 +721,79 @@ def video_receipt(data, record, context_file):
     return result
 
 
-def note_video_response(data, *, phase, rpc, response, exc=None, decoded=False, read_started=None, event_received=None):
-    if data is None:
-        return
-    fields=dict(phase=phase,rpc=rpc,http_status=response.status,
-                body_readable=exc is None,decoded=decoded)
-    if read_started is not None:
-        fields['read_ms']=max(0,round((time.monotonic()-read_started)*1000))
-        if event_received is not None:
-            fields['event_to_read_ms']=max(0,round((read_started-event_received)*1000))
-    observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
-    key=f'{phase}:{rpc}:readable' if exc is None else f'{phase}:{rpc}:unreadable'
-    if not decoded and len(observation['counters'])<32:
-        observation['counters'][key]=min(100000,observation['counters'].get(key,0)+1)
-    if exc is not None:
-        detail=('Network.getResponseBody: body unavailable' if 'Network.getResponseBody' in str(exc)
-                else 'Response body unavailable')
-        fields.update(error_class=type(exc).__name__,detail=detail)
-        data.setdefault('original_response_failure',fields.copy())
-    data['response']=fields
-    note_response(data,**fields)
+def note_video_response(data, *, phase, rpc, response, exc=None, decoded=False, read_started=None, event_received=None, upload=False):
+    try:
+        if data is None:
+            return
+        fields=dict(phase=phase,rpc=rpc,http_status=response.status,
+                    body_readable=exc is None,decoded=decoded)
+        if read_started is not None:
+            fields['read_ms']=max(0,round((time.monotonic()-read_started)*1000))
+            if event_received is not None:
+                fields['event_to_read_ms']=max(0,round((read_started-event_received)*1000))
+        observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
+        key=f'{phase}:{rpc}:readable' if exc is None else f'{phase}:{rpc}:unreadable'
+        if not decoded and len(observation['counters'])<32:
+            observation['counters'][key]=min(100000,observation['counters'].get(key,0)+1)
+        if exc is not None:
+            detail=('Network.getResponseBody: body unavailable' if 'Network.getResponseBody' in str(exc)
+                    else 'Response body unavailable')
+            fields.update(error_class=type(exc).__name__,detail=detail)
+            data.setdefault('original_response_failure',fields.copy())
+        data['response']=fields
+        (note_upload_response if upload else note_response)(data,**fields)
+    except Exception:
+        pass
 
 
-def note_video_lifecycle(data, event):
-    if data is None or event not in {'routing_active','routing_removed','request_finished','request_failed',
-            'page_closed','context_closed','browser_disconnected'}:
-        return
-    observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
-    observation['counters'][event]=min(100000,observation['counters'].get(event,0)+1)
-    observation['events']=(observation['events']+[{'event':event,'at':round(time.time(),3)}])[-24:]
-    observation['routing_active']=event=='routing_active' if event in {'routing_active','routing_removed'} else observation.get('routing_active',False)
-    note_response(data,observer=observation)
+def note_video_lifecycle(data, event, *, request=None, upload=False):
+    try:
+        if data is None or event not in {'routing_active','routing_removed','request_finished','request_failed',
+                'page_closed','context_closed','browser_disconnected','page_navigated','route_continued'}:
+            return
+        observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
+        observation['counters'][event]=min(100000,observation['counters'].get(event,0)+1)
+        item={'event':event,'at':round(time.time(),3)}
+        if event=='request_failed':
+            value=getattr(request,'failure',None)
+            allowed={'net::ERR_ABORTED','net::ERR_FAILED','net::ERR_CONNECTION_RESET','net::ERR_TIMED_OUT',
+                'net::ERR_NETWORK_CHANGED','net::ERR_INTERNET_DISCONNECTED','net::ERR_CONNECTION_CLOSED',
+                'net::ERR_NAME_NOT_RESOLVED','net::ERR_BLOCKED_BY_CLIENT'}
+            item['failure']=value if isinstance(value,str) and value in allowed else 'OTHER'
+        observation['events']=(observation['events']+[item])[-24:]
+        observation['routing_active']=event=='routing_active' if event in {'routing_active','routing_removed'} else observation.get('routing_active',False)
+        (note_upload_response if upload else note_response)(data,observer=observation)
+    except Exception:
+        pass
+
+
+def observe_rpc(page, data, rpc, *, upload=False):
+    """Observe lifecycle only; the transport remains the sole reader of each body."""
+    try:
+        if data is None:
+            return lambda: None
+        listeners=[]
+        def record(event,request=None):
+            try:
+                if request is not None and rpc not in parse_qs(urlsplit(request.url).query).get('rpcids',[''])[0].split(','):
+                    return
+                note_video_lifecycle(data,event,request=request,upload=upload)
+            except Exception:
+                pass
+        for event in ('requestfailed','requestfinished'):
+            callback=lambda request,event=event:record('request_failed' if event=='requestfailed' else 'request_finished',request)
+            page.on(event,callback);listeners.append((page,event,callback))
+        for emitter,event,name in ((page,'close','page_closed'),(page.context,'close','context_closed'),
+                                   (page,'framenavigated','page_navigated'),
+                                   (page.context.browser,'disconnected','browser_disconnected')):
+            if emitter is None:
+                continue
+            callback=lambda *args,name=name:record(name)
+            emitter.on(event,callback);listeners.append((emitter,event,callback))
+        def stop():
+            for emitter,event,callback in listeners:
+                try:emitter.remove_listener(event,callback)
+                except Exception:pass
+        return stop
+    except Exception:
+        return lambda: None

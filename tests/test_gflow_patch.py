@@ -283,6 +283,15 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
         for body in (self.body('GEM_PIX_2', 'NARWHAL BELUGA'), '', 'NARWHAL', self.body('UNKNOWN'), self.body('NARWHAL')):
             self.assertIsNotNone(_image_body_problem(body, (), Model.NARWHAL))
 
+    async def test_unmanaged_guard_does_not_require_app_telemetry(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
+        route=MagicMock(abort=AsyncMock(),continue_=AsyncMock())
+        with patch.dict(os.environ,{},clear=True),patch.dict(sys.modules,{'flow_readback':None}):
+            self.assertIsNone(await _guard_image_submit(route,MagicMock(post_data=self.body('BELUGA')),
+                                                       (),Model.NARWHAL,"Nano Banana 2.1"))
+        route.continue_.assert_awaited_once()
+
     async def test_guard_aborts_mismatch_before_forwarding(self):
         from gflow_cli.api.image import Model
         from gflow_cli.api.transports.migrated_composer import _guard_image_submit

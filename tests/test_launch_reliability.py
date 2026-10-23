@@ -1,5 +1,6 @@
 """Regression checks for recovery ownership and private operational messages."""
 import os
+import hashlib
 import io
 from pathlib import Path
 import signal
@@ -14,6 +15,10 @@ from flow_media_client import FlowCommandError, FlowMediaClient
 
 
 class RecoveryOwnershipTests(unittest.TestCase):
+    def setUp(self):
+        clock=patch.object(FlowMediaClient,'_generation_seconds',return_value=7200)
+        clock.start();self.addCleanup(clock.stop)
+
     def test_generation_timeout_reaps_its_child_processes(self):
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = Path(tmp) / 'child.pid'
@@ -48,16 +53,21 @@ class RecoveryOwnershipTests(unittest.TestCase):
             root = Path(tmp); context = root / 'flow_video_attempt_1.context.json'
             context.write_text('{}')
             now = [100.0]
-            expected = {'media_id': 'exact'}
+            expected = {'media_id':'exact','request_hash':'fingerprint','profile':os.getenv('GFLOW_PROFILE','shadow'),
+                        'project_id':os.getenv('FLOW_PREFLIGHT_PROJECT_ID','')}
+            candidate={'kind':'video','context_sha256':hashlib.sha256(context.read_bytes()).hexdigest(),'result':expected}
+            original=root/'original.mp4';original.write_bytes(b'synthetic original')
+            retrieved=expected|{'local_path':str(original),'sha256':hashlib.sha256(original.read_bytes()).hexdigest()}
             client = FlowMediaClient()
             with patch('flow_media_client.time.time', side_effect=lambda: now[0]), \
                     patch('flow_media_client.time.sleep', side_effect=lambda s: now.__setitem__(0, now[0] + s)), \
+                    patch.object(client,'_probe_video',return_value=(720,1280,8,True)), \
                     patch.object(client, '_recovery_command', side_effect=[
-                        (3, {'error_class': 'TargetClosedError'}), (0, {'result': expected})]) as worker:
+                        (3, {'error_class': 'TargetClosedError'}), (0, {'candidate':candidate}), (0, {'result': retrieved})]) as worker:
                 result = client._readback_media(context, 'fingerprint', root / 'video.mp4', 400, stage='video')
-            self.assertEqual(result, expected)
-            self.assertEqual(worker.call_count, 2)
-            self.assertTrue(all(call.args[0][6] == '400' for call in worker.call_args_list))
+            self.assertEqual(result, retrieved)
+            self.assertEqual(worker.call_count, 3)
+            self.assertTrue(all(float(call.args[0][6]) == 400 for call in worker.call_args_list[:2]))
             self.assertLess(now[0], 400)
 
     def test_unsupported_and_identity_failures_do_not_restart_browser(self):
@@ -65,11 +75,8 @@ class RecoveryOwnershipTests(unittest.TestCase):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp); client = FlowMediaClient()
                 with patch.object(client, '_recovery_command', return_value=(3, {'status': status})) as worker:
-                    if status == 'identity_unverified':
-                        with self.assertRaises(FlowCommandError):
-                            client._readback_media(root / 'context', 'hash', root / 'video.mp4', time.time()+300)
-                    else:
-                        self.assertIsNone(client._readback_media(root / 'context', 'hash', root / 'video.mp4', time.time()+300))
+                    with self.assertRaises(FlowCommandError):
+                        client._readback_media(root / 'context', 'hash', root / 'video.mp4', time.time()+300)
                 worker.assert_called_once()
 
     def test_recovery_restrictions_cannot_enable_another_provider(self):
@@ -89,7 +96,7 @@ class RecoveryOwnershipTests(unittest.TestCase):
                     patch('flow_media_client.time.sleep', side_effect=lambda s: now.__setitem__(0, now[0]+s)), \
                     patch.object(client, '_recovery_command', return_value=(3, {'error_class':'TargetClosedError'})) as worker:
                 self.assertIsNone(client._readback_media(root/'context', 'hash', root/'video.mp4', 106))
-            self.assertEqual(now[0], 106)
+            self.assertLessEqual(now[0], 106)
             self.assertEqual(worker.call_count, 2)
 
 

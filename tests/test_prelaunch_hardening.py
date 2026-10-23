@@ -426,17 +426,15 @@ class OperationalReviewTests(unittest.TestCase):
             root=Path(tmp);context=root/'flow_video_attempt_1.context.json';context.write_text('{}')
             diagnostic=root/'flow_video_diagnostics.json';diagnostic.write_text('{}')
             client=FlowMediaClient()
-            with patch.object(client,'_recovery_command',side_effect=[(3,{'error_class':'TargetClosedError'}),(0,{'result':{'media_id':'exact'}})]), \
-                    patch('flow_media_client.time.sleep'):
-                result=client._readback_media(context,'fingerprint',root/'video.mp4',__import__('time').time()+300,stage='video')
-            self.assertEqual(result,{'media_id':'exact'})
+            with patch.object(client,'_generation_seconds',return_value=7200), \
+                    patch.object(client,'_recovery_command',return_value=(3,{'error_class':'TargetClosedError'})) as worker:
+                self.assertIsNone(client._readback_media(context,'fingerprint',root/'video.mp4',__import__('time').time()+300,stage='video'))
+                self.assertIsNone(client._readback_media(context,'fingerprint',root/'video.mp4',__import__('time').time()+600,stage='video'))
             evidence=json.loads(diagnostic.read_text())['recovery_workers']
             self.assertEqual(evidence['version'],1)
             self.assertEqual(evidence['attempts'][context.stem]['invocations'],2)
-            self.assertEqual(evidence['attempts'][context.stem]['technical_failures'],1)
-            with patch.object(client,'_recovery_command',return_value=(0,{'result':{'media_id':'exact'}})):
-                client._readback_media(context,'fingerprint',root/'video.mp4',__import__('time').time()+300,stage='video')
-            self.assertEqual(json.loads(diagnostic.read_text())['recovery_workers']['attempts'][context.stem]['invocations'],3)
+            self.assertEqual(evidence['attempts'][context.stem]['technical_failures'],2)
+            worker.assert_called();self.assertEqual(worker.call_count,2)
 
     def test_repeated_busy_rescue_sends_one_actionable_alert(self):
         from ops.run_rescue import main

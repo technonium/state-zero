@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -25,6 +26,8 @@ class DailyFlowPolicyTests(unittest.TestCase):
         clock = patch.object(FlowMediaClient, '_generation_seconds', return_value=7200)
         clock.start()
         self.addCleanup(clock.stop)
+        morning=patch('utils.get_pipeline_now',return_value=datetime(2026,10,23,10))
+        morning.start();self.addCleanup(morning.stop)
 
     def freeze(self):
         for name in ('daily_data.json', 'whoop_snapshot.json', 'card_metadata.json',
@@ -63,7 +66,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.assertEqual(saved['attempts'][0]['failure']['category'], 'asset_download_failed')
         self.assertIsNone(saved['failure'])
 
-    def test_invalid_recovery_exhausts_its_budget_before_replacement(self):
+    def test_invalid_retrieval_never_proves_generation_failure(self):
         self.freeze()
         client = FlowMediaClient()
         calls = []
@@ -81,8 +84,10 @@ class DailyFlowPolicyTests(unittest.TestCase):
                 patch('flow_media_client.time.time', side_effect=lambda: now[0]), \
                 patch('flow_media_client.time.sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), \
                 patch('flow_media_client.GoogleImageClient') as api:
-            client.generate_image({}, self.root / 'generated_art.png')
-        self.assertEqual(len(calls), 2)
+            with self.assertRaises(FlowCommandError) as error:
+                client.generate_image({}, self.root / 'generated_art.png')
+        self.assertEqual(error.exception.category,'request_identity_unverified')
+        self.assertEqual(len(calls), 1)
         self.assertEqual(now[0], 1300)
         api.assert_not_called()
 
@@ -254,14 +259,14 @@ class DailyFlowPolicyTests(unittest.TestCase):
             FlowMediaClient.validate_inputs(self.root)
         self.assertEqual(manifest.read_bytes(), before)
 
-    def test_uncertain_flow_recovers_then_replaces_then_uses_one_api(self):
+    def test_confirmed_failed_flow_uses_two_submits_then_one_api(self):
         self.freeze()
         target = self.root / 'generated_art.png'
         client = FlowMediaClient()
         calls = []
         def uncertain(request, output, recovered=None):
             calls.append('flow')
-            raise FlowCommandError('image', 'submission_uncertain', submission_state='uncertain')
+            raise FlowCommandError('image', 'generation_failed', retryable=True, submission_state='uncertain')
         api = Mock()
         api.generate_from_json.side_effect = self.save_image
         def recover(*args):
@@ -337,7 +342,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
             marker.write_text(json.dumps({'state': 'forwarded', 'selected_model': 'Nano Banana 2.1',
                                          'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
             if len(markers) == 1:
-                raise FlowCommandError('image', 'submission_uncertain', detail='Original transport error',
+                raise FlowCommandError('image', 'generation_failed', retryable=True, detail='Original transport error',
                                        submission_state='forwarded', operation_id='original-operation')
             raw = Path(command[command.index('--output') + 1])
             self.save_image({}, raw)
@@ -356,7 +361,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         target = self.root / 'generated_art.png'
         api = Mock()
         api.generate_from_json.side_effect = requests.Timeout('uncertain API response')
-        with patch.object(FlowMediaClient, '_generate_image', side_effect=FlowCommandError('image', 'submission_uncertain')) as flow, \
+        with patch.object(FlowMediaClient, '_generate_image', side_effect=FlowCommandError('image', 'generation_failed', retryable=True)) as flow, \
                 patch.object(FlowMediaClient, '_recover_pending', return_value=None), \
                 patch('flow_media_client.GoogleImageClient', return_value=api):
             with self.assertRaises(requests.Timeout):
@@ -378,8 +383,11 @@ class DailyFlowPolicyTests(unittest.TestCase):
         with patch.object(client, '_generate_image', side_effect=FlowCommandError('image', 'submission_uncertain')) as flow, \
                 patch.object(client, '_recover_pending', return_value=None), \
                 patch('flow_media_client.GoogleImageClient', return_value=api):
-            client.generate_image({}, target)
-        flow.assert_called_once()
+            with self.assertRaises(FlowCommandError) as error:
+                client.generate_image({}, target)
+        self.assertEqual(error.exception.category,'request_identity_unverified')
+        flow.assert_not_called()
+        api.generate_from_json.assert_not_called()
 
     def test_recovery_deadline_is_five_minutes_and_does_not_restart(self):
         self.freeze()
@@ -521,7 +529,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         with patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'false'}), \
                 patch.object(client, '_generate_image') as generate, self.assertRaises(FlowCommandError) as error:
             client.generate_image({}, root / 'generated_art.png')
-        self.assertEqual(error.exception.category, 'attempts_exhausted')
+        self.assertEqual(error.exception.category, 'request_identity_unverified')
         generate.assert_not_called()
         self.assertTrue(asset.is_file())
 
@@ -598,7 +606,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                     FlowMediaClient()._recover_pending('image', diagnostic, attempt, root / 'art.png')
                 self.assertEqual(error.exception.category, 'request_identity_unverified')
 
-    def test_missing_or_damaged_expired_asset_uses_only_remaining_allowance(self):
+    def test_missing_or_damaged_expired_asset_cannot_enable_replacement(self):
         for state in ('missing', 'damaged'):
             with self.subTest(state=state):
                 root, diagnostic, attempt, result, asset = self.saved_local_work('image')
@@ -614,10 +622,11 @@ class DailyFlowPolicyTests(unittest.TestCase):
                         patch.object(client, '_recover_image', side_effect=AssertionError('Expired download forbidden')), \
                         patch.object(client, '_readback_media', side_effect=AssertionError('Expired readback forbidden')), \
                         patch.object(client, '_notify_transition'):
-                    client.generate_image({}, target)
-                generate.assert_called_once()
+                    with self.assertRaises(FlowCommandError):
+                        client.generate_image({}, target)
+                generate.assert_not_called()
                 attempts = json.loads(diagnostic.read_text())['attempts']
-                self.assertEqual([a['number'] for a in attempts], [1, 2])
+                self.assertEqual([a['number'] for a in attempts], [1])
                 self.assertEqual(attempts[0]['recovery_deadline'], attempt['recovery_deadline'])
 
     def test_short_window_skips_flow_for_api_then_stops_all_generation(self):
@@ -762,7 +771,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         before = art.read_bytes()
         api = Mock()
         api.generate_from_image.side_effect = lambda prompt, image, path: path.write_bytes(b'validated video')
-        with patch.object(FlowMediaClient, '_generate_video', side_effect=FlowCommandError('video', 'submission_uncertain')) as flow, \
+        with patch.object(FlowMediaClient, '_generate_video', side_effect=FlowCommandError('video', 'generation_failed', retryable=True)) as flow, \
                 patch.object(FlowMediaClient, '_recover_pending', return_value=None), \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080, 1920, 8, True)), \
                 patch('flow_media_client.GoogleVideoClient', return_value=api):

@@ -3,6 +3,7 @@
 import json
 import fcntl
 import hashlib
+import math
 import os
 import re
 import shutil
@@ -17,7 +18,7 @@ from PIL import Image
 
 from google_image_client import GoogleImageClient
 from google_video_client import GoogleVideoClient
-from utils import run_bounded, sanitize_error
+from utils import run_bounded, sanitize_error, OwnedProcessCleanupError, process_cleanup_verified
 
 
 class FlowCommandError(RuntimeError):
@@ -98,6 +99,16 @@ class FlowMediaClient:
         from utils import get_pipeline_run_date_str
         if safe_notify_status(get_pipeline_run_date_str(), status, message):
             self._write_diagnostics(diagnostics, {'last_notification': status})
+
+    @staticmethod
+    def _check_browser_ownership(diagnostics: Path, stage: str) -> None:
+        for path in diagnostics.parent.glob('flow_*_diagnostics.json'):
+            saved=json.loads(path.read_text())
+            for evidence in (saved.get('last_generation_process', {}),
+                             saved.get('last_worker', {}).get('processes', {})):
+                if evidence.get('cleanup_verified') is False and not process_cleanup_verified(evidence):
+                    raise FlowCommandError(stage,'execution_busy',submission_state='not_attempted',
+                        detail='Recorded browser ownership is still active.')
 
     @staticmethod
     def _pending_submission(directory: Path) -> FlowCommandError | None:
@@ -434,6 +445,10 @@ class FlowMediaClient:
                 failure = {'category': last['status']} | {k: last[k] for k in
                     ('error_class', 'detail', 'operation_id', 'submission_state', 'retryable') if k in last}
             error = FlowCommandError(stage, **failure) if failure else None
+            if error and error.category=='execution_busy':
+                self._check_browser_ownership(diagnostics,stage)
+                error=FlowCommandError(stage,'post_submit_error' if last.get('submit_attempted',True)
+                    else 'pre_submit_transient')
             if error and self._stops_replacement(error):
                 raise error
             if os.getenv('STATE_ZERO_LOCAL_ONLY_DEADLINE'):
@@ -473,7 +488,15 @@ class FlowMediaClient:
                     self._save_attempt(diagnostics, attempt)
             used = sum(a.get('submit_attempted', True) for a in attempts)
             pre_submit = sum(not a.get('submit_attempted', True) for a in attempts)
-            skip_flow = error and (error.category in {'auth_required', 'credits_exhausted'} or pre_submit >= 2)
+            current=json.loads(diagnostics.read_text())
+            identified=bool(current.get('retrieval',{}).get('candidate'))
+            confirmed_failure=bool(error and error.category=='generation_failed' and error.retryable)
+            unresolved=bool(used and not identified and not confirmed_failure)
+            from utils import get_pipeline_now
+            if unresolved and get_pipeline_now().hour < 12:
+                raise FlowCommandError(stage,'request_identity_unverified',
+                    detail='Submitted result remains unresolved; retry read-only search next slot. Paid API is eligible from 12:00 IST.')
+            skip_flow = identified or unresolved or error and (error.category in {'auth_required', 'credits_exhausted'} or pre_submit >= 2)
             if used < 2 and not skip_flow and self._generation_seconds() >= flow_timeout + following_video:
                 number = max([a['number'] for a in attempts], default=0) + 1
                 attempt = {'number': number, 'status': 'reserved', 'submit_attempted': True,
@@ -510,7 +533,7 @@ class FlowMediaClient:
                 raise FlowCommandError(stage, 'generation_window_exhausted' if self._generation_seconds() < api_timeout else 'attempts_exhausted',
                                        detail='Fresh generation budget exhausted; existing emergency rescue remains available.')
             self._write_diagnostics(diagnostics, {'api_fallback_state': 'started',
-                                                  'fallback_reason': error.category if error else 'generation_window'})
+                'fallback_reason': 'unresolved_at_noon' if unresolved else error.category if error else 'generation_window'})
             self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_API_FALLBACK',
                                     f'Flow {stage}: using paid Google API fallback with saved inputs.')
             client = GoogleImageClient() if stage == 'image' else GoogleVideoClient()
@@ -585,26 +608,30 @@ class FlowMediaClient:
         local = self._local_result(stage, exact_result, output, saved.get('original_sha256'))
         if local:
             return local
-        if attempt.get('recovery_exhausted'):
+        retrieval=saved.get('retrieval',{})
+        if retrieval.get('candidate'):
+            return self._readback_media(diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.context.json'),
+                saved['request_hash'],output,attempt.get('recovery_deadline',now),stage=stage)
+        if attempt.get('recovery_exhausted') and (attempt.get('failure') or {}).get('category')=='generation_failed':
             return None
         if 'recovery_deadline' not in attempt:
             attempt['recovery_deadline'] = time.time() + min(300, max(0, self._generation_seconds()))
             self._save_attempt(diagnostics, attempt)
         deadline = min(attempt['recovery_deadline'], time.time() + max(0, self._generation_seconds()))
         self._recovery_deadline = deadline
-        if deadline <= time.time():
+        context_file = diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.context.json')
+        if deadline <= time.time() and not context_file.exists():
             return None
         has_identity = bool(saved.get('result') or (attempt.get('failure') or {}).get('media_id') or
                             (attempt.get('failure') or {}).get('operation_id') or
                             diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.result.json').exists())
-        context_file = diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.context.json')
         self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_RECOVERY_{attempt["number"]}',
             f'Flow {stage}: ' + ('recovering the exact recorded result' if has_identity else
                 'checking the original project for the saved request' if context_file.exists() else
-                'waiting for an exact result identity; no asset can be downloaded yet') + ' for up to five minutes before replacement.')
+                'waiting for an exact result identity; no asset can be downloaded yet') + ' within the saved five-minute search budget.')
         receipt = diagnostics.with_name(f'flow_{stage}_attempt_{attempt["number"]}.result.json')
         exact_result = exact_result or self._catalog_result(stage, attempt)
-        if context_file.exists() and (stage == 'video' or not exact_result):
+        if context_file.exists():
             recovered = self._readback_media(context_file, saved['request_hash'], output, deadline,
                                              stage=stage, known=exact_result or attempt.get('failure'))
             if recovered:
@@ -644,51 +671,159 @@ class FlowMediaClient:
         script = Path(__file__).resolve().parents[2] / 'ops/flow_media_recover.py'
         command = [sys.executable, str(script), os.getenv('FLOW_PREFLIGHT_PROJECT_ID', ''), '--context',
                    str(context_file), str(recovery / (context_file.stem + ('.mp4' if stage == 'video' else '.png'))), str(deadline), request_hash]
-        if stage == 'video' and known and known.get('media_id'):
-            command.append(known['media_id'])
-            if known.get('workflow_id'):
-                command.append(known['workflow_id'])
+        if known:
+            media = known.get('media_id') if stage == 'video' else (known.get('images') or [{}])[0].get('media_name')
+            if media:
+                command.append(media)
+                if stage == 'video' and known.get('workflow_id'):
+                    command.append(known['workflow_id'])
         diagnostic=output.with_name(f'flow_{stage}_diagnostics.json')
         saved=json.loads(diagnostic.read_text()) if diagnostic.exists() else {}
         workers=saved.get('recovery_workers',{'version':1,'attempts':{}})
         if workers.get('version')!=1:
             raise FlowCommandError(stage,'request_identity_unverified')
         count=workers['attempts'].setdefault(context_file.stem,{'invocations':0,'technical_failures':0})
-        technical_errors={'TargetClosedError','BrowserSessionClosedError','ProfileLockedError',
-            'NetworkError','TimeoutError','ConnectionError','OSError'}
-        while time.time() < deadline:
+        technical_errors={'TargetClosedError','BrowserSessionClosedError',
+            'NetworkError','TimeoutError','ConnectionError','OSError','ReadbackUnavailable','RecoveryWorkerTimeout'}
+        retrieval=saved.get('retrieval',{})
+        cutoff=time.time()+max(0,self._generation_seconds())
+        slot=int(time.time()//1800)
+        if count.get('search_slot')!=slot:
+            count.update(search_slot=slot,search_launches=0,
+                search_deadline=min(time.time()+300,cutoff,deadline if deadline>time.time() else cutoff))
+        if retrieval and (retrieval.get('version')!=1 or retrieval.get('context_file') not in (None,context_file.name)):
+            raise FlowCommandError(stage,'request_identity_unverified')
+        if retrieval and (type(retrieval.get('attempts')) is not int or not 0 <= retrieval['attempts'] <= 3
+                or type(retrieval.get('deadline')) not in (int,float) or not math.isfinite(retrieval['deadline'])):
+            raise FlowCommandError(stage,'request_identity_unverified')
+        while True:
+            candidate=retrieval.get('candidate')
+            if candidate:
+                if candidate.get('context_sha256')!=hashlib.sha256(context_file.read_bytes()).hexdigest():
+                    raise FlowCommandError(stage,'request_identity_unverified')
+                if retrieval.get('reply'):
+                    self._check_browser_ownership(diagnostic,stage)
+                    result=retrieval['reply']
+                    try:
+                        identity={k:v for k,v in result.items() if k not in {'local_path','sha256'}}
+                        if stage=='image':
+                            identity['images']=[{k:v for k,v in image.items() if k!='local_path'} for image in identity['images']]
+                        if identity!=candidate['result']:
+                            raise ValueError('Retrieved result differs')
+                    except (AttributeError,KeyError,TypeError,ValueError):
+                        raise FlowCommandError(stage,'request_identity_unverified') from None
+                    if not re.fullmatch('[0-9a-f]{64}',str(result.get('sha256',''))):
+                        raise FlowCommandError(stage,'request_identity_unverified')
+                    if not self._local_result(stage,result,output,result['sha256']):
+                        raise FlowCommandError(stage,'validation_failed')
+                    retrieval.pop('reply')
+                    self._write_diagnostics(diagnostic,{'result':result,'retrieval':retrieval})
+                    return result
+                if retrieval.get('attempts',0)>=3 or min(cutoff,retrieval['deadline'])<=time.time():
+                    self._notify_transition(diagnostic,f'FLOW_{stage.upper()}_IDENTIFIED_NOT_RETRIEVED',
+                        f'Flow {stage}: identified but not retrieved; no Flow replacement will be submitted.')
+                    return None
+                mode='retrieve'
+                timeout=min(90,min(cutoff,retrieval['deadline'])-time.time())
+                self._check_browser_ownership(diagnostic,stage)
+                retrieval['attempts']=retrieval.get('attempts',0)+1
+                self._write_diagnostics(diagnostic,{'retrieval':retrieval})
+            else:
+                if count.get('search_launches',0)>=2 or min(count['search_deadline'],cutoff)<=time.time():
+                    return None
+                mode='search';timeout=min(count['search_deadline'],cutoff)-time.time()
+                self._check_browser_ownership(diagnostic,stage)
+                count['search_launches']=count.get('search_launches',0)+1
             count['invocations']+=1
             self._write_diagnostics(diagnostic,{'recovery_workers':workers})
-            code, payload = self._recovery_command(command, deadline - time.time())
+            worker_command=command.copy()
+            worker_command[6]=str(time.time()+timeout)
+            worker_command.extend(['--mode',mode,'--record',str(diagnostic)])
+            code, payload = self._recovery_command(worker_command,timeout)
+            if payload.get('worker'):
+                count['runs']=(count.get('runs',[])+[{'mode':mode,**payload['worker']}])[-5:]
+                self._write_diagnostics(diagnostic,{'last_worker':payload['worker'],'recovery_workers':workers})
+            if mode=='retrieve' and (code==0 or payload.get('status')=='downloaded') and payload.get('result'):
+                retrieval['reply']=payload['result']
+                self._write_diagnostics(diagnostic,{'retrieval':retrieval})
             if payload.get('status') == 'identity_unverified':
                 raise FlowCommandError(stage, 'request_identity_unverified', detail=f'Saved {stage} readback evidence requires reconciliation.')
             if code == 0:
-                return payload.get('result')
+                if mode=='search':
+                    candidate=payload.get('candidate')
+                    try:
+                        result=candidate['result']
+                        observed=candidate.get('observed_at',time.time())
+                        if type(observed) not in (int,float) or not math.isfinite(observed) or observed>time.time()+1:
+                            raise ValueError('Invalid candidate time')
+                        if (candidate['kind']!=stage or result['request_hash']!=request_hash or
+                                result['profile']!=self.profile or result['project_id']!=os.getenv('FLOW_PREFLIGHT_PROJECT_ID','')
+                                or candidate['context_sha256']!=hashlib.sha256(context_file.read_bytes()).hexdigest()):
+                            raise ValueError('Candidate identity differs')
+                    except (KeyError,TypeError,ValueError):
+                        raise FlowCommandError(stage,'request_identity_unverified') from None
+                    retrieval={'version':1,'context_file':context_file.name,'candidate':candidate,
+                               'deadline':min(observed+270,cutoff),'attempts':0}
+                    self._write_diagnostics(diagnostic,{'retrieval':retrieval})
+                    continue
+                if not retrieval.get('reply'):
+                    raise FlowCommandError(stage,'request_identity_unverified')
+                continue
             if code == -1 or payload.get('error_class') in technical_errors:
                 count['technical_failures']+=1
             self._write_diagnostics(diagnostic,
                 {'recovery_workers':workers,'last_recovery_error':{'class':payload.get('error_class','RecoveryWorkerTimeout' if code == -1 else 'RecoveryWorkerError'),
                                         'phase':'project_readback_download'}})
+            if payload.get('error_class') in {'OwnedProcessCleanupError','ProfileLockedError'}:
+                raise FlowCommandError(stage,'execution_busy',detail='Browser ownership could not be verified; another launch is blocked.')
             if payload.get('error_class') in {'ContentPolicyError', 'WafRejectionError',
                     'AccountRestrictedError', 'RecaptchaError'}:
                 raise FlowCommandError(stage, 'provider_rejected', error_class=payload['error_class'],
                                        detail='Flow recovery encountered a provider restriction; replacement is blocked.')
             if payload.get('error_class') not in technical_errors:
-                return None
-            time.sleep(min(3, max(0, deadline - time.time())))
-        return None
+                raise FlowCommandError(stage,'request_identity_unverified')
 
     @staticmethod
     def _recovery_command(command: list[str], timeout: float) -> tuple[int, dict]:
+        process=None
         try:
-            process = run_bounded(command, timeout=max(.01, timeout))
-        except subprocess.TimeoutExpired:
-            return -1, {}
-        try:
-            payload = json.loads(process.stdout)
-        except ValueError:
-            return process.returncode, {}
-        return process.returncode, payload if isinstance(payload, dict) else {}
+            process = run_bounded(command, timeout=max(.01, timeout-6))
+            code=process.returncode
+        except (subprocess.TimeoutExpired,OwnedProcessCleanupError) as exc:
+            code=-1 if isinstance(exc,subprocess.TimeoutExpired) else 3
+            process=exc
+        stderr=getattr(process,'stderr','') or ''
+        if isinstance(stderr,bytes):
+            stderr=stderr.decode('utf-8','replace')
+        phases=[]
+        for line in stderr.splitlines():
+            if line.startswith('STATE_ZERO_PHASE '):
+                try:
+                    event=json.loads(line.removeprefix('STATE_ZERO_PHASE '))
+                    if event.get('phase') in {'launch','lease','browser','listing','match','editor','download','hash'} and type(event.get('at')) in (int,float):
+                        phases.append({'phase':event['phase'],'at':event['at']})
+                except (ValueError,TypeError,AttributeError):
+                    pass
+        category=next((name for name in ('TargetClosedError','TimeoutError','ProfileLockedError','ConnectionError','OSError')
+                       if re.search(r'\b'+name+r'\b',stderr)), 'OTHER' if stderr else 'EMPTY')
+        payload={}
+        stdout=getattr(process,'stdout','') or ''
+        if isinstance(stdout,bytes):stdout=stdout.decode('utf-8','replace')
+        for line in stdout.splitlines():
+            try:
+                value=json.loads(line)
+                if isinstance(value,dict):
+                    payload=value
+                    if value.get('status') in {'candidate','downloaded'}:break
+            except ValueError:pass
+        if code==-1:payload['error_class']='RecoveryWorkerTimeout'
+        if isinstance(process,OwnedProcessCleanupError):payload['error_class']='OwnedProcessCleanupError'
+        payload['worker']={'phases':phases[-24:],'stderr_category':category,
+                          'processes':getattr(process,'process_evidence',{})}
+        if (payload.get('status') in {'candidate','downloaded'} and
+                payload['worker']['processes'].get('cleanup_verified') is True):
+            code=0
+        return code,payload
 
     def _image_receipt(self, diagnostics: Path, attempt: dict) -> dict | None:
         receipt = diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.result.json')
@@ -810,6 +945,7 @@ class FlowMediaClient:
         catalog = FlowMediaClient(command[command.index('--profile') + 1] if '--profile' in command else None)
         catalog_position = catalog._catalog_position() if marker is not None else 0
         if marker is not None:
+            FlowMediaClient._check_browser_ownership(marker.with_name(f'flow_{command[1]}_diagnostics.json'),command[1])
             env["GFLOW_SHADOW_SUBMIT_MARKER"] = str(marker)
             env['GFLOW_PROFILE'] = catalog.profile
             env['PYTHONPATH'] = str(Path(__file__).resolve().parent) + os.pathsep + env.get('PYTHONPATH', '')
@@ -818,16 +954,34 @@ class FlowMediaClient:
                 timeout = min(timeout, max(.01, FlowMediaClient._generation_seconds()))
         try:
             result = run_bounded(command, timeout=timeout, env=env)
-        except subprocess.TimeoutExpired:
+        except OwnedProcessCleanupError as exc:
+            if marker is not None:
+                FlowMediaClient._write_diagnostics(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
+                    {'last_generation_process':exc.process_evidence})
+            result=exc
+        except subprocess.TimeoutExpired as exc:
+            if marker is not None:
+                FlowMediaClient._write_diagnostics(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
+                    {'last_generation_process':getattr(exc,'process_evidence',{})})
             submitted = bool(marker and marker.exists())
             raise FlowCommandError(command[1], "submission_uncertain" if submitted else "pre_submit_timeout",
                                    submission_state="uncertain" if submitted else "not_attempted") from None
+        if marker is not None and isinstance(getattr(result,'process_evidence',None),dict):
+            FlowMediaClient._write_diagnostics(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
+                {'last_generation_process':result.process_evidence})
         try:
             payload = json.loads(result.stdout)
-        except json.JSONDecodeError:
+        except (ValueError,TypeError):
             payload = {}
         if not isinstance(payload, dict):
             payload = {}
+        if isinstance(result,OwnedProcessCleanupError):
+            if result.returncode!=0 or payload.get('status')!='ok':
+                raise FlowCommandError(command[1],'execution_busy',detail='Owned browser cleanup could not be verified.')
+            if marker is not None:
+                catalog._notify_transition(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
+                    'FLOW_BROWSER_CLEANUP_BLOCKED',
+                    'Flow result retained; browser cleanup is uncertain. The next browser launch is blocked until ownership is safe.')
         if result.returncode or payload.get("status") != "ok":
             error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
             error_class = re.sub(r"[^A-Za-z0-9_]", "", str(error.get("class", "")))[:80]
@@ -1047,6 +1201,7 @@ class FlowMediaClient:
                         "--project", project_id, "--out", str(upscale_dir), "--profile", self.profile,
                     ]
                     try:
+                        self._check_browser_ownership(diagnostics,'image')
                         result = run_bounded(command, timeout=300)
                         matches = list(upscale_dir.rglob(f"{media_id}_2k.*")) if result.returncode == 0 else []
                         if len(matches) == 1:
@@ -1054,6 +1209,10 @@ class FlowMediaClient:
                             self._validate_original('image', candidate)
                             source = candidate
                             upscaled = True
+                    except OwnedProcessCleanupError as exc:
+                        self._write_diagnostics(diagnostics,{'last_generation_process':exc.process_evidence})
+                        self._notify_transition(diagnostics,'FLOW_BROWSER_CLEANUP_BLOCKED',
+                            'Original image retained; the next browser launch requires verified cleanup.')
                     except (FlowCommandError, OSError, subprocess.SubprocessError):
                         pass  # Keep the original image; the resolution gap stays visible in diagnostics.
             with Image.open(source) as image:
@@ -1127,6 +1286,7 @@ class FlowMediaClient:
                 remaining = getattr(self, '_recovery_deadline', time.time() + 120) - time.time()
                 if remaining > 0:
                     try:
+                        self._check_browser_ownership(diagnostics,'image')
                         code, payload = self._recovery_command([sys.executable, str(script),
                             os.getenv('FLOW_PREFLIGHT_PROJECT_ID', ''), media_id, str(target)],
                             min(120, remaining))
@@ -1144,6 +1304,7 @@ class FlowMediaClient:
         recovery_dir=output_dir/'flow_recovered';recovery_dir.mkdir(exist_ok=True)
         deadline=getattr(self,'_recovery_deadline',time.time()+300)
         if deadline > time.time() and re.fullmatch(r'[A-Za-z0-9_-]+',media_id):
+            self._check_browser_ownership(output_dir/'flow_video_diagnostics.json','video')
             target=recovery_dir/(media_id+'.mp4')
             script=Path(__file__).resolve().parents[2]/'ops/flow_media_recover.py'
             code,payload=self._recovery_command([sys.executable,str(script),os.getenv('FLOW_PREFLIGHT_PROJECT_ID',''),
@@ -1262,6 +1423,7 @@ class FlowMediaClient:
                     candidate = output_path.with_name("flow_1080p_download.mp4")
                     script = Path(__file__).resolve().parents[2] / "ops" / "flow_video_upscale.py"
                     try:
+                        self._check_browser_ownership(diagnostics,'video')
                         result = run_bounded([sys.executable, str(script), project_id, media_id, str(candidate),
                             '--workflow', str(payload.get('workflow_id') or ''), '--deadline', str(time.time()+240)], timeout=240)
                         upscale_status = json.loads(result.stdout).get("status", "unavailable")
@@ -1273,7 +1435,12 @@ class FlowMediaClient:
                                 upscale_status = "validated"
                             else:
                                 upscale_status = "invalid_media"
-                    except (OSError, ValueError, subprocess.SubprocessError, KeyError, IndexError, StopIteration):
+                    except OwnedProcessCleanupError as exc:
+                        self._write_diagnostics(diagnostics,{'last_generation_process':exc.process_evidence})
+                        self._notify_transition(diagnostics,'FLOW_BROWSER_CLEANUP_BLOCKED',
+                            'Original video retained; the next browser launch requires verified cleanup.')
+                        upscale_status='ownership_blocked'
+                    except (FlowCommandError, OSError, ValueError, subprocess.SubprocessError, KeyError, IndexError, StopIteration):
                         upscale_status = "invalid_media" if candidate.exists() else "unavailable"
             staged = output_path.with_name(".generated_video.staged.mp4")
             if selected == source and (width, height) == (720, 1280):
