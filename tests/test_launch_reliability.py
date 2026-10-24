@@ -103,7 +103,7 @@ class RecoveryOwnershipTests(unittest.TestCase):
 class OperationalPrivacyTests(unittest.TestCase):
     def test_manual_polling_and_pipeline_error_logs_are_sanitized(self):
         from contextlib import redirect_stdout
-        from pipeline import WHOOPPipeline
+        from pipeline import WHOOPPipeline, PipelineFatalError
         import requests
         private = 'synthetic-pipeline-token'
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'TELEGRAM_BOT_TOKEN':private}):
@@ -115,8 +115,10 @@ class OperationalPrivacyTests(unittest.TestCase):
                 self.assertEqual(pipeline._get_latest_update_id(), 0)
             self.assertNotIn(private, captured.getvalue())
             pipeline.post_to_instagram=False;pipeline.output_dir=Path(tmp);pipeline.run_date='2030-01-01'
-            with patch('pipeline.get_notifier',return_value=Mock()), redirect_stdout(captured), self.assertRaises(SystemExit):
-                pipeline.log_error('fixture', f'Failure https://example.test/?access_token={private}')
+            with patch('pipeline.get_notifier',return_value=Mock()), redirect_stdout(captured):
+                with self.assertRaises(PipelineFatalError) as caught:
+                    pipeline.log_error('fixture', f'Failure https://example.test/?access_token={private}')
+                pipeline._report_fatal_error(caught.exception)
             self.assertNotIn(private, captured.getvalue())
             self.assertNotIn(private,(Path(tmp)/'pipeline_error.log').read_text())
 

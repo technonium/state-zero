@@ -120,6 +120,10 @@ class PipelineStageError(Exception):
         super().__init__(message)
 
 
+class PipelineFatalError(PipelineStageError):
+    """A terminal stage failure; only run() converts it to a process exit."""
+
+
 class WHOOPPipeline:
     # Dokploy cron fires every 30 minutes at :00 and :30 IST. If the schedule
     # ever changes, update this constant so retry-ETA notifications stay accurate.
@@ -778,15 +782,21 @@ class WHOOPPipeline:
         details_tail: str = None,
         failure_classification: str | None = None,
     ):
-        error_msg = sanitize_error(error_msg)
-        details_tail = sanitize_error(details_tail) if details_tail else None
+        raise PipelineFatalError(
+            stage=step_name, message=sanitize_error(error_msg),
+            details=sanitize_error(details_tail) if details_tail else None,
+            failure_classification=failure_classification or self._failure_classification_for_stage(step_name),
+        )
+
+    def _report_fatal_error(self, error: PipelineFatalError):
+        step_name, error_msg, details_tail = error.stage, error.message, error.details
         if self.post_to_instagram and self.daily_run.is_owner():
             try:
                 self.daily_run.mark_fatal_failure(
                     step=step_name,
                     message=error_msg,
                     details_tail=details_tail,
-                    failure_classification=failure_classification or self._failure_classification_for_stage(step_name),
+                    failure_classification=error.failure_classification,
                 )
             except OwnershipLostError:
                 pass
@@ -799,17 +809,13 @@ class WHOOPPipeline:
         print(f"{Fore.RED}❌ {step_name} failed: {error_msg}{Style.RESET_ALL}")
         
         # Send Telegram error notification
-        notifier = get_notifier()
-        notifier.notify_error(
-            run_date=self.run_date,
-            step=step_name,
-            error_type='PipelineError',
-            message=error_msg,
-            details_tail=details_tail,
-            fatal=True
-        )
-        
-        sys.exit(1)
+        try:
+            get_notifier().notify_error(
+                run_date=self.run_date, step=step_name, error_type='PipelineError',
+                message=error_msg, details_tail=details_tail, fatal=True,
+            )
+        except Exception:
+            print('Fatal notification unavailable; preserving the original failure.')
 
     def _merge_details(self, *details_parts: str | None) -> str | None:
         parts = [part.strip() for part in details_parts if part and part.strip()]
@@ -1403,6 +1409,14 @@ class WHOOPPipeline:
                 try:
                     try:
                         self._run_owned()
+                    except PipelineFatalError as exc:
+                        if self.post_to_instagram and self.daily_run.current_status() == 'POSTED':
+                            self._notify_post_success_cleanup_warning(exc.stage,
+                                'Instagram post succeeded, but later finalization failed. Leaving daily state as POSTED.',
+                                exc.details or exc.message)
+                        else:
+                            self._report_fatal_error(exc)
+                            raise SystemExit(1) from None
                     except InstagramPublicationUncertain:
                         self.daily_run.notify_once('INSTAGRAM_RECONCILIATION_REQUIRED',lambda:safe_notify_status(
                             self.run_date,'INSTAGRAM_RECONCILIATION_REQUIRED',
@@ -1551,6 +1565,8 @@ class WHOOPPipeline:
 
                 print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
             except PipelineStageError as exc:
+                if isinstance(exc, PipelineFatalError):
+                    raise
                 if self._handle_runtime_stage_error(exc):
                     return
             except Exception as exc:

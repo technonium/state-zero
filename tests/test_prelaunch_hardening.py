@@ -350,7 +350,7 @@ class DecodedVerdictTests(unittest.TestCase):
                 with patch.dict(os.environ,{'GFLOW_SHADOW_SUBMIT_MARKER':str(marker)}):
                     with self.assertRaises(kind):_raise_after_shadow_submission(kind(detail='decoded verdict'))
 
-    def test_unknown_decoded_refusal_blocks_reconciliation_without_text_keywords(self):
+    def test_unknown_decoded_refusal_before_submit_is_transient_without_text_keywords(self):
         from gflow_cli.api.transports.migrated_composer import _submit_refusal
         record=SimpleNamespace(reasons=('NEW_PROVIDER_VERDICT',),rpcid='eb1hJf',code=7)
         with patch('gflow_cli.api.transports.migrated_composer.rpc_errors',return_value=[record]):
@@ -360,7 +360,7 @@ class DecodedVerdictTests(unittest.TestCase):
         payload={'status':'error','error':{'class':type(verdict).__name__,'detail':'unclassified'}}
         with patch('flow_media_client.run_bounded',return_value=subprocess.CompletedProcess([],1,json.dumps(payload),'')):
             with self.assertRaises(FlowCommandError) as result:FlowMediaClient._run_json(['gflow','video'],1)
-        self.assertEqual(result.exception.category,'request_identity_unverified')
+        self.assertEqual(result.exception.category,'pre_submit_transient')
 
 class RescuePublicationCombinationTests(unittest.TestCase):
     def test_local_rescue_with_uncertain_publication_never_calls_emergency(self):

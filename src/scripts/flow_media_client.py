@@ -21,6 +21,15 @@ from google_video_client import GoogleVideoClient
 from utils import run_bounded, sanitize_error, OwnedProcessCleanupError, process_cleanup_verified
 
 
+# Exact decoded enums, including the pinned CLI's PUBLIC_ERROR_* safety reasons.
+POLICY_VERDICTS = frozenset({
+    'PUBLIC_ERROR_UNSAFE_CONTENT', 'PUBLIC_ERROR_UNSAFE_GENERATION',
+    'PUBLIC_ERROR_UNSAFE_IDENTITY', 'PUBLIC_ERROR_UNSAFE_FACE', 'PUBLIC_ERROR_UNUSUAL_ACTIVITY',
+    'SAFETY', 'SAFETY_REJECTION', 'ACCOUNT_RESTRICTED', 'RECAPTCHA_FAILED',
+})
+CREDIT_VERDICTS = frozenset({'QUOTA', 'QUOTA_EXCEEDED', 'INSUFFICIENT_CREDITS'})
+
+
 class FlowCommandError(RuntimeError):
     def __init__(self, stage: str, category: str, *, error_class: str = "", media_id: str = "", retryable: bool = False, detail: str = "", operation_id: str = "", submission_state: str = ""):
         self.stage = stage
@@ -991,8 +1000,10 @@ class FlowMediaClient:
             verdicts = payload.get("failure_reasons") or []
             if not isinstance(verdicts, list) or any(not isinstance(v, str) for v in verdicts):
                 verdicts = ['UNRECOGNIZED_VERDICT']
-            credits = error_class == 'InsufficientCreditsError' or bool(verdicts) and set(verdicts) <= {'QUOTA', 'QUOTA_EXCEEDED', 'INSUFFICIENT_CREDITS'}
-            policy_or_quota = bool(verdicts) and not credits or error_class in {
+            verdicts = set(verdicts)
+            unknown_verdict = bool(verdicts - POLICY_VERDICTS - CREDIT_VERDICTS) or error_class == 'UnknownFlowRefusalError'
+            credits = error_class == 'InsufficientCreditsError' or bool(verdicts) and verdicts <= CREDIT_VERDICTS
+            restricted = bool(verdicts & POLICY_VERDICTS) or error_class in {
                 'ContentPolicyError', 'WafRejectionError', 'AccountRestrictedError', 'RecaptchaError'}
             marker_exists = bool(marker and marker.exists())
             clicked = marker_exists or bool(media_id)
@@ -1028,20 +1039,20 @@ class FlowMediaClient:
                 "AuthExpiredError", "AisandboxAuthError", "AuthMissingError",
                 "AuthLoginTimeoutError", "IdentityRecheckPendingError", "FlowAccountChooserError",
             }
-            if credits and not policy_or_quota:
-                category = 'credits_exhausted'
-            elif policy_or_quota:
+            if restricted:
                 category = "provider_rejected"
-            elif error_class == "UnknownFlowRefusalError":
-                category = "request_identity_unverified"
+            elif submission_state == "blocked_before_submission":
+                category = "blocked_before_submission"
+            elif unknown_verdict:
+                category = 'post_submit_error' if clicked else 'pre_submit_transient'
+            elif credits:
+                category = 'credits_exhausted'
             elif error_class == 'UploadResponseUnavailableError' and not clicked:
                 category = 'pre_submit_transient'
             elif failed:
                 category = "generation_failed"
             elif auth_error:
                 category = "auth_required"
-            elif submission_state == "blocked_before_submission":
-                category = "blocked_before_submission"
             elif clicked:
                 category = "post_submit_error"
             elif bool(error.get("retryable")):
@@ -1063,7 +1074,7 @@ class FlowMediaClient:
                         'rpc': re.sub(r'[^A-Za-z0-9:._-]', '', str(error.get('route') or response.get('rpc') or ''))[:80],
                         'response': response}})
             raise FlowCommandError(command[1], category, error_class=error_class,
-                                   media_id=media_id, retryable=failed and not policy_or_quota,
+                                   media_id=media_id, retryable=category == 'generation_failed',
                                    detail=detail, operation_id=operation_id, submission_state=submission_state)
         return payload
 

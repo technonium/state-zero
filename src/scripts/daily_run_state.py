@@ -1,6 +1,8 @@
 import json
 import os
+import threading
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -9,6 +11,15 @@ from utils import ensure_path, get_state_root
 
 ACTIVE_STATUSES = {"STARTING", "WAITING_MANUAL", "AUTO_FALLBACK_RUNNING", "EMERGENCY_FALLBACK_RUNNING", "POSTING"}
 TERMINAL_STATUSES = {"POSTED", "FAILED_FATAL"}
+_STATE_LOCK = threading.RLock()
+
+
+def _serialized(method):
+    @wraps(method)
+    def locked(*args, **kwargs):
+        with _STATE_LOCK:
+            return method(*args, **kwargs)
+    return locked
 
 
 class OwnershipLostError(RuntimeError):
@@ -43,6 +54,7 @@ class DailyRunStateManager:
     def now_iso(self) -> str:
         return self.now().isoformat()
 
+    @_serialized
     def load_state(self) -> dict | None:
         if not self.state_path.exists():
             return None
@@ -76,6 +88,7 @@ class DailyRunStateManager:
     def is_posted(self) -> bool:
         return self.current_status() == "POSTED"
 
+    @_serialized
     def acquire(self, *, execution_fd: int | None = None) -> tuple[str, dict | None]:
         if execution_fd is not None:
             from utils import verify_execution_fd
@@ -105,6 +118,7 @@ class DailyRunStateManager:
 
         return "skip_active", self.load_state()
 
+    @_serialized
     def notify_once(self, transition: str, notify) -> None:
         state=self.load_state() or {}
         if state.get('last_actionable_alert')==transition:
@@ -140,6 +154,7 @@ class DailyRunStateManager:
             extra["failure_classification"] = failure_classification
         self._update_state(status="FAILED_RETRYABLE", note=message, extra=extra, touch_heartbeat=True)
 
+    @_serialized
     def mark_fatal_failure(
         self,
         *,
@@ -179,6 +194,7 @@ class DailyRunStateManager:
             payload.update(extra)
         return self._update_state(status="POSTED", note=note, extra=payload, touch_heartbeat=True)
 
+    @_serialized
     def mark_posted_after_publish(
         self,
         *,
@@ -217,6 +233,7 @@ class DailyRunStateManager:
         self._write_json_atomic(self.state_path, state)
         return state
 
+    @_serialized
     def release_claim(self):
         claim = self.load_claim() or {}
         claim_token = claim.get("run_token")
@@ -229,6 +246,7 @@ class DailyRunStateManager:
             pass
         self._owns_claim = False
 
+    @_serialized
     def delete_state(self, *, only_if_run_token_matches: bool = True):
         state = self.load_state() or {}
         state_token = state.get("run_token")
@@ -333,6 +351,7 @@ class DailyRunStateManager:
                 f"Daily run ownership moved to another token ({state_token}); current token is {self.run_token}."
             )
 
+    @_serialized
     def _update_state(
         self,
         *,
@@ -364,6 +383,7 @@ class DailyRunStateManager:
         self._write_json_atomic(self.state_path, state)
         return state
 
+    @_serialized
     def _write_json_atomic(self, path: Path, payload: dict):
         tmp_path = path.with_suffix(f"{path.suffix}.tmp.{self.run_token}")
         try:

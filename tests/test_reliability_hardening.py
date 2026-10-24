@@ -33,7 +33,7 @@ from ops.instagram_token_healthcheck import (
     _refresh_failure_notice_reason,
     _save_state,
 )
-from pipeline import PipelineStageError, WHOOPPipeline
+from pipeline import PipelineFatalError, PipelineStageError, WHOOPPipeline
 
 
 class _FakeRefreshResponse:
@@ -1201,12 +1201,13 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
                 with patch("pipeline.get_notifier", return_value=notifier):
-                    with self.assertRaises(SystemExit) as ctx:
+                    with self.assertRaises(PipelineFatalError) as ctx:
                         WHOOPPipeline._handle_runtime_stage_error(pipeline, exc)
+                    pipeline._report_fatal_error(ctx.exception)
 
             revalidation_log = json.loads((pipeline.output_dir / "whoop_revalidation.json").read_text(encoding="utf-8"))
 
-        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(ctx.exception.failure_classification, 'lookup_not_ready')
         self.assertEqual(fatal_calls[0]["failure_classification"], "lookup_not_ready")
         self.assertEqual(revalidation_log["checks"][-1]["decision"], "no_post")
         self.assertEqual(revalidation_log["checks"][-1]["decision_source"], "terminal_handler_recheck")
@@ -1447,10 +1448,11 @@ class ReliabilityHardeningTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"PIPELINE_TERMINAL_RESCUE_RUN": "false", "EMERGENCY_FALLBACK_ENABLED": "true"}, clear=False):
                 with patch("pipeline.get_notifier", return_value=notifier):
-                    with self.assertRaises(SystemExit) as ctx:
+                    with self.assertRaises(PipelineFatalError) as ctx:
                         WHOOPPipeline._handle_runtime_stage_error(pipeline, prompt_ctx.exception)
+                    pipeline._report_fatal_error(ctx.exception)
 
-        self.assertEqual(ctx.exception.code, 1)
+        self.assertEqual(ctx.exception.failure_classification, 'prompt_validation_failed')
         self.assertEqual(fatal_calls[0]["step"], "LLM Prompts (Interpretation -> Video)")
         self.assertEqual(fatal_calls[0]["failure_classification"], "prompt_validation_failed")
 

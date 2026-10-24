@@ -726,7 +726,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
 
     def test_provider_failure_reasons_block_even_when_generic_error_is_retryable(self):
         import subprocess
-        for reasons in (['SAFETY'], ['RECAPTCHA_FAILED'], ['QUOTA', 'REFUSAL']):
+        for reasons in (['SAFETY'], ['RECAPTCHA_FAILED'], ['QUOTA', 'PUBLIC_ERROR_UNSAFE_CONTENT']):
             with self.subTest(reasons=reasons):
                 payload = {'status': 'error', 'failure_reasons': reasons,
                            'error': {'class': 'ServiceError', 'detail': 'Unavailable', 'retryable': True}}
