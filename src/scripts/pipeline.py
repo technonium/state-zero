@@ -120,8 +120,16 @@ class PipelineStageError(Exception):
         super().__init__(message)
 
 
-class PipelineFatalError(PipelineStageError):
+class PipelineFatalError(BaseException):
     """A terminal stage failure; only run() converts it to a process exit."""
+
+    def __init__(self, stage: str, message: str, details: str | None = None,
+                 failure_classification: str | None = None):
+        self.stage = stage
+        self.message = message
+        self.details = details
+        self.failure_classification = failure_classification
+        super().__init__(message)
 
 
 class WHOOPPipeline:
@@ -1565,8 +1573,6 @@ class WHOOPPipeline:
 
                 print(f"{Fore.GREEN}🎉 Pipeline completed successfully! 🎉{Style.RESET_ALL}")
             except PipelineStageError as exc:
-                if isinstance(exc, PipelineFatalError):
-                    raise
                 if self._handle_runtime_stage_error(exc):
                     return
             except Exception as exc:
@@ -2916,7 +2922,7 @@ class WHOOPPipeline:
                 print(f"{Fore.GREEN}✅ Portfolio media ready: {urls['dark.mp4']}{Style.RESET_ALL}")
             else:
                 print(f"{Fore.GREEN}✅ Portfolio media rendered locally: {portfolio_dir}{Style.RESET_ALL}")
-        except Exception as exc:
+        except (PipelineFatalError, Exception) as exc:
             print(f"{Fore.YELLOW}⚠ Portfolio media failed after primary completion: {exc}{Style.RESET_ALL}")
             # Notification delivery is also secondary; never let it turn a
             # confirmed Instagram/archive success into a failed pipeline run.

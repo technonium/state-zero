@@ -484,7 +484,18 @@ class FlowMediaClient:
                 return self._finish_daily(stage, output, diagnostics, 'flow')
             if attempts and attempts[-1].get('submit_attempted', True):
                 attempt = attempts[-1]
-                recovered = self._recover_pending(stage, diagnostics, attempt, output)
+                try:
+                    recovered = self._recover_pending(stage, diagnostics, attempt, output)
+                except FlowCommandError as exc:
+                    if exc.category != 'generation_failed' or not exc.retryable:
+                        raise
+                    error = exc
+                    failure = {k: getattr(exc, k) for k in ('category', 'error_class', 'media_id', 'retryable',
+                                                          'detail', 'operation_id', 'submission_state')}
+                    attempt.update(status=exc.category, failure=failure, recovery_exhausted=True)
+                    self._save_attempt(diagnostics, attempt)
+                    self._write_diagnostics(diagnostics, {'failure': failure, 'retrieval': {}})
+                    recovered = None
                 if recovered:
                     try:
                         generate(recovered)
@@ -757,6 +768,15 @@ class FlowMediaClient:
                 self._write_diagnostics(diagnostic,{'retrieval':retrieval})
             if payload.get('status') == 'identity_unverified':
                 raise FlowCommandError(stage, 'request_identity_unverified', detail=f'Saved {stage} readback evidence requires reconciliation.')
+            if payload.get('status') == 'generation_failed':
+                expected_media = candidate['result']['media_id'] if candidate else media if known else None
+                if (stage != 'video' or payload.get('context_sha256') != hashlib.sha256(context_file.read_bytes()).hexdigest()
+                        or not payload.get('media_id') or expected_media and payload['media_id'] != expected_media):
+                    raise FlowCommandError(stage, 'request_identity_unverified')
+                if payload.get('worker', {}).get('processes', {}).get('cleanup_verified') is not True:
+                    raise FlowCommandError(stage, 'execution_busy', detail='Failed clip identified; browser cleanup remains unverified.')
+                raise FlowCommandError(stage, 'generation_failed', media_id=payload['media_id'],
+                    operation_id=payload.get('operation_id', ''), retryable=True, submission_state='forwarded')
             if code == 0:
                 if mode=='search':
                     candidate=payload.get('candidate')
@@ -997,10 +1017,11 @@ class FlowMediaClient:
             media_id = str(payload.get("media_id") or "")
             failed = payload.get("generation_status") == "MEDIA_GENERATION_STATUS_FAILED" and bool(media_id)
             # Only decoded provider verdicts may restrict spending, never exception prose.
-            verdicts = payload.get("failure_reasons") or []
-            if not isinstance(verdicts, list) or any(not isinstance(v, str) for v in verdicts):
-                verdicts = ['UNRECOGNIZED_VERDICT']
-            verdicts = set(verdicts)
+            reasons = payload.get("failure_reasons", [])
+            malformed = not isinstance(reasons, list) or any(not isinstance(v, str) for v in reasons)
+            verdicts = {v for v in reasons if isinstance(v, str)} if isinstance(reasons, list) else set()
+            # Malformed evidence cannot authorize another generation or API call.
+            failed = failed and not malformed
             unknown_verdict = bool(verdicts - POLICY_VERDICTS - CREDIT_VERDICTS) or error_class == 'UnknownFlowRefusalError'
             credits = error_class == 'InsufficientCreditsError' or bool(verdicts) and verdicts <= CREDIT_VERDICTS
             restricted = bool(verdicts & POLICY_VERDICTS) or error_class in {
@@ -1041,16 +1062,18 @@ class FlowMediaClient:
             }
             if restricted:
                 category = "provider_rejected"
-            elif submission_state == "blocked_before_submission":
+            elif submission_state == "blocked_before_submission" and not malformed:
                 category = "blocked_before_submission"
+            elif failed:
+                category = "generation_failed"
+            elif malformed:
+                category = 'request_identity_unverified'
             elif unknown_verdict:
                 category = 'post_submit_error' if clicked else 'pre_submit_transient'
             elif credits:
                 category = 'credits_exhausted'
             elif error_class == 'UploadResponseUnavailableError' and not clicked:
                 category = 'pre_submit_transient'
-            elif failed:
-                category = "generation_failed"
             elif auth_error:
                 category = "auth_required"
             elif clicked:

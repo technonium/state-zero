@@ -544,16 +544,19 @@ def select_video(listing, data, *, media_id=None, workflow_id=None):
             continue
         if not media_id and record.workflow_id in data['baseline']:
             continue
-        if record.is_failed:
-            raise ReadbackIdentityError('Exact video reports provider failure; reconcile its verdict')
-        if not record.is_done or not record.size_bytes:
-            continue
-        matches.append({'media_id':record.media_id, 'workflow_id':record.workflow_id,
+        matches.append((record, {'media_id':record.media_id, 'workflow_id':record.workflow_id,
                         'project_id':record.project_id, 'bytes':record.size_bytes,
-                        'video_url':record.video_url})
+                        'video_url':record.video_url}))
     if len(matches) != 1:
         raise ReadbackUnavailable('Exact video absent or ambiguous')
-    return matches[0]
+    record, clip = matches[0]
+    if record.is_failed:
+        from flow_media_client import FlowCommandError
+        raise FlowCommandError('video', 'generation_failed', media_id=record.media_id,
+            operation_id=record.workflow_id, retryable=True, submission_state='forwarded')
+    if not record.is_done or not record.size_bytes:
+        raise ReadbackUnavailable('Exact video not completed')
+    return clip
 
 
 async def download_video(client, clip, output, *, deadline):

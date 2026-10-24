@@ -118,15 +118,16 @@ class DailyRunStateManager:
 
         return "skip_active", self.load_state()
 
-    @_serialized
     def notify_once(self, transition: str, notify) -> None:
-        state=self.load_state() or {}
-        if state.get('last_actionable_alert')==transition:
-            return
+        with _STATE_LOCK:
+            if (self.load_state() or {}).get('last_actionable_alert')==transition:
+                return
         try:
             if notify():
-                self._write_json_atomic(self.state_path,state | {'date':self.run_date,
-                    'status':state.get('status','FAILED_RETRYABLE'),'last_actionable_alert':transition})
+                with _STATE_LOCK:
+                    state=self.load_state() or {}
+                    self._write_json_atomic(self.state_path,state | {'date':self.run_date,
+                        'status':state.get('status','FAILED_RETRYABLE'),'last_actionable_alert':transition})
         except Exception:
             pass
 

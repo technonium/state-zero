@@ -98,6 +98,13 @@ def main():
                           'error_class': type(exc).__name__}))
         return 3
     except Exception as exc:
+        from flow_media_client import FlowCommandError
+        if isinstance(exc, FlowCommandError) and exc.category == 'generation_failed':
+            import hashlib
+            print(json.dumps({'status': 'generation_failed', 'error_class': type(exc).__name__, 'media_id': exc.media_id,
+                'operation_id': exc.operation_id, 'context_sha256': hashlib.sha256(args.context.read_bytes()).hexdigest()
+                if getattr(args, 'context', None) else None}))
+            return 3
         print(json.dumps({'status': 'recovery_unavailable', 'error_class': type(exc).__name__}))
         return 3
     return 0
