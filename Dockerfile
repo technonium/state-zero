@@ -4,7 +4,8 @@
 FROM python:3.11-slim
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+# Avoid APT's unbounded delayed-retry warning queue on stalled downloads.
+RUN apt-get -o Acquire::Retries=0 update && apt-get -o Acquire::Retries=0 install -y \
     ffmpeg \
     openssh-client \
     libsm6 \

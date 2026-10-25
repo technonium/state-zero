@@ -306,8 +306,11 @@ class RecoveryEvidenceTests(unittest.IsolatedAsyncioTestCase):
                 assert self_reply['result']['sha256']=='a'*64
         with patch('gflow_cli.api.client.FlowApiClient',Client), \
                 patch('flow_readback.recover_context',new=AsyncMock(return_value={'sha256':'a'*64})):
-            await worker.download_existing(PROJECT,'',Path('/unused'),context_file=Path('/unused.context.json'),
-                deadline=time.time()+90,request_hash='a'*64,result_stream=stream)
+            with tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp); record=root/'flow_image_diagnostics.json'
+                record.write_text(json.dumps({'retrieval':{'candidate':{'kind':'image'}}}))
+                await worker.download_existing(PROJECT,'',root/'original.png',context_file=root/'flow_image_attempt_1.context.json',
+                    deadline=time.time()+90,request_hash='a'*64,mode='retrieve',record=record,result_stream=stream)
 
     async def test_editor_and_download_failures_have_distinct_last_phase(self):
         from flow_readback import download_video

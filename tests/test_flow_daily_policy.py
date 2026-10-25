@@ -42,6 +42,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
 
     def image_marker(self, number=1):
         marker = self.root / f'flow_image_attempt_{number}.submit'
+        marker.with_suffix('.context.json').write_text('{}')
         marker.write_text(json.dumps({'state': 'forwarded', 'selected_model': 'Nano Banana 2.1',
                                      'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
         return marker
@@ -56,11 +57,12 @@ class DailyFlowPolicyTests(unittest.TestCase):
             raw.write_bytes(b'corrupt download')
             return {'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact', 'local_path': str(raw)}]}
         with patch.object(client, '_run_json', side_effect=submit) as submit_mock, \
-                patch.object(client, '_recover_image', return_value=recovered) as recover, \
+                patch.object(client, '_readback_media', return_value={'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact', 'local_path': str(recovered)}]}) as recover, \
                 patch('flow_media_client.GoogleImageClient') as api:
             client.generate_image({}, self.root / 'generated_art.png')
         submit_mock.assert_called_once()
-        recover.assert_called_once_with('exact', self.root)
+        recover.assert_called_once()
+        self.assertEqual(recover.call_args.kwargs['known']['images'][0]['media_name'], 'exact')
         api.assert_not_called()
         saved = json.loads((self.root / 'flow_image_diagnostics.json').read_text())
         self.assertEqual(saved['attempts'][0]['failure']['category'], 'asset_download_failed')
@@ -69,27 +71,18 @@ class DailyFlowPolicyTests(unittest.TestCase):
     def test_invalid_retrieval_never_proves_generation_failure(self):
         self.freeze()
         client = FlowMediaClient()
-        calls = []
         def submit(command, timeout, marker):
-            calls.append(marker.name)
-            self.image_marker(len(calls))
-            raw = Path(command[command.index('--output') + 1])
-            raw.write_bytes(b'corrupt') if len(calls) == 1 else self.save_image({}, raw)
+            self.image_marker()
+            raw = Path(command[command.index('--output') + 1]); raw.write_bytes(b'corrupt')
             return {'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact', 'local_path': str(raw)}]}
-        now = [1000.0]
-        corrupt = self.root / 'corrupt-recovery.png'
-        corrupt.write_bytes(b'also corrupt')
-        with patch.object(client, '_run_json', side_effect=submit), \
-                patch.object(client, '_recover_image', return_value=corrupt), \
-                patch('flow_media_client.time.time', side_effect=lambda: now[0]), \
-                patch('flow_media_client.time.sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), \
+        with patch.object(client, '_run_json', side_effect=submit) as calls, \
+                patch.object(client, '_readback_media', side_effect=FlowCommandError('image', 'asset_download_failed')), \
                 patch('flow_media_client.GoogleImageClient') as api:
             with self.assertRaises(FlowCommandError) as error:
                 client.generate_image({}, self.root / 'generated_art.png')
-        self.assertEqual(error.exception.category,'request_identity_unverified')
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(now[0], 1300)
-        api.assert_not_called()
+        self.assertEqual(error.exception.category, 'asset_download_failed')
+        calls.assert_called_once(); api.assert_not_called()
+        self.assertEqual(len(json.loads((self.root / 'flow_image_diagnostics.json').read_text())['attempts']), 1)
 
     def test_corrupt_video_recovers_without_resubmission_or_upscale(self):
         import subprocess
@@ -99,6 +92,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         recovered = self.root / 'recovered.mp4'
         recovered.write_bytes(b'valid recovered video')
         def submit(command, timeout, marker):
+            marker.with_suffix('.context.json').write_text('{}')
             marker.write_text('submit_attempted\n')
             raw = Path(command[command.index('--output') + 1])
             raw.write_bytes(b'corrupt')
@@ -110,14 +104,37 @@ class DailyFlowPolicyTests(unittest.TestCase):
             return 1080, 1920, 8, True
         with patch.object(client, '_run_json', side_effect=submit) as submit_mock, \
                 patch.object(client, '_probe_video', side_effect=probe), \
-                patch.object(client, '_recover_video', return_value=recovered) as recover, \
+                patch.object(client, '_readback_media', return_value={'succeeded': True, 'media_id': 'exact-video', 'local_path': str(recovered), 'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}) as recover, \
                 patch('flow_media_client.run_bounded') as upscale, \
                 patch('flow_media_client.GoogleVideoClient.generate_from_image') as api:
             client.generate_video('original', art, self.root / 'generated_video.mp4')
         submit_mock.assert_called_once()
-        recover.assert_called_once_with('exact-video', self.root)
+        recover.assert_called_once()
+        self.assertEqual(recover.call_args.kwargs['known']['media_id'], 'exact-video')
         upscale.assert_not_called()
         api.assert_not_called()
+
+    def test_video_reply_without_download_recovers_same_result(self):
+        self.freeze()
+        client = FlowMediaClient()
+        art = self.save_image({}, self.root / 'generated_art.png')
+        recovered = self.root / 'recovered.mp4'; recovered.write_bytes(b'original video')
+        result = {'succeeded': True, 'media_id': 'exact-video',
+                  'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
+        def submit(command, timeout, marker):
+            marker.write_text('submit_attempted\n')
+            marker.with_suffix('.context.json').write_text('{}')
+            return result
+        with patch.object(client, '_run_json', side_effect=submit) as generate, \
+                patch.object(client, '_readback_media', return_value=result | {'local_path': str(recovered)}) as read, \
+                patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)), \
+                patch('flow_media_client.run_bounded') as upscale, \
+                patch('flow_media_client.GoogleVideoClient.generate_from_image') as api:
+            output = client.generate_video('original', art, self.root / 'generated_video.mp4')
+        self.assertEqual(output.read_bytes(), b'original video')
+        generate.assert_called_once(); read.assert_called_once()
+        upscale.assert_not_called(); api.assert_not_called()
+        self.assertEqual(read.call_args.kwargs['known']['media_id'], 'exact-video')
 
     def test_bad_markers_cannot_enable_replacement_and_keep_original_context(self):
         for raw in ('broken', '[]', '{"state":"unknown"}', '{"state":"attempted"}',
@@ -196,11 +213,12 @@ class DailyFlowPolicyTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 client.generate_image({}, target)
         with patch.object(FlowMediaClient, '_run_json') as generate, \
-                patch.object(FlowMediaClient, '_recover_image', return_value=recovered) as recover, \
+                patch.object(FlowMediaClient, '_readback_media', return_value={'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact', 'local_path': str(recovered)}]}) as recover, \
                 patch('flow_media_client.GoogleImageClient') as api:
             FlowMediaClient().generate_image({}, target)
         generate.assert_not_called()
-        recover.assert_called_once_with('exact', self.root)
+        recover.assert_called_once()
+        self.assertEqual(recover.call_args.kwargs['known']['images'][0]['media_name'], 'exact')
         api.assert_not_called()
 
     def test_corrupt_image_upscale_keeps_the_valid_original(self):
@@ -339,6 +357,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         markers = []
         def submit(command, timeout, marker):
             markers.append(marker.name)
+            marker.with_suffix('.context.json').write_text('{}')
             marker.write_text(json.dumps({'state': 'forwarded', 'selected_model': 'Nano Banana 2.1',
                                          'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'}))
             if len(markers) == 1:
@@ -392,21 +411,19 @@ class DailyFlowPolicyTests(unittest.TestCase):
     def test_recovery_deadline_is_five_minutes_and_does_not_restart(self):
         self.freeze()
         diagnostic = self.root / 'flow_image_diagnostics.json'
-        diagnostic.write_text(json.dumps({'attempts': [{'number': 1}]}))
-        client = FlowMediaClient()
-        attempt = {'number': 1, 'catalog_position': 0}
-        now = [100.0]
+        diagnostic.write_text(json.dumps({'request_hash': 'original', 'attempts': [{'number': 1}]}))
+        (self.root / 'flow_image_attempt_1.context.json').write_text('{}')
+        client = FlowMediaClient(); attempt = {'number': 1}; now = [100.0]
+        def read(*args, **kwargs):
+            self.assertEqual(args[3], 400)
+            now[0] = 400
         with patch('flow_media_client.time.time', side_effect=lambda: now[0]), \
-                patch('flow_media_client.time.sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)), \
-                patch.object(client, '_notify_transition'), \
-                patch.object(client, '_catalog_result', return_value=None) as lookup:
-            self.assertIsNone(client._recover_pending('image', diagnostic, attempt, self.root / 'art.png'))
-            self.assertEqual(now[0], 400)
-            calls = lookup.call_count
-            self.assertIsNone(client._recover_pending('image', diagnostic, attempt, self.root / 'art.png'))
-            self.assertEqual(lookup.call_count, calls)
-        saved = json.loads(diagnostic.read_text())
-        self.assertEqual(saved['attempts'][0]['recovery_deadline'], 400)
+                patch.object(client, '_readback_media', side_effect=read) as lookup, \
+                patch.object(client, '_notify_transition'):
+            for _ in range(2):
+                self.assertIsNone(client._recover_pending('image', diagnostic, attempt, self.root / 'art.png'))
+            self.assertEqual(lookup.call_count, 2)
+        self.assertEqual(json.loads(diagnostic.read_text())['attempts'][0]['recovery_deadline'], 400)
 
     def test_existing_exact_result_precedes_project_readback(self):
         self.freeze()
@@ -468,7 +485,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                     target = root / ('generated_art.png' if stage == 'image' else 'generated_video.mp4')
                     frozen = (root / 'flow_inputs.json').read_bytes()
                     client = FlowMediaClient()
-                    for name in ('_run_json', '_recover_image', '_recover_video', '_readback_media', '_catalog_result'):
+                    for name in ('_run_json', '_readback_media', '_recovery_command'):
                         stack.enter_context(patch.object(client, name, side_effect=AssertionError('Remote work forbidden')))
                     stack.enter_context(patch.object(client, '_notify_transition'))
                     stack.enter_context(patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)))
@@ -498,11 +515,10 @@ class DailyFlowPolicyTests(unittest.TestCase):
                 diagnostic.write_text(json.dumps(saved))
                 asset.unlink() if state == 'missing' else asset.write_bytes(b'damaged')
                 client = FlowMediaClient()
-                with patch.object(client, '_recover_image') as download, \
-                        patch.object(client, '_readback_media') as read, \
-                        patch.object(client, '_catalog_result') as catalog:
+                with patch.object(client, '_recovery_command') as download, \
+                        patch.object(client, '_readback_media') as read:
                     self.assertIsNone(client._recover_pending('image', diagnostic, attempt, root / 'art.png'))
-                download.assert_not_called(); read.assert_not_called(); catalog.assert_not_called()
+                download.assert_not_called(); read.assert_not_called()
                 self.assertEqual(json.loads(diagnostic.read_text())['attempts'], [attempt])
 
     def test_expired_recovery_still_blocks_changed_checksum_or_receipt(self):
@@ -619,7 +635,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
                     (root / 'flow_image_attempt_2.submit').write_bytes((root / 'flow_image_attempt_1.submit').read_bytes())
                     self.save_image({}, output)
                 with patch.object(client, '_generate_image', side_effect=replace) as generate, \
-                        patch.object(client, '_recover_image', side_effect=AssertionError('Expired download forbidden')), \
+                        patch.object(client, '_recovery_command', side_effect=AssertionError('Expired download forbidden')), \
                         patch.object(client, '_readback_media', side_effect=AssertionError('Expired readback forbidden')), \
                         patch.object(client, '_notify_transition'):
                     with self.assertRaises(FlowCommandError):
@@ -785,8 +801,14 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.assertNotEqual(art.read_bytes(), before)
         self.assertEqual((self.root / 'video_prompt.txt').read_text(), 'original')
 
-    def test_unknown_catalog_operation_cannot_recover_some_other_project_media(self):
-        self.assertIsNone(FlowMediaClient()._catalog_result('image', {'number': 1, 'catalog_position': 0}))
+    def test_catalog_operation_without_exact_context_cannot_recover_other_media(self):
+        diagnostic = self.root / 'flow_image_diagnostics.json'
+        attempt = {'number': 1, 'catalog_position': 0, 'catalog_operation_id': 'unrelated'}
+        diagnostic.write_text(json.dumps({'attempts': [attempt]}))
+        client = FlowMediaClient()
+        with patch.object(client, '_readback_media') as browser:
+            self.assertIsNone(client._recover_pending('image', diagnostic, attempt, self.root / 'art.png'))
+        browser.assert_not_called()
 
     def test_selected_api_bytes_survive_crash_during_atomic_promotion(self):
         self.freeze()

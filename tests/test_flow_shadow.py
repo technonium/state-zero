@@ -14,7 +14,10 @@ sys.path.insert(0, str(ROOT / "src" / "scripts"))
 sys.path.insert(0, str(ROOT / "ops"))
 
 
-class FlowProviderTests(unittest.TestCase):
+from flow_fixture import FrozenFlowCalls, freeze
+
+
+class FlowProviderTests(FrozenFlowCalls, unittest.TestCase):
     def test_flow_image_command_preserves_prompt_and_hard_settings(self):
         from flow_media_client import FlowMediaClient
 
@@ -102,7 +105,7 @@ class FlowProviderTests(unittest.TestCase):
                     return payload
                 with patch.object(FlowMediaClient, "_run_json", side_effect=confirmed):
                     target = Path(tmpdir) / "generated_art.png"
-                    FlowMediaClient().generate_image({"scene": "cloud"}, target)
+                    self.frozen_image(FlowMediaClient(), {"scene": "cloud"}, target)
             self.assertTrue(original.exists())
             with Image.open(target) as image:
                 self.assertEqual((image.format, image.size), ("PNG", (768, 1024)))
@@ -121,7 +124,7 @@ class FlowProviderTests(unittest.TestCase):
                     marker.write_text(json.dumps({"state": "forwarded", "expected_model": "NARWHAL", "actual_model": "BELUGA", "selected_model": "Nano Banana 2.1"}))
                     return payload
                 with patch.object(FlowMediaClient, "_run_json", side_effect=confirmed):
-                    FlowMediaClient().generate_image({"scene": "cloud"}, Path(tmpdir) / "generated_art.png")
+                    self.frozen_image(FlowMediaClient(), {"scene": "cloud"}, Path(tmpdir) / "generated_art.png")
             diagnostics = json.loads((Path(tmpdir) / "flow_image_diagnostics.json").read_text())
             self.assertEqual(diagnostics["wire_model"], "BELUGA")
             self.assertIsNone(diagnostics["response_model"])
@@ -137,21 +140,20 @@ class FlowProviderTests(unittest.TestCase):
             calls = []
 
             def fail(_command, _timeout, marker):
-                marker.touch()
+                marker.write_text('submit_attempted\n')
                 calls.append(marker)
                 raise FlowCommandError("video", "generation_failed", media_id=f"media-{len(calls)}", retryable=True)
 
-            with patch.object(FlowMediaClient, "_run_json", side_effect=fail), patch.object(
-                FlowMediaClient, "_catalog_position", return_value=0
-            ), patch.object(FlowMediaClient, "_catalog_video_since", return_value={}), patch(
+            with patch.object(FlowMediaClient, "_run_json", side_effect=fail), \
+                    patch(
                 "flow_media_client.time.sleep"
             ):
                 with self.assertRaises(FlowCommandError):
-                    FlowMediaClient().generate_video("move", art, root / "generated_video.mp4")
+                    self.frozen_video(FlowMediaClient(), "move", art, root / "generated_video.mp4")
             self.assertEqual(len(calls), 2)
             report = json.loads((root / "flow_video_diagnostics.json").read_text())
             self.assertEqual(report["submissions_estimated"], 2)
-            self.assertEqual([attempt["media_id"] for attempt in report["attempts"]], ["media-1", "media-2"])
+            self.assertEqual([attempt["failure"]["media_id"] for attempt in report["attempts"]], ["media-1", "media-2"])
 
     def test_flow_api_fallback_is_stage_specific_when_enabled(self):
         from image_gen import ImageGenerator
@@ -163,6 +165,7 @@ class FlowProviderTests(unittest.TestCase):
             art = root / "generated_art.png"
             prompt = root / "video_prompt.txt"
             prompt.write_text("Move slowly")
+            freeze(root, image={"scene": "cloud"}, video="Move slowly")
             env = {"MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "true", "GOOGLE_API_KEY_PRIMARY": "test"}
             with patch.dict(os.environ, env, clear=True):
                 with patch("flow_media_client.FlowMediaClient._generate_image", side_effect=FlowCommandError("image", "auth_required", submission_state="not_attempted")):
@@ -645,7 +648,7 @@ class RecoveryReconciliationTests(unittest.TestCase):
             (out/'flow_image_attempt_1.submit').write_text('{"state":"blocked_before_submission"}')
             validate_recovery_inputs(out)
 
-class UpgradeValidationTests(unittest.TestCase):
+class UpgradeValidationTests(FrozenFlowCalls, unittest.TestCase):
     def test_validation_paths_isolate_state_archive_and_outputs_but_not_whoop(self):
         from utils import get_output_root, get_state_root, get_database_root
         from whoop_token_manager import WHOOPTokenManager
@@ -671,12 +674,12 @@ class UpgradeValidationTests(unittest.TestCase):
             with patch.dict(os.environ, {'FLOW_IMAGE_UPSCALE_2K': 'false'}), patch.object(
                 FlowMediaClient, '_run_json', return_value=payload):
                 with self.assertRaises(RuntimeError):
-                    FlowMediaClient().generate_image({}, root / 'unconfirmed' / 'generated_art.png')
+                    self.frozen_image(FlowMediaClient(), {}, root / 'unconfirmed' / 'generated_art.png')
                 def confirmed(command, timeout, marker):
                     marker.write_text(json.dumps({'state': 'forwarded', 'expected_model': 'NARWHAL', 'actual_model': 'BELUGA', 'selected_model': 'Nano Banana 2.1'}))
                     return payload
                 with patch.object(FlowMediaClient, '_run_json', side_effect=confirmed):
-                    FlowMediaClient().generate_image({}, root / 'generated_art.png')
+                    self.frozen_image(FlowMediaClient(), {}, root / 'generated_art.png')
             self.assertTrue((root / 'generated_art.png').is_file())
 
     def test_validation_has_own_claim_and_obeys_the_canonical_lock(self):

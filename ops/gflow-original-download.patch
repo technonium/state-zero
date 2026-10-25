@@ -1,8 +1,6 @@
-diff --git a/src/gflow_cli/api/transports/migrated_recover.py b/src/gflow_cli/api/transports/migrated_recover.py
-index 12c7fe1b..2f3b09eb 100644
 --- a/src/gflow_cli/api/transports/migrated_recover.py
 +++ b/src/gflow_cli/api/transports/migrated_recover.py
-@@ -22,10 +22,10 @@ pass an ``ftyp`` magic-byte test and are *not* the asset the user paid for. Savi
+@@ -22,10 +22,10 @@
  silently is the failure class of #281, so a mismatch is a hard error here, never a
  warning.
  
@@ -17,38 +15,55 @@ index 12c7fe1b..2f3b09eb 100644
  """
  
  from __future__ import annotations
-@@ -108,7 +108,6 @@ async def _await_signed_record(
+@@ -81,6 +81,14 @@
+     never persisted in the catalog.
+     """
+     found: dict[str, Any] = {}
++    video_urls: dict[str, str] = {}
++
++    def on_request(request: Any) -> None:
++        url = str(getattr(request, "url", ""))
++        parsed = urlsplit(url)
++        # Observe the app's original-video request, never synthesize a transcode.
++        if parsed.scheme == "https" and parsed.hostname == "flow-content.google" and parsed.path.startswith("/video/"):
++            video_urls[parsed.path.removeprefix("/video/")] = url
+ 
+     async def on_response(response: Any) -> None:
+         if found or "batchexecute" not in str(getattr(response, "url", "")):
+@@ -92,6 +100,7 @@
+         _collect(text, media_id=media_id, into=found)
+ 
+     page.on("response", on_response)
++    page.on("request", on_request)
+     try:
+         log.info("migrated.recover_navigate", project_id=project_id, media_id=media_id)
+         await page.goto(
+@@ -99,10 +108,23 @@
          )
          loop = asyncio.get_running_loop()
          deadline = loop.time() + wait_s
--        download_requested = False
-         while loop.time() < deadline:
-             workflow_id = found.get("workflow_id")
-             if workflow_id in video_urls:
-@@ -116,18 +115,10 @@ async def _await_signed_record(
-                 break
-             if found and urlsplit(str(found["url"])).hostname == "flow-content.google" and urlsplit(str(found["url"])).path == f"/video/{workflow_id}":
-                 break
--            if found and not download_requested:
--                download_requested = True
--                # New accounts expose the original URL only when the user asks
--                # for the original 720p file. This downloads, never generates.
--                from gflow_cli.api.transports.migrated_composer import _ligature
--                control = page.locator("button").filter(has=_ligature(page, "download")).first
--                await control.wait_for(state="visible", timeout=10000)
--                await control.click(timeout=5000)
--                option = page.get_by_text("720p", exact=True)
--                if await option.count() != 1:
--                    raise WireFormatError(detail="Original 720p download option is ambiguous or missing", route=_ROUTE)
--                await option.click(timeout=5000)
+-        while not found and loop.time() < deadline:
++        while loop.time() < deadline:
++            workflow_id = found.get("workflow_id")
++            if workflow_id in video_urls:
++                found["url"] = video_urls[workflow_id]
++                break
++            if found and urlsplit(str(found["url"])).hostname == "flow-content.google" and urlsplit(str(found["url"])).path == f"/video/{workflow_id}":
++                break
 +            if found:
 +                # The exact clip record is sufficient for native download.
 +                # Attach expect_download before clicking the original option.
 +                break
              await page.wait_for_timeout(500)
-         else:
-             found.clear()
-@@ -219,6 +210,40 @@ async def _fetch_verified(page: Page, *, url: str, expected: int | None, media_i
++        else:
++            found.clear()
+     finally:
+         page.remove_listener("response", on_response)
++        page.remove_listener("request", on_request)
+ 
+     if not found:
+         # #877: the class-default remediation on WireFormatError is written for
+@@ -188,6 +210,40 @@
      return body
  
  
@@ -89,7 +104,7 @@ index 12c7fe1b..2f3b09eb 100644
  async def recover_clip(
      page: Page,
      *,
-@@ -236,8 +261,10 @@ async def recover_clip(
+@@ -205,8 +261,10 @@
      found = await _await_signed_record(
          page, media_id=media_id, project_id=project_id, wait_s=wait_s
      )

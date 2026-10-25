@@ -56,25 +56,16 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
             client.generate_image.assert_awaited_once()
             self.assertEqual(marker.read_text(), '{"state":"forwarded"}')
 
-    async def test_original_image_recovery_uses_only_exact_verified_media(self):
+    async def test_original_recovery_requires_exact_attempt_context_before_browser(self):
         from ops.flow_media_recover import download_existing
-        project = '11111111-1111-4111-8111-111111111111'
-        media = '22222222-2222-4222-8222-222222222222'
-        from types import SimpleNamespace
-        details = [None] * 15; details[8] = 36; details[14] = 4
-        listing = {'images': [SimpleNamespace(media_id=media, project_id=project)],
-                   'media': {media: [None] * 6 + [[details]]}}
-        client = MagicMock()
-        client.__aenter__.return_value = client
-        with patch('gflow_cli.api.client.FlowApiClient', return_value=client), \
-                patch('flow_readback.snapshot', new=AsyncMock(return_value=listing)), \
-                patch('flow_readback.download_image', new=AsyncMock()) as download:
-            await download_existing(project, media, Path('/tmp/original.png'))
-            download.assert_awaited_once()
-            download.reset_mock()
-            with self.assertRaises(ValueError):
-                await download_existing(project, '33333333-3333-4333-8333-333333333333', Path('/tmp/wrong.png'))
-            download.assert_not_awaited()
+        from flow_readback import ReadbackIdentityError
+        project='11111111-1111-4111-8111-111111111111'
+        media='22222222-2222-4222-8222-222222222222'
+        with patch('gflow_cli.api.client.FlowApiClient') as browser:
+            for identity in (media,'33333333-3333-4333-8333-333333333333'):
+                with self.assertRaises(ReadbackIdentityError):
+                    await download_existing(project,identity,Path('/tmp/original.png'))
+            browser.assert_not_called()
 
     async def test_submit_boundary_creates_one_private_marker(self):
         from gflow_cli.api.transports.migrated_composer import _mark_shadow_submit_attempt

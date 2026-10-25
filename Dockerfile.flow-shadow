@@ -4,7 +4,8 @@ ARG TARGETARCH
 # Retain the browser validated with the pinned CLI across image rebuilds.
 ARG CHROME_VERSION=154.0.8037.97-1
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# APT 3.0.3 queues unbounded delayed-item warnings after download timeouts (#1111554).
+RUN apt-get -o Acquire::Retries=0 update && apt-get -o Acquire::Retries=0 install -y --no-install-recommends \
       ffmpeg openssh-client libsm6 libxext6 libxrender1 libgomp1 \
       xvfb xauth x11vnc ca-certificates curl gnupg git \
  && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
@@ -13,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       > /etc/apt/sources.list.d/google-chrome.list \
  && curl -fsSL "https://dl.google.com/linux/chrome/deb/pool/main/g/google-chrome-stable/google-chrome-stable_${CHROME_VERSION}_${TARGETARCH}.deb" \
       -o /tmp/state-zero-chrome.deb \
- && apt-get update && apt-get install -y --no-install-recommends /tmp/state-zero-chrome.deb \
+ && apt-get -o Acquire::Retries=0 update && apt-get -o Acquire::Retries=0 install -y --no-install-recommends /tmp/state-zero-chrome.deb \
  && rm /tmp/state-zero-chrome.deb \
  && rm -rf /var/lib/apt/lists/*
 
@@ -32,7 +33,6 @@ ARG STATE_ZERO_BUILD_COMMIT=
 LABEL org.opencontainers.image.revision=$STATE_ZERO_BUILD_COMMIT
 RUN python3 -c 'import sys,json,os,re; sys.path.insert(0,"/app/ops"); from flow_shadow_run import source_revision; revision=os.getenv("STATE_ZERO_BUILD_COMMIT", ""); open("/app/.build-provenance.json","w").write(json.dumps({"state_zero_commit": revision if re.fullmatch("[0-9a-f]{40}", revision) else None, "state_zero_source_sha256": source_revision()}))'
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-agent-panel.patch
-RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-media-recovery.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-submit-boundary.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-video-record.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-original-download.patch

@@ -207,23 +207,21 @@ class VideoContextRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); marker=root/'flow_video_attempt_1.submit'; ctx=marker.with_suffix('.context.json')
             (root/'flow_inputs.json').write_text('frozen'); (root/'flow_start_frame.png').write_bytes(b'frame')
-            data=context() | dict(baseline=None,attempt=1, request_hash='a'*64, frozen_inputs_sha256=hashlib.sha256(b'frozen').hexdigest(),
-                source_hash=hashlib.sha256(b'frame').hexdigest(), recovery_deadline=1000)
+            data=context() | dict(baseline=None,attempt=1,request_hash='a'*64,frozen_inputs_sha256=hashlib.sha256(b'frozen').hexdigest(),
+                source_hash=hashlib.sha256(b'frame').hexdigest(),recovery_deadline=1000)
             readback.save(ctx,data); readback.save(marker,dict(state='forwarded',actual_model=data['model'],readback_hash=readback.identity_hash(data)))
-            client=Mock()
+            original=ctx.read_bytes(); client=Mock()
             async def download(client,clip,output,**kwargs):
-                saved=json.loads(readback.receipt_path(ctx).read_text())
-                self.assertEqual((saved['media_id'],saved['workflow_id']),(MEDIA,WORKFLOW))
-                self.assertEqual(saved['local_path'],str(output))
-                self.assertLessEqual(kwargs['deadline'],1000)
-                output.write_bytes(b'original')
+                self.assertEqual((clip['media_id'],clip['workflow_id']),(MEDIA,WORKFLOW))
+                self.assertLessEqual(kwargs['deadline'],1000); output.write_bytes(b'original')
             with patch.dict(os.environ,{'GFLOW_PROFILE':'shadow'}), patch('flow_readback.time.time',return_value=900), \
                  patch('flow_readback.snapshot',new=AsyncMock(return_value=listing())) as snap, \
                  patch('flow_readback.download_video',new=AsyncMock(side_effect=download)) as fetch:
-                result=await readback.recover_context(client,ctx,PROJECT,'a'*64,2000,root/'saved.mp4',media_id=MEDIA)
+                candidate=await readback.recover_context(client,ctx,PROJECT,'a'*64,1000,root/'saved.mp4',media_id=MEDIA,mode='search')
+                result=await readback.recover_context(client,ctx,PROJECT,'a'*64,1000,root/'saved.mp4',media_id=MEDIA,mode='retrieve',candidate=candidate)
             self.assertEqual(result['local_path'],str(root/'saved.mp4'))
-            self.assertEqual(json.loads(ctx.read_text())['recovery_deadline'],1000)
-            snap.assert_awaited_once();fetch.assert_awaited_once()
+            self.assertEqual(ctx.read_bytes(),original)
+            self.assertEqual(snap.await_count,2); fetch.assert_awaited_once()
 
     async def test_changed_frame_or_evidence_never_starts_readback(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -233,7 +231,7 @@ class VideoContextRecoveryTests(unittest.IsolatedAsyncioTestCase):
             readback.save(ctx,data);readback.save(marker,dict(state='forwarded',actual_model=data['model'],readback_hash=readback.identity_hash(data)))
             with patch.dict(os.environ,{'GFLOW_PROFILE':'shadow'}), patch('flow_readback.snapshot',new=AsyncMock()) as snap:
                 with self.assertRaises(readback.ReadbackIdentityError):
-                    await readback.recover_context(Mock(),ctx,PROJECT,'a'*64,10**12,root/'saved.mp4')
+                    await readback.recover_context(Mock(),ctx,PROJECT,'a'*64,10**12,root/'saved.mp4', mode='search')
             snap.assert_not_awaited()
 
 class AdapterKnownIdentityTests(unittest.TestCase):
@@ -246,9 +244,9 @@ class AdapterKnownIdentityTests(unittest.TestCase):
             (root/'flow_video_attempt_1.context.json').write_text('{}')
             attempt=dict(number=1,recovery_deadline=time.time()+20,failure={'media_id':MEDIA})
             client=FlowMediaClient()
-            with patch.object(client,'_catalog_result',return_value=None), \
-                 patch.object(client,'_generation_seconds',return_value=3600), \
-                 patch.object(client,'_notify_transition'), patch.object(client,'_readback_media',return_value=None) as worker:
+            with patch.object(client,'_generation_seconds',return_value=3600), \
+                    patch.object(client,'_notify_transition'), \
+                    patch.object(client,'_readback_media',return_value=None) as worker:
                 self.assertIsNone(client._recover_pending('video',diagnostic,attempt,root/'video.mp4'))
             self.assertEqual(worker.call_args.kwargs['known']['media_id'],MEDIA)
 

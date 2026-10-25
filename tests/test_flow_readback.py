@@ -153,7 +153,7 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
             data = json.loads(context_path(marker).read_text()); data['seed'] += 1
             context_path(marker).write_text(json.dumps(data))
             with patch('flow_readback.snapshot', new=AsyncMock()) as read, self.assertRaises(ReadbackIdentityError):
-                await recover_context(Mock(), context_path(marker), PROJECT, 'a' * 64, 999, root / 'art.png')
+                await recover_context(Mock(), context_path(marker), PROJECT, 'a' * 64, 999, root / 'art.png', mode='search')
             read.assert_not_awaited()
 
     async def test_missing_or_changed_frozen_evidence_requires_reconciliation(self):
@@ -166,36 +166,39 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
                 if changed: frozen.write_text('{"changed":true}')
                 else: frozen.unlink()
                 with patch('flow_readback.snapshot', new=AsyncMock()) as read, self.assertRaises(ReadbackIdentityError):
-                    await recover_context(Mock(), context_path(marker), PROJECT, 'a' * 64, time.time() + 30, root / 'art.png')
+                    await recover_context(Mock(), context_path(marker), PROJECT, 'a' * 64, time.time() + 30, root / 'art.png', mode='search')
                 read.assert_not_awaited()
 
-    async def test_expired_recovery_budget_survives_restart(self):
+    async def test_expired_parent_budget_never_opens_browser_or_changes_child_context(self):
         import time
         from flow_readback import recover_context
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
-            root = Path(tmp);marker = self.saved_attempt(root)
-            original_deadline = time.time() - 1
-            with patch('flow_readback.snapshot', new=AsyncMock()) as read:
-                for deadline in (original_deadline, time.time() + 300):
-                    with self.assertRaises(ReadbackUnavailable):
-                        await recover_context(Mock(), context_path(marker), PROJECT, 'a' * 64, deadline, root / 'art.png')
-                read.assert_not_awaited()
-            self.assertEqual(json.loads(context_path(marker).read_text())['recovery_deadline'], original_deadline)
-
-    async def test_download_failure_preserves_exact_receipt_before_download(self):
-        import time
-        from flow_readback import recover_context, receipt_path
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
             root = Path(tmp); marker = self.saved_attempt(root)
-            client = Mock()
+            original = context_path(marker).read_bytes(); deadline = time.time() - 1
+            with patch('flow_readback.snapshot', new=AsyncMock()) as read:
+                for _ in range(2):
+                    with self.assertRaises(ReadbackUnavailable):
+                        await recover_context(Mock(), context_path(marker), PROJECT, 'a' * 64, deadline, root / 'art.png', mode='search')
+                read.assert_not_awaited()
+            self.assertEqual(context_path(marker).read_bytes(), original)
+
+    async def test_download_failure_keeps_exact_parent_candidate_and_child_records(self):
+        import time
+        from flow_readback import recover_context
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
+            root = Path(tmp); marker = self.saved_attempt(root); ctx = context_path(marker)
+            original = ctx.read_bytes(); client = Mock()
             client._context.request.get = AsyncMock(side_effect=OSError('download failed'))
-            with patch('flow_readback.snapshot', new=AsyncMock(return_value=decode_listing(listing(), PROJECT))), \
-                    self.assertRaises(OSError):
-                await recover_context(client, context_path(marker), PROJECT, 'a' * 64, time.time() + 30, root / 'art.png')
-            saved = json.loads(receipt_path(context_path(marker)).read_text())
-            self.assertEqual(saved['images'][0]['media_name'], MEDIA)
-            self.assertNotIn('https://', receipt_path(context_path(marker)).read_text())
-            self.assertFalse((root / 'art.png').exists())
+            with patch('flow_readback.snapshot', new=AsyncMock(return_value=decode_listing(listing(), PROJECT))):
+                candidate = await recover_context(client, ctx, PROJECT, 'a' * 64, time.time()+30, root/'art.png', mode='search')
+                before = json.dumps(candidate, sort_keys=True)
+                with self.assertRaises(OSError):
+                    await recover_context(client, ctx, PROJECT, 'a'*64, time.time()+30, root/'art.png', mode='retrieve', candidate=candidate)
+            self.assertEqual(candidate['result']['images'][0]['media_name'], MEDIA)
+            self.assertEqual(json.dumps(candidate, sort_keys=True), before)
+            self.assertNotIn('https://', before)
+            self.assertEqual(ctx.read_bytes(), original)
+            self.assertFalse((root/'art.png').exists())
 
     async def test_corrupt_download_does_not_replace_valid_original(self):
         from flow_readback import download_image
@@ -360,16 +363,18 @@ class InstalledObserverTests(unittest.IsolatedAsyncioTestCase):
             async def download(url, **kwargs):
                 import io
                 self.assertEqual(url, 'https://flow-content.google/original')
-                self.assertEqual(json.loads(receipt_path(context).read_text())['images'][0]['media_name'], MEDIA)
+                self.assertEqual(candidate['result']['images'][0]['media_name'], MEDIA)
                 content = io.BytesIO(); Image.new('RGB', (768, 1024), 'white').save(content, 'PNG')
                 return Mock(status=200, body=AsyncMock(return_value=content.getvalue()))
             client = SimpleNamespace(_context=Mock())
             client._context.request.get = AsyncMock(side_effect=download)
+            original_context = context.read_bytes()
             with patch('flow_readback.snapshot', new=AsyncMock(return_value=decode_listing(listing(), PROJECT))):
-                result = await recover_context(client, context, PROJECT, 'a' * 64, time.time() + 5, Path(tmp) / 'art.png')
+                candidate = await recover_context(client, context, PROJECT, 'a'*64, time.time()+5, Path(tmp)/'art.png', mode='search')
+                result = await recover_context(client, context, PROJECT, 'a'*64, time.time()+5, Path(tmp)/'art.png', mode='retrieve', candidate=candidate)
             self.assertEqual(result['images'][0]['media_name'], MEDIA)
             self.assertTrue(Path(result['images'][0]['local_path']).is_file())
-            self.assertEqual(json.loads(context.read_text())['readback'], 'exact_image_recovered')
+            self.assertEqual(context.read_bytes(), original_context)
             self.assertNotIn('https://', context.read_text())
 
     async def test_lost_upload_response_recovers_without_uploading_twice(self):
@@ -403,6 +408,7 @@ class InstalledObserverTests(unittest.IsolatedAsyncioTestCase):
             chooser.set_files.assert_awaited_once()
             data = json.loads((Path(tmp) / 'flow_video_attempt_1.upload.json').read_text())
             self.assertEqual(data['state'], 'recovered')
+            self.assertFalse(data['response']['routing_active'])
 
 
 class RecoveryCommandTests(unittest.TestCase):
@@ -430,7 +436,7 @@ class RecoveryCommandTests(unittest.TestCase):
             print('synthetic SDK diagnostic')
             print(json.dumps({'status':'downloaded','result':None}),file=kwargs['result_stream'],flush=True)
         output, errors = io.StringIO(), io.StringIO()
-        with patch.object(sys, 'argv', ['recover', PROJECT, MEDIA, '/tmp/original.png']), \
+        with patch.object(sys, 'argv', ['recover', PROJECT, '--context', '/tmp/attempt.context.json', '/tmp/original.png', '9999999999', 'a'*64, '--mode', 'retrieve', '--record', '/tmp/flow_image_diagnostics.json']), \
                 patch.object(flow_media_recover, 'download_existing', new=AsyncMock(side_effect=download)), \
                 redirect_stdout(output), redirect_stderr(errors):
             self.assertEqual(flow_media_recover.main(), 0)

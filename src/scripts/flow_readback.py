@@ -316,8 +316,7 @@ def receipt_path(context_file):
 
 
 async def recover_context(client, context_file, project, request_hash, deadline, output, *, media_id=None, workflow_id=None,
-                          mode=None, candidate=None):
-    started = time.time()
+                          mode, candidate=None):
     marker = context_file.with_name(context_file.name.removesuffix('.context.json') + '.submit')
     try:
         data = json.loads(context_file.read_text())
@@ -347,71 +346,15 @@ async def recover_context(client, context_file, project, request_hash, deadline,
             or evidence.get('selected_model') != 'Nano Banana 2.1' or evidence.get('expected_model') != 'NARWHAL'
             or evidence.get('readback_hash') != identity_hash(data)):
         raise ReadbackIdentityError('Submitted request not verified')
-    if mode is not None:
-        return await recover_candidate(client,context_file,data,deadline,output,mode,candidate,
-                                       media_id=media_id,workflow_id=workflow_id)
-    deadline = min(deadline, data.get('recovery_deadline') or deadline)
-    data['recovery_deadline'] = deadline
-    save(context_file, data)
-    if data.get('baseline') is None and not video:
-        raise ReadbackUnsupported('Baseline unavailable')
-    while time.time() < deadline:
-        try:
-            listing = await snapshot(client._context, project, deadline)
-            data['listed_media_count'] = len(listing['ids'])
-            if video:
-                receipt_file=receipt_path(context_file)
-                known=json.loads(receipt_file.read_text()) if receipt_file.exists() else {}
-                if known and any(known.get(k)!=data[k] for k in ('request_hash','profile','project_id')):
-                    raise ReadbackIdentityError('Video receipt identity changed')
-                if known and (media_id and known.get('media_id') != media_id or
-                              workflow_id and known.get('workflow_id') != workflow_id):
-                    raise ReadbackIdentityError('Known video result conflicts with receipt')
-                clip=select_video(listing,data,media_id=known.get('media_id') or media_id,
-                                  workflow_id=known.get('workflow_id') or workflow_id)
-                from types import SimpleNamespace
-                receipt=video_receipt(data,SimpleNamespace(**clip),context_file)
-                receipt['local_path']=str(output)
-                save(receipt_path(context_file),receipt)
-                if known.get('sha256'):
-                    clip['sha256']=known['sha256']
-                await asyncio.wait_for(download_video(client,clip,output,deadline=deadline),max(.001,deadline-time.time()))
-                receipt.update(local_path=str(output),sha256=hashlib.sha256(output.read_bytes()).hexdigest())
-            else:
-                image = select_image(listing, data)
-                receipt = {'request_hash': request_hash, 'profile': data['profile'], 'project_id': project,
-                           'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': image.media_id,
-                           'workflow_id': image.workflow_id, 'model_name_type': 'BELUGA',
-                           'aspect_ratio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'}]}
-                save(receipt_path(context_file), receipt)
-                await asyncio.wait_for(download_image(client, image, output),max(.001,deadline-time.time()))
-                receipt['images'][0]['local_path'] = str(output)
-            save(receipt_path(context_file), receipt)
-            data.update(readback='exact_video_recovered' if video else 'exact_image_recovered',
-                        candidate_count=1, elapsed_seconds=round(time.time()-started,3))
-            save(context_file,data)
-            return receipt
-        except ReadbackIdentityError:
-            raise
-        except Exception as exc:
-            # The original generation error stays in adapter diagnostics.
-            data['recovery_errors']=(data.get('recovery_errors',[])+[{'phase':'readback_download','class':type(exc).__name__,
-                'detail':str(exc)[:200] if isinstance(exc,ReadbackUnavailable) else type(exc).__name__}])[-8:]
-            save(context_file,data)
-            if isinstance(exc,ReadbackUnsupported) or not isinstance(exc,ReadbackUnavailable):
-                raise
-            await asyncio.sleep(min(3,max(0,deadline-time.time())))
-    data['readback'] = 'unavailable'
-    data['elapsed_seconds'] = round(time.time() - started, 3)
-    save(context_file, data)
-    raise ReadbackUnavailable('Media recovery deadline exhausted')
+    return await recover_candidate(client,context_file,data,deadline,output,mode,candidate,
+                                   media_id=media_id,workflow_id=workflow_id)
 
 
 async def recover_candidate(client, context_file, data, deadline, output, mode, candidate, *, media_id=None, workflow_id=None):
     """Search and retrieval report evidence to the parent; child records are read-only."""
     context_hash=hashlib.sha256(context_file.read_bytes()).hexdigest()
     video=data.get('kind')=='video'
-    if mode not in {'search','retrieve','recover'} or mode=='retrieve' and (
+    if mode not in {'search','retrieve'} or mode=='retrieve' and (
             not isinstance(candidate,dict) or candidate.get('context_sha256')!=context_hash
             or candidate.get('kind')!=('video' if video else 'image')):
         raise ReadbackIdentityError('Retrieval candidate identity changed')
@@ -729,7 +672,8 @@ def note_video_response(data, *, phase, rpc, response, exc=None, decoded=False, 
         if data is None:
             return
         fields=dict(phase=phase,rpc=rpc,http_status=response.status,
-                    body_readable=exc is None,decoded=decoded)
+                    body_readable=exc is None,decoded=decoded,
+                    routing_active=data.get('observer',{}).get('routing_active',False))
         if read_started is not None:
             fields['read_ms']=max(0,round((time.monotonic()-read_started)*1000))
             if event_received is not None:
@@ -756,7 +700,10 @@ def note_video_lifecycle(data, event, *, request=None, upload=False):
             return
         observation=data.setdefault('observer',{'version':1,'counters':{},'events':[]})
         observation['counters'][event]=min(100000,observation['counters'].get(event,0)+1)
-        item={'event':event,'at':round(time.time(),3)}
+        if event in {'routing_active','routing_removed'}:
+            observation['routing_active']=event=='routing_active'
+        item={'event':event,'at':round(time.time(),3),
+              'routing_active':observation.get('routing_active',False)}
         if event=='request_failed':
             value=getattr(request,'failure',None)
             allowed={'net::ERR_ABORTED','net::ERR_FAILED','net::ERR_CONNECTION_RESET','net::ERR_TIMED_OUT',
@@ -764,7 +711,6 @@ def note_video_lifecycle(data, event, *, request=None, upload=False):
                 'net::ERR_NAME_NOT_RESOLVED','net::ERR_BLOCKED_BY_CLIENT'}
             item['failure']=value if isinstance(value,str) and value in allowed else 'OTHER'
         observation['events']=(observation['events']+[item])[-24:]
-        observation['routing_active']=event=='routing_active' if event in {'routing_active','routing_removed'} else observation.get('routing_active',False)
         (note_upload_response if upload else note_response)(data,observer=observation)
     except Exception:
         pass

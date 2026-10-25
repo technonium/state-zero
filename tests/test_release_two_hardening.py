@@ -38,7 +38,7 @@ class ReleaseTwoTests(unittest.TestCase):
         if failed:
             payload.update(media_id='exact', generation_status='MEDIA_GENERATION_STATUS_FAILED')
         with patch('flow_media_client.run_bounded', return_value=subprocess.CompletedProcess(
-                [], 1, json.dumps(payload), '')), patch.object(FlowMediaClient, '_catalog_position', return_value=0):
+                [], 1, json.dumps(payload), '')):
             with self.assertRaises(FlowCommandError) as caught:
                 FlowMediaClient._run_json(['gflow', 'video'], 10, marker=marker)
         return caught.exception
@@ -97,7 +97,6 @@ class ReleaseTwoTests(unittest.TestCase):
                        error={'class': 'ServiceError', 'retryable': True})
         with patch('flow_media_client.run_bounded', return_value=subprocess.CompletedProcess(
                 [], 1, json.dumps(payload), '')) as cli, \
-                patch.object(FlowMediaClient, '_catalog_position', return_value=0), \
                 patch.object(FlowMediaClient, '_generation_seconds', return_value=7200), \
                 patch('flow_media_client.GoogleImageClient') as api:
             with self.assertRaises(FlowCommandError) as caught:
@@ -192,7 +191,6 @@ class ReleaseTwoTests(unittest.TestCase):
             result.process_evidence = {'cleanup_verified': True}
             return result
         with patch('flow_media_client.run_bounded', side_effect=process), \
-                patch.object(FlowMediaClient, '_catalog_position', return_value=0), \
                 patch.object(FlowMediaClient, '_generation_seconds', return_value=7200), \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080, 1920, 8, True)), \
                 patch.object(FlowMediaClient, '_notify_transition'), \

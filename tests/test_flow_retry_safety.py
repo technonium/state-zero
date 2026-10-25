@@ -18,7 +18,10 @@ sys.path.insert(0, str(ROOT / 'ops'))
 from flow_media_client import FlowCommandError, FlowMediaClient
 
 
-class FlowRetrySafetyTests(unittest.TestCase):
+from flow_fixture import FrozenFlowCalls, freeze
+
+
+class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
     def test_pending_submission_requires_reconciliation_for_both_stages(self):
         for stage in ('image', 'video'):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory() as tmp:
@@ -118,10 +121,10 @@ class FlowRetrySafetyTests(unittest.TestCase):
             target = Path(tmp) / 'generated_art.png'
             client = FlowMediaClient()
             with patch.object(client, '_run_json', side_effect=self.image_response) as generate:
-                client.generate_image({'scene': 'cloud'}, target)
-                client.generate_image({'scene': 'cloud'}, target)
+                self.frozen_image(client, {'scene': 'cloud'}, target)
+                self.frozen_image(client, {'scene': 'cloud'}, target)
                 with self.assertRaises(FlowCommandError):
-                    client.generate_image({'scene': 'different'}, target)
+                    self.frozen_image(client, {'scene': 'different'}, target)
             self.assertEqual(generate.call_count, 1)
 
     def test_legacy_forwarded_marker_blocks_generation(self):
@@ -130,59 +133,37 @@ class FlowRetrySafetyTests(unittest.TestCase):
             (root / 'flow_image_attempt_1.submit').write_text('{"state":"forwarded"}')
             with patch.object(FlowMediaClient, '_run_json') as generate:
                 with self.assertRaises(FlowCommandError):
-                    FlowMediaClient().generate_image({'scene': 'cloud'}, root / 'art.png')
+                    self.frozen_image(FlowMediaClient(), {'scene': 'cloud'}, root / 'art.png')
             generate.assert_not_called()
 
-    def test_explicit_recovery_resumes_proven_pre_submit_auth_failure_once(self):
+    def test_legacy_recovery_flag_cannot_restart_auth_failed_image(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
-            root = Path(tmp)
             client = FlowMediaClient()
-            error = FlowCommandError('image', 'auth_required', submission_state='not_attempted')
-            with patch.object(client, '_run_json', side_effect=[error, self.image_response]) as generate:
-                with self.assertRaises(FlowCommandError):
-                    client.generate_image({}, root / 'art.png')
-                with self.assertRaises(FlowCommandError):
-                    client.generate_image({}, root / 'art.png')
-                with patch.dict(os.environ, {'FLOW_SHADOW_RECOVERY_LOCKED': 'true'}):
-                    generate.side_effect = self.image_response
-                    client.generate_image({}, root / 'art.png')
-                self.assertEqual(generate.call_count, 2)
-                attempts = json.loads((root / 'flow_image_diagnostics.json').read_text())['attempts']
-                self.assertEqual([item['number'] for item in attempts], [1, 2])
+            with patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')) as generate:
+                for flag in ('false', 'true', 'true'):
+                    with patch.dict(os.environ, {'FLOW_SHADOW_RECOVERY_LOCKED': flag}), self.assertRaises(FlowCommandError):
+                        self.frozen_image(client, {}, Path(tmp) / 'art.png')
+            generate.assert_called_once()
 
-    def test_explicit_video_recovery_resumes_only_before_submission(self):
+    def test_legacy_recovery_flag_cannot_restart_auth_failed_video(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
-            root = Path(tmp)
-            art, video = root / 'art.png', root / 'video.mp4'
+            root = Path(tmp); art = root / 'art.png'
             Image.new('RGB', (768, 1024), 'white').save(art)
-            error = FlowCommandError('video', 'auth_required', submission_state='not_attempted')
-            def generated(command, timeout, marker):
-                raw = root / 'flow_raw_video.mp4'
-                raw.write_bytes(b'original')
-                marker.write_text('{"state":"forwarded"}')
-                return {'succeeded': True, 'media_id': 'exact-id', 'local_path': str(raw),
-                        'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
             client = FlowMediaClient()
-            with patch.object(client, '_run_json', side_effect=error) as generate, \
-                    patch.object(client, '_catalog_position', return_value=0), \
-                    patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)):
-                with self.assertRaises(FlowCommandError):
-                    client.generate_video('move', art, video)
-                with patch.dict(os.environ, {'FLOW_SHADOW_RECOVERY_LOCKED': 'true'}):
-                    generate.side_effect = generated
-                    client.generate_video('move', art, video)
-                self.assertEqual(generate.call_count, 2)
-                attempts = json.loads((root / 'flow_video_diagnostics.json').read_text())['attempts']
-                self.assertEqual([item['number'] for item in attempts], [1, 2])
+            with patch.object(client, '_run_json', side_effect=FlowCommandError('video', 'auth_required', submission_state='not_attempted')) as generate:
+                for flag in ('false', 'true'):
+                    with patch.dict(os.environ, {'FLOW_SHADOW_RECOVERY_LOCKED': flag}), self.assertRaises(FlowCommandError):
+                        self.frozen_video(client, 'move', art, root / 'video.mp4')
+            generate.assert_called_once()
 
     def test_explicit_pre_submit_recovery_keeps_retry_budget(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_SHADOW_RECOVERY_LOCKED': 'true'}, clear=True):
-            error = FlowCommandError('image', 'auth_required', submission_state='not_attempted')
+            error = FlowCommandError('image', 'pre_submit_timeout', submission_state='not_attempted')
             with patch.object(FlowMediaClient, '_run_json', side_effect=error) as generate:
                 for _ in range(3):
                     with self.assertRaises(FlowCommandError):
-                        FlowMediaClient().generate_image({}, Path(tmp) / 'art.png')
+                        self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')
                 self.assertEqual(generate.call_count, 2)
 
     def test_existing_canonical_without_identity_cannot_be_overwritten(self):
@@ -193,9 +174,9 @@ class FlowRetrySafetyTests(unittest.TestCase):
             video.write_bytes(b'existing video')
             with patch.object(FlowMediaClient, '_run_json') as generate:
                 with self.assertRaises(FlowCommandError):
-                    FlowMediaClient().generate_image({}, art)
+                    self.frozen_image(FlowMediaClient(), {}, art)
                 with self.assertRaises(FlowCommandError):
-                    FlowMediaClient().generate_video('move', art, video)
+                    self.frozen_video(FlowMediaClient(), 'move', art, video)
                 generate.assert_not_called()
             self.assertEqual(video.read_bytes(), b'existing video')
 
@@ -204,9 +185,9 @@ class FlowRetrySafetyTests(unittest.TestCase):
             target = Path(tmp) / 'art.png'
             client = FlowMediaClient()
             with patch.object(client, '_run_json', side_effect=self.image_response) as generate:
-                client.generate_image({'scene': 'cloud'}, target)
+                self.frozen_image(client, {'scene': 'cloud'}, target)
                 target.unlink()
-                client.generate_image({'scene': 'cloud'}, target)
+                self.frozen_image(client, {'scene': 'cloud'}, target)
             self.assertEqual(generate.call_count, 1)
             self.assertTrue(target.exists())
 
@@ -217,7 +198,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
                     patch.object(FlowMediaClient, '_run_json') as generate:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 with self.assertRaises(FlowCommandError) as failure:
-                    FlowMediaClient().generate_image({}, root / 'art.png')
+                    self.frozen_image(FlowMediaClient(), {}, root / 'art.png')
                 self.assertEqual(failure.exception.category, 'execution_busy')
                 generate.assert_not_called()
 
@@ -230,24 +211,25 @@ class FlowRetrySafetyTests(unittest.TestCase):
             raw = root / 'flow_raw_video.mp4'
             def generated(command, timeout, marker):
                 raw.write_bytes(b'original')
-                marker.write_text('{"state":"forwarded"}')
+                marker.with_suffix('.context.json').write_text('{}')
+                marker.write_text('submit_attempted\n')
                 return {'succeeded': True, 'media_id': 'exact-id', 'local_path': str(raw),
                         'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
             recovered = root / 'recovered.mp4'
             recovered.write_bytes(b'original')
             client = FlowMediaClient()
             with patch.object(client, '_run_json', side_effect=generated) as generate, \
-                    patch.object(client, '_catalog_position', return_value=0), \
                     patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)), \
-                    patch.object(client, '_recover_video', return_value=recovered) as recover:
-                client.generate_video('move', art, video)
+                    patch.object(client, '_readback_media', return_value={'succeeded': True, 'media_id': 'exact-id', 'local_path': str(recovered), 'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}) as recover:
+                self.frozen_video(client, 'move', art, video)
                 video.unlink()
                 raw.unlink()
-                client.generate_video('move', art, video)
-                recover.assert_called_once_with('exact-id', root)
+                self.frozen_video(client, 'move', art, video)
+                recover.assert_called_once()
+                self.assertEqual(recover.call_args.kwargs['known']['media_id'], 'exact-id')
                 Image.new('RGB', (768, 1024), 'black').save(art)
                 with self.assertRaises(FlowCommandError):
-                    client.generate_video('move', art, video)
+                    self.frozen_video(client, 'move', art, video)
                 self.assertEqual(generate.call_count, 1)
 
     def test_changed_original_cannot_be_reused(self):
@@ -256,11 +238,11 @@ class FlowRetrySafetyTests(unittest.TestCase):
             client = FlowMediaClient()
             target = root / 'art.png'
             with patch.object(client, '_run_json', side_effect=self.image_response) as generate:
-                client.generate_image({}, target)
+                self.frozen_image(client, {}, target)
                 target.unlink()
-                Image.new('RGB', (768, 1024), 'black').save(root / 'flow_art.png')
+                Image.new('RGB', (768, 1024), 'black').save(root / 'flow_art_attempt_1.png')
                 with self.assertRaises(FlowCommandError) as failure:
-                    client.generate_image({}, target)
+                    self.frozen_image(client, {}, target)
                 self.assertEqual(failure.exception.category, 'original_asset_changed')
                 self.assertEqual(generate.call_count, 1)
 
@@ -273,10 +255,12 @@ class FlowRetrySafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
             'MEDIA_GENERATION_PROVIDER': 'flow', 'FLOW_API_FALLBACK_ENABLED': 'true'}, clear=True):
             for i, error in enumerate(cases):
-                with self.subTest(error=str(error)), patch.object(FlowMediaClient, '_run_json', side_effect=error), \
+                freeze(Path(tmp)/str(i), image={'scene': 'cloud'})
+                with self.subTest(error=str(error)), patch.object(FlowMediaClient, '_run_json', side_effect=error) as flow, \
                         patch('google_image_client.GoogleImageClient.generate_from_json') as api:
                     with self.assertRaises(Exception):
                         ImageGenerator().generate({'scene': 'cloud'}, str(Path(tmp) / str(i) / 'art.png'))
+                    flow.assert_called_once()
                     api.assert_not_called()
 
     def test_api_fallback_notification_failure_does_not_regenerate(self):
@@ -290,11 +274,12 @@ class FlowRetrySafetyTests(unittest.TestCase):
             with patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required',
                     submission_state='not_attempted')) as flow, \
                     patch('google_image_client.GoogleImageClient.generate_from_json', autospec=True,
-                          side_effect=api_image) as api, patch('notifier.notify_warning', side_effect=RuntimeError('offline')):
-                client.generate_image({'scene': 'cloud'}, target)
-                client.generate_image({'scene': 'cloud'}, target)
+                          side_effect=api_image) as api, patch('notifier.Notifier.notify_status', side_effect=RuntimeError('offline')) as notify:
+                self.frozen_image(client, {'scene': 'cloud'}, target)
+                self.frozen_image(client, {'scene': 'cloud'}, target)
             self.assertEqual(flow.call_count, 1)
             self.assertEqual(api.call_count, 1)
+            notify.assert_called()
             self.assertEqual(json.loads((Path(tmp) / 'flow_image_diagnostics.json').read_text())['provider'], 'google_api')
 
     def test_video_failure_limit_survives_second_invocation(self):
@@ -306,11 +291,10 @@ class FlowRetrySafetyTests(unittest.TestCase):
                 marker.write_text('submit_attempted\n')
                 raise FlowCommandError('video', 'generation_failed', media_id='failed-id', retryable=True)
             with patch.object(FlowMediaClient, '_run_json', side_effect=failed) as generate, \
-                    patch.object(FlowMediaClient, '_catalog_position', return_value=0), \
-                    patch.object(FlowMediaClient, '_catalog_video_since', return_value={}), patch('flow_media_client.time.sleep'):
+                    patch('flow_media_client.time.sleep'):
                 for _ in range(2):
                     with self.assertRaises(FlowCommandError):
-                        FlowMediaClient().generate_video('move', art, root / 'video.mp4')
+                        self.frozen_video(FlowMediaClient(), 'move', art, root / 'video.mp4')
             self.assertEqual(generate.call_count, 2)
 
     def test_corrupt_upscale_uses_valid_original(self):
@@ -335,10 +319,9 @@ class FlowRetrySafetyTests(unittest.TestCase):
                     raise subprocess.CalledProcessError(1, ['ffprobe'])
                 return (720, 1280, 8, True) if path.name == 'flow_raw_video.mp4' else (1080, 1920, 8, True)
             with patch.object(FlowMediaClient, '_run_json', side_effect=generated), \
-                    patch.object(FlowMediaClient, '_catalog_position', return_value=0), \
                     patch.object(FlowMediaClient, '_probe_video', side_effect=probe), \
                     patch('flow_media_client.run_bounded', side_effect=command):
-                FlowMediaClient().generate_video('move', art, root / 'video.mp4')
+                self.frozen_video(FlowMediaClient(), 'move', art, root / 'video.mp4')
             report = json.loads((root / 'flow_video_diagnostics.json').read_text())
             self.assertTrue(report['locally_scaled_to_1080p'])
             self.assertEqual(report['upscale_status'], 'invalid_media')
@@ -347,7 +330,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), \
                 patch.object(FlowMediaClient, '_run_json', side_effect=self.image_response), \
                 patch('flow_media_client.run_bounded') as upscale:
-            FlowMediaClient().generate_image({'scene': 'cloud'}, Path(tmp) / 'art.png')
+            self.frozen_image(FlowMediaClient(), {'scene': 'cloud'}, Path(tmp) / 'art.png')
             upscale.assert_not_called()
             d = json.loads((Path(tmp) / 'flow_image_diagnostics.json').read_text())
             self.assertEqual(d['wire_model'], 'BELUGA')
@@ -367,10 +350,9 @@ class FlowRetrySafetyTests(unittest.TestCase):
             self.assertEqual(versions['state_zero_commit'], 'a' * 40)
             self.assertEqual(versions['state_zero_source_sha256'], 'b' * 64)
 
-    def test_known_image_id_is_recovered_after_cli_download_error(self):
+    def test_catalog_local_file_cannot_bypass_missing_exact_context(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
-            root = Path(tmp)
-            raw = root / 'recovered.jpg'
+            root = Path(tmp); raw = root / 'recovered.jpg'
             Image.new('RGB', (768, 1024), 'white').save(raw)
             def failed(command, timeout, marker):
                 marker.write_text(json.dumps({'state': 'forwarded', 'expected_model': 'NARWHAL',
@@ -385,20 +367,22 @@ class FlowRetrySafetyTests(unittest.TestCase):
             from types import SimpleNamespace
             config = SimpleNamespace(get_settings=lambda: SimpleNamespace(resolved_db_path=lambda: db))
             with patch.object(FlowMediaClient, '_run_json', side_effect=failed) as generate, \
-                    patch.dict(sys.modules, {'gflow_cli.config': config}), patch('flow_media_client.subprocess.run') as download:
-                FlowMediaClient().generate_image({'scene': 'cloud'}, root / 'art.png')
-            self.assertEqual(generate.call_count, 1)
-            download.assert_not_called()
+                    patch.dict(sys.modules, {'gflow_cli.config': config}), \
+                    patch.object(FlowMediaClient, '_readback_media') as download, \
+                    patch('flow_media_client.GoogleImageClient') as api:
+                with self.assertRaises(FlowCommandError):
+                    self.frozen_image(FlowMediaClient(), {'scene': 'cloud'}, root / 'art.png')
+            generate.assert_called_once(); download.assert_not_called(); api.assert_not_called()
 
     def test_api_submission_uncertainty_blocks_another_provider_call(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_API_FALLBACK_ENABLED': 'true', 'GOOGLE_API_KEY_PRIMARY': 'test'}, clear=True):
             client = FlowMediaClient()
-            with patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required')) as flow, \
+            with patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')) as flow, \
                     patch('google_image_client.GoogleImageClient.generate_from_json', side_effect=RuntimeError('timeout')) as api:
                 for _ in range(2):
                     with self.assertRaises(Exception):
-                        client.generate_image({'scene': 'cloud'}, Path(tmp) / 'art.png')
+                        self.frozen_image(client, {'scene': 'cloud'}, Path(tmp) / 'art.png')
             self.assertEqual(flow.call_count, 1)
             self.assertEqual(api.call_count, 1)
 
@@ -411,12 +395,12 @@ class FlowRetrySafetyTests(unittest.TestCase):
                     patch('google_image_client.GoogleImageClient.generate_from_json') as api:
                 for _ in range(2):
                     with self.assertRaises(FlowCommandError):
-                        FlowMediaClient().generate_image({}, Path(tmp) / 'art.png')
+                        self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')
                 api.assert_not_called()
                 self.assertEqual(flow.call_count, 1)
 
     def test_policy_failure_reasons_override_retryable_error(self):
-        for reason in ('SAFETY_REJECTION', 'QUOTA_EXCEEDED', 'ACCOUNT_RESTRICTED'):
+        for reason in ('SAFETY_REJECTION', 'PUBLIC_ERROR_UNSAFE_CONTENT', 'ACCOUNT_RESTRICTED'):
             with self.subTest(reason=reason), tempfile.TemporaryDirectory() as tmp, \
                     patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'true', 'GOOGLE_API_KEY_PRIMARY': 'test'}, clear=True):
                 result = subprocess.CompletedProcess([], 1, stdout=json.dumps({
@@ -425,7 +409,7 @@ class FlowRetrySafetyTests(unittest.TestCase):
                 with patch('flow_media_client.run_bounded', return_value=result) as flow, \
                         patch('google_image_client.GoogleImageClient.generate_from_json') as api:
                     with self.assertRaises(FlowCommandError):
-                        FlowMediaClient().generate_image({}, Path(tmp) / 'art.png')
+                        self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')
                     api.assert_not_called()
                     self.assertEqual(flow.call_count, 1)
 
@@ -452,10 +436,10 @@ class FlowRetrySafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_API_FALLBACK_ENABLED': 'true', 'GOOGLE_API_KEY_PRIMARY': 'test',
                 'GOOGLE_API_KEY_FALLBACK': 'test-fallback', 'GOOGLE_API_FALLBACK_ENABLED': 'true'}, clear=True):
-            with patch.object(FlowMediaClient, '_run_json', side_effect=FlowCommandError('image', 'auth_required')), \
+            with patch.object(FlowMediaClient, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')), \
                     patch('google_image_client.requests.post', side_effect=requests.Timeout('uncertain')) as submit:
                 with self.assertRaises(requests.Timeout):
-                    FlowMediaClient().generate_image({}, Path(tmp) / 'art.png')
+                    self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')
                 self.assertEqual(submit.call_count, 1)
 
     def test_accepted_api_video_cannot_restart_on_poll_auth_failure(self):
@@ -505,18 +489,21 @@ class FlowRetrySafetyTests(unittest.TestCase):
             target = Path(tmp) / 'art.png'
             client = FlowMediaClient()
             with patch.object(client, '_run_json', side_effect=self.image_response) as generate:
-                client.generate_image({}, target)
+                self.frozen_image(client, {}, target)
                 os.utime(target, (1, 1))
-                client.generate_image({}, target)
+                self.frozen_image(client, {}, target)
             self.assertGreater(target.stat().st_mtime, 1)
             self.assertEqual(generate.call_count, 1)
 
-    def test_missing_remote_image_stops_without_download_or_generation(self):
-        with tempfile.TemporaryDirectory() as tmp, patch('flow_media_client.subprocess.run') as command:
-            with self.assertRaises(FlowCommandError) as failure:
-                FlowMediaClient()._recover_image('missing-id', Path(tmp))
-            self.assertEqual(failure.exception.category, 'image_recovery_unavailable')
-            command.assert_not_called()
+    def test_known_id_without_context_cannot_launch_recovery(self):
+        import asyncio
+        from ops.flow_media_recover import download_existing
+        from flow_readback import ReadbackIdentityError
+        with tempfile.TemporaryDirectory() as tmp, patch('gflow_cli.api.client.FlowApiClient') as browser:
+            with self.assertRaises(ReadbackIdentityError):
+                asyncio.run(download_existing('11111111-1111-4111-8111-111111111111',
+                    '22222222-2222-4222-8222-222222222222', Path(tmp) / 'original.png'))
+        browser.assert_not_called()
 
     def test_recovery_runner_accepts_known_result_but_not_uncertain_marker(self):
         from flow_shadow_recover import validate_recovery_inputs
