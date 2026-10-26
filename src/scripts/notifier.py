@@ -24,7 +24,12 @@ import requests
 from zoneinfo import ZoneInfo
 from utils import load_project_dotenv, sanitize_error
 
-load_project_dotenv()
+def _in_test_process() -> bool:
+    return 'unittest' in sys.modules or 'pytest' in sys.modules
+
+
+if not _in_test_process():
+    load_project_dotenv()
 
 # Configure local logging as fallback
 LOCAL_LOG = logging.getLogger("notifier")
@@ -115,6 +120,9 @@ class Notifier:
     
     def _telegram_request(self, method: str, *, data=None, files=None, timeout=60, use_get=False) -> dict:
         """Make request to Telegram API."""
+        # Credentials may already be cached; test isolation must hold at the HTTP boundary.
+        if _in_test_process():
+            raise NotificationError("Real Telegram transport disabled in a test process; mock this boundary")
         if not self._is_enabled():
             raise NotificationError("Telegram credentials not configured")
         
