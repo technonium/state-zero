@@ -49,7 +49,7 @@ class ReleaseThreeSimplificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             diagnostic = root / 'flow_image_diagnostics.json'
-            original = {'request_hash': 'a'*64, 'result': {
+            original = {'record_version':2, 'request_hash': 'a'*64, 'result': {
                 'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact'}]}}
             diagnostic.write_text(json.dumps(original))
             attempt = {'number': 1, 'recovery_deadline': 1100}

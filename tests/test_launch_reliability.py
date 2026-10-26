@@ -1,6 +1,7 @@
 """Regression checks for recovery ownership and private operational messages."""
 import os
 import hashlib
+import json
 import io
 from pathlib import Path
 import signal
@@ -51,10 +52,15 @@ class RecoveryOwnershipTests(unittest.TestCase):
     def test_transient_worker_failure_uses_original_remaining_deadline(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); context = root / 'flow_video_attempt_1.context.json'
-            context.write_text('{}')
+            from PIL import Image
+            from flow_fixture import freeze, video_receipt
+            freeze(root)
+            Image.new('RGB', (768,1024)).save(root/'input_art.png')
+            video_receipt(root, 'fingerprint', '22222222-2222-4222-8222-222222222222')
+            (root/'flow_video_diagnostics.json').write_text(json.dumps({'record_version':2,
+                'request_hash':'fingerprint', 'attempts':[{'number':1}]}))
             now = [100.0]
-            expected = {'media_id':'exact','request_hash':'fingerprint','profile':os.getenv('GFLOW_PROFILE','shadow'),
-                        'project_id':os.getenv('FLOW_PREFLIGHT_PROJECT_ID','')}
+            expected = json.loads((root/'flow_video_attempt_1.result.json').read_text())
             candidate={'kind':'video','context_sha256':hashlib.sha256(context.read_bytes()).hexdigest(),'result':expected}
             original=root/'original.mp4';original.write_bytes(b'synthetic original')
             retrieved=expected|{'local_path':str(original),'sha256':hashlib.sha256(original.read_bytes()).hexdigest()}

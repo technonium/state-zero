@@ -240,7 +240,7 @@ class AdapterKnownIdentityTests(unittest.TestCase):
         from flow_media_client import FlowMediaClient
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp); diagnostic=root/'flow_video_diagnostics.json'
-            diagnostic.write_text(json.dumps({'request_hash':'a'*64}))
+            diagnostic.write_text(json.dumps({'record_version':2, 'request_hash':'a'*64}))
             (root/'flow_video_attempt_1.context.json').write_text('{}')
             attempt=dict(number=1,recovery_deadline=time.time()+20,failure={'media_id':MEDIA})
             client=FlowMediaClient()

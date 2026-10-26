@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime
 from unittest.mock import patch
 
 from PIL import Image
@@ -39,7 +40,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             diagnostic = root / 'flow_image_diagnostics.json'
             diagnostic.write_text('broken')
             self.assertIsNotNone(FlowMediaClient._pending_submission(root))
-            diagnostic.write_text(json.dumps({'failure': {'category': 'pre_submit_timeout',
+            diagnostic.write_text(json.dumps({'record_version':2, 'failure': {'category': 'pre_submit_timeout',
                                                           'submission_state': 'not_attempted'}}))
             self.assertIsNone(FlowMediaClient._pending_submission(root))
             (root / 'flow_image_attempt_1.submit').write_text('unreadable')
@@ -156,7 +157,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                         self.frozen_video(client, 'move', art, root / 'video.mp4')
             generate.assert_called_once()
 
-    def test_explicit_pre_submit_recovery_keeps_retry_budget(self):
+    def test_missing_child_evidence_keeps_one_conservative_reservation(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_SHADOW_RECOVERY_LOCKED': 'true'}, clear=True):
             error = FlowCommandError('image', 'pre_submit_timeout', submission_state='not_attempted')
@@ -164,7 +165,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 for _ in range(3):
                     with self.assertRaises(FlowCommandError):
                         self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')
-                self.assertEqual(generate.call_count, 2)
+                self.assertEqual(generate.call_count, 1)
 
     def test_existing_canonical_without_identity_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,7 +272,8 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             'FLOW_API_FALLBACK_ENABLED': 'true', 'GOOGLE_API_KEY_PRIMARY': 'test'}, clear=True):
             target = Path(tmp) / 'art.png'
             client = FlowMediaClient()
-            with patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required',
+            with patch('utils.get_pipeline_now', return_value=datetime(2026,10,27,12)), \
+                    patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required',
                     submission_state='not_attempted')) as flow, \
                     patch('google_image_client.GoogleImageClient.generate_from_json', autospec=True,
                           side_effect=api_image) as api, patch('notifier.Notifier.notify_status', side_effect=RuntimeError('offline')) as notify:
@@ -378,7 +380,8 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_API_FALLBACK_ENABLED': 'true', 'GOOGLE_API_KEY_PRIMARY': 'test'}, clear=True):
             client = FlowMediaClient()
-            with patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')) as flow, \
+            with patch('utils.get_pipeline_now', return_value=datetime(2026,10,27,12)), \
+                    patch.object(client, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')) as flow, \
                     patch('google_image_client.GoogleImageClient.generate_from_json', side_effect=RuntimeError('timeout')) as api:
                 for _ in range(2):
                     with self.assertRaises(Exception):
@@ -436,7 +439,8 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_API_FALLBACK_ENABLED': 'true', 'GOOGLE_API_KEY_PRIMARY': 'test',
                 'GOOGLE_API_KEY_FALLBACK': 'test-fallback', 'GOOGLE_API_FALLBACK_ENABLED': 'true'}, clear=True):
-            with patch.object(FlowMediaClient, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')), \
+            with patch('utils.get_pipeline_now', return_value=datetime(2026,10,27,12)), \
+                    patch.object(FlowMediaClient, '_run_json', side_effect=FlowCommandError('image', 'auth_required', submission_state='not_attempted')), \
                     patch('google_image_client.requests.post', side_effect=requests.Timeout('uncertain')) as submit:
                 with self.assertRaises(requests.Timeout):
                     self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')

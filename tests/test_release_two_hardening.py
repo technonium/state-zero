@@ -155,7 +155,7 @@ class ReleaseTwoTests(unittest.TestCase):
         os.environ.update(FLOW_PREFLIGHT_PROJECT_ID=PROJECT, FLOW_API_FALLBACK_ENABLED='true')
         output = self.root / 'generated_video.mp4'
         diagnostic = self.root / 'flow_video_diagnostics.json'
-        diagnostic.write_text(json.dumps({'request_hash': 'a'*64, 'attempts': []}))
+        diagnostic.write_text(json.dumps({'record_version':2, 'request_hash': 'a'*64, 'attempts': []}))
         (self.root / 'flow_inputs.json').write_text('{}')
         frame = self.root / 'flow_start_frame.png'
         frame.write_bytes(b'frozen synthetic frame')

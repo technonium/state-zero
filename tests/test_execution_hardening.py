@@ -347,7 +347,7 @@ class ExecutionHardeningTests(unittest.TestCase):
         self.assertEqual(start.call_count, 1); self.assertEqual(poll.call_count, 1)
         self.assertEqual(output.read_bytes(), b'validated-video')
 
-    def test_two_technical_upload_failures_reach_api_video_without_flow_submission(self):
+    def test_unknown_upload_outcome_waits_until_noon_without_a_second_cli(self):
         self.freeze()
         art = self.root / 'generated_art.png'; Image.new('RGB', (768, 1024)).save(art)
         output = self.root / 'generated_video.mp4'
@@ -361,9 +361,15 @@ class ExecutionHardeningTests(unittest.TestCase):
                 patch.object(GoogleVideoClient, 'generate_from_image', side_effect=video) as api, \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080, 1920, 8, True)), \
                 patch.object(FlowMediaClient, '_notify_transition'):
-            FlowMediaClient().generate_video('original', art, output)
-        self.assertEqual(flow.call_count, 2); self.assertEqual(api.call_count, 1)
+            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,10)), self.assertRaises(FlowCommandError):
+                FlowMediaClient().generate_video('original', art, output)
+            flow.assert_called_once(); api.assert_not_called()
+            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,12)):
+                FlowMediaClient().generate_video('original', art, output)
+        self.assertEqual(flow.call_count, 1); self.assertEqual(api.call_count, 1)
         self.assertEqual(list(self.root.glob('flow_video_attempt_*.submit')), [])
         saved = json.loads((self.root / 'flow_video_diagnostics.json').read_text())
         self.assertEqual(saved['provider'], 'google_api')
-        self.assertTrue(all(not a['submit_attempted'] for a in saved['attempts']))
+        self.assertEqual(saved['fallback_reason'], 'unresolved_at_noon')
+        self.assertEqual(len(saved['attempts']), 1)
+        self.assertNotIn('submit_attempted', saved['attempts'][0])

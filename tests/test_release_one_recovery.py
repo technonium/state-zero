@@ -44,8 +44,8 @@ class ReleaseOneRecoveryTests(unittest.TestCase):
         self.marker.write_text(json.dumps(dict(state='forwarded',actual_model='BELUGA',
             expected_model='NARWHAL',selected_model='Nano Banana 2.1')))
         self.diagnostic = self.root/'flow_image_diagnostics.json'
-        self.diagnostic.write_text(json.dumps({'request_hash':'a'*64,'attempts':[
-            {'number':1,'submit_attempted':True,'status':'post_submit_error'}]}))
+        self.diagnostic.write_text(json.dumps({'record_version':2, 'request_hash':'a'*64,'attempts':[
+            {'number':1,'failure':{'category':'post_submit_error'}}]}))
         self.result = dict(request_hash='a'*64,profile='shadow',project_id=PROJECT,count=1,model='NARWHAL',
             images=[dict(media_name=MEDIA,workflow_id=MEDIA,model_name_type='BELUGA',
                          aspect_ratio='IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR')])
@@ -215,7 +215,7 @@ class ReleaseOneRecoveryTests(unittest.TestCase):
         saved=json.loads(self.diagnostic.read_text())
         saved['retrieval']={'version':1,'candidate':self.candidate,'deadline':400,'attempts':0}
         video=self.root/'flow_video_diagnostics.json'
-        video.write_text(json.dumps({'last_generation_process':{'cleanup_verified':False,
+        video.write_text(json.dumps({'record_version':2, 'last_generation_process':{'cleanup_verified':False,
             'owned':[{'pid':424242,'start':'1'}]}}))
         self.diagnostic.write_text(json.dumps(saved))
         with patch('utils._process_snapshot',return_value={424242:{'start':'1','state':'S'}}), \
@@ -308,7 +308,7 @@ class RecoveryEvidenceTests(unittest.IsolatedAsyncioTestCase):
                 patch('flow_readback.recover_context',new=AsyncMock(return_value={'sha256':'a'*64})):
             with tempfile.TemporaryDirectory() as tmp:
                 root=Path(tmp); record=root/'flow_image_diagnostics.json'
-                record.write_text(json.dumps({'retrieval':{'candidate':{'kind':'image'}}}))
+                record.write_text(json.dumps({'record_version':2, 'retrieval':{'candidate':{'kind':'image'}}}))
                 await worker.download_existing(PROJECT,'',root/'original.png',context_file=root/'flow_image_attempt_1.context.json',
                     deadline=time.time()+90,request_hash='a'*64,mode='retrieve',record=record,result_stream=stream)
 

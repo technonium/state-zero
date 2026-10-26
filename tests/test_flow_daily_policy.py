@@ -183,7 +183,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
 
     def test_receipt_requires_exact_request_profile_project_and_settings(self):
         diagnostic = self.root / 'flow_image_diagnostics.json'
-        diagnostic.write_text(json.dumps({'request_hash': 'original'}))
+        diagnostic.write_text(json.dumps({'record_version':2, 'request_hash': 'original'}))
         self.image_marker()
         receipt = self.root / 'flow_image_attempt_1.result.json'
         result = {'request_hash': 'original', 'profile': 'shadow', 'project_id': '', 'count': 1,
@@ -327,7 +327,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
 
     def test_corrupt_marker_keeps_original_policy_verdict(self):
         diagnostic = self.root / 'flow_image_diagnostics.json'
-        diagnostic.write_text(json.dumps({'failure': {'category': 'provider_rejected',
+        diagnostic.write_text(json.dumps({'record_version':2, 'failure': {'category': 'provider_rejected',
             'error_class': 'ContentPolicyError', 'detail': 'SAFETY rejected', 'operation_id': 'original'}}))
         (self.root / 'flow_image_attempt_1.submit').write_text('broken')
         error = FlowMediaClient._pending_submission(self.root)
@@ -337,7 +337,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
     def test_accepted_api_operation_resumes_without_starting_a_video(self):
         from google_video_client import GoogleVideoClient
         target = self.root / 'video.mp4'
-        (self.root / 'google_video_diagnostics.json').write_text(json.dumps({
+        (self.root / 'google_video_diagnostics.json').write_text(json.dumps({'record_version':2,
             'operation_name': 'models/veo-3.1-fast-generate-preview/operations/existing', 'key_label': 'primary'}))
         with patch.dict(os.environ, {'GOOGLE_API_KEY_PRIMARY': 'mock-key'}):
             client = GoogleVideoClient()
@@ -411,7 +411,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
     def test_recovery_deadline_is_five_minutes_and_does_not_restart(self):
         self.freeze()
         diagnostic = self.root / 'flow_image_diagnostics.json'
-        diagnostic.write_text(json.dumps({'request_hash': 'original', 'attempts': [{'number': 1}]}))
+        diagnostic.write_text(json.dumps({'record_version':2, 'request_hash': 'original', 'attempts': [{'number': 1}]}))
         (self.root / 'flow_image_attempt_1.context.json').write_text('{}')
         client = FlowMediaClient(); attempt = {'number': 1}; now = [100.0]
         def read(*args, **kwargs):
@@ -431,7 +431,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.save_image({}, target)
         result = {'images': [{'media_name': 'exact', 'local_path': str(target)}]}
         diagnostic = self.root / 'flow_image_diagnostics.json'
-        diagnostic.write_text(json.dumps({'attempts': [{'number': 1}], 'result': result}))
+        diagnostic.write_text(json.dumps({'record_version':2, 'attempts': [{'number': 1}], 'result': result}))
         (self.root / 'flow_image_attempt_1.context.json').write_text('{}')
         client = FlowMediaClient()
         with patch.object(client, '_notify_transition'), patch.object(client, '_readback_media') as read:
@@ -457,18 +457,27 @@ class DailyFlowPolicyTests(unittest.TestCase):
         result = ({'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact',
                    'local_path': str(asset), 'model_name_type': 'BELUGA',
                    'aspect_ratio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'}]}
-                  if stage == 'image' else {'succeeded': True, 'media_id': 'exact', 'local_path': str(asset),
+                  if stage == 'image' else {'succeeded': True, 'media_id': '22222222-2222-4222-8222-222222222222', 'local_path': str(asset),
                    'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}})
-        attempt = {'number': 1, 'status': 'post_submit_error', 'submit_attempted': True,
-                   'recovery_deadline': 1, 'recovery_exhausted': exhausted}
+        attempt = {'number': 1, 'failure': {'category': 'post_submit_error'}, 'recovery_deadline': 1}
         diagnostic = root / f'flow_{stage}_diagnostics.json'
-        diagnostic.write_text(json.dumps({'request_hash': request_hash, 'daily_policy': True,
-            'attempts': [attempt], 'result': None if receipt_only else result,
+        diagnostic.write_text(json.dumps({'record_version':2, 'request_hash': request_hash, 'daily_policy': True,
+            'attempts': [attempt], 'result': None if receipt_only else {k:v for k,v in result.items() if k!='succeeded'},
             'original_sha256': hashlib.sha256(asset.read_bytes()).hexdigest()}))
         (root / f'flow_{stage}_attempt_1.submit').write_text(
             json.dumps({'state': 'forwarded', 'selected_model': 'Nano Banana 2.1',
                         'expected_model': 'NARWHAL', 'actual_model': 'BELUGA'})
             if stage == 'image' else 'submit_attempted\n')
+        if stage == 'video':
+            from flow_fixture import video_receipt
+            video_receipt(root, request_hash, result['media_id'])
+        if exhausted:
+            context = root / f'flow_{stage}_attempt_1.context.json'
+            if not context.exists(): context.write_text('{}')
+            saved = json.loads(diagnostic.read_text())
+            saved['retrieval'] = {'version':1, 'context_file':context.name, 'attempts':3, 'deadline':1,
+                'candidate': {'kind':stage, 'context_sha256':hashlib.sha256(context.read_bytes()).hexdigest(), 'result':{}}}
+            diagnostic.write_text(json.dumps(saved))
         if receipt_only:
             (root / 'flow_image_attempt_1.result.json').write_text(json.dumps(result | {
                 'request_hash': request_hash, 'profile': 'shadow', 'project_id': ''}))
@@ -537,7 +546,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
 
     def test_earlier_attempt_receipt_cannot_displace_latest_attempt(self):
         root, diagnostic, first, result, asset = self.saved_local_work('image', receipt_only=True)
-        latest = first | {'number': 2, 'recovery_exhausted': True}
+        latest = first | {'number': 2}
         saved = json.loads(diagnostic.read_text()); saved.update(attempts=[first, latest], original_sha256=None)
         diagnostic.write_text(json.dumps(saved))
         (root / 'flow_image_attempt_2.submit').write_bytes((root / 'flow_image_attempt_1.submit').read_bytes())
@@ -551,7 +560,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
 
     def test_api_reservation_precedes_expired_local_flow_result(self):
         root, diagnostic, attempt, result, asset = self.saved_local_work('image')
-        saved = json.loads(diagnostic.read_text()); saved['api_fallback_state'] = 'started'
+        saved = json.loads(diagnostic.read_text()); saved['api_reserved'] = True
         diagnostic.write_text(json.dumps(saved))
         client = FlowMediaClient()
         with patch.object(client, '_recover_pending') as recover, \
@@ -674,16 +683,15 @@ class DailyFlowPolicyTests(unittest.TestCase):
         recover.assert_not_called()
         api.assert_not_called()
 
-    def test_confirmed_flow_auth_failure_goes_to_api_without_second_flow(self):
+    def test_auth_error_without_child_evidence_cannot_authorize_early_api(self):
         self.freeze()
-        api = Mock()
-        api.generate_from_json.side_effect = self.save_image
         with patch.object(FlowMediaClient, '_generate_image', side_effect=FlowCommandError(
                 'image', 'auth_required', submission_state='not_attempted')) as flow, \
-                patch('flow_media_client.GoogleImageClient', return_value=api):
-            FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
-        flow.assert_called_once()
-        api.generate_from_json.assert_called_once()
+                patch('flow_media_client.GoogleImageClient') as api:
+            with self.assertRaises(FlowCommandError) as error:
+                FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
+        self.assertEqual(error.exception.category, 'request_identity_unverified')
+        flow.assert_called_once(); api.assert_not_called()
 
     def test_wrong_request_cannot_use_an_unrelated_frozen_manifest(self):
         self.freeze()
@@ -753,19 +761,17 @@ class DailyFlowPolicyTests(unittest.TestCase):
                 self.assertTrue(FlowMediaClient._stops_replacement(caught.exception))
                 self.assertIn('provider reason', caught.exception.detail)
 
-    def test_one_pre_submit_retry_then_api_without_billable_flow_submissions(self):
+    def test_pre_submit_hint_without_child_evidence_keeps_one_uncertain_reservation(self):
         self.freeze()
-        api = Mock()
-        api.generate_from_json.side_effect = self.save_image
         with patch.object(FlowMediaClient, '_generate_image', side_effect=FlowCommandError(
                 'image', 'pre_submit_timeout', submission_state='not_attempted')) as flow, \
-                patch.object(FlowMediaClient, '_recover_pending') as recover, \
-                patch('flow_media_client.GoogleImageClient', return_value=api):
-            FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
-        self.assertEqual(flow.call_count, 2)
-        recover.assert_not_called()
+                patch('flow_media_client.GoogleImageClient') as api:
+            with self.assertRaises(FlowCommandError):
+                FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
+        flow.assert_called_once(); api.assert_not_called()
         saved = json.loads((self.root / 'flow_image_diagnostics.json').read_text())
-        self.assertTrue(all(not a['submit_attempted'] for a in saved['attempts']))
+        self.assertEqual(len(saved['attempts']), 1)
+        self.assertNotIn('submit_attempted', saved['attempts'][0])
 
     def test_marker_validation_refusal_survives_lost_cli_error_response(self):
         self.freeze()
@@ -804,7 +810,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
     def test_catalog_operation_without_exact_context_cannot_recover_other_media(self):
         diagnostic = self.root / 'flow_image_diagnostics.json'
         attempt = {'number': 1, 'catalog_position': 0, 'catalog_operation_id': 'unrelated'}
-        diagnostic.write_text(json.dumps({'attempts': [attempt]}))
+        diagnostic.write_text(json.dumps({'record_version':2, 'attempts': [attempt]}))
         client = FlowMediaClient()
         with patch.object(client, '_readback_media') as browser:
             self.assertIsNone(client._recover_pending('image', diagnostic, attempt, self.root / 'art.png'))

@@ -152,7 +152,7 @@ class FlowProviderTests(FrozenFlowCalls, unittest.TestCase):
                     self.frozen_video(FlowMediaClient(), "move", art, root / "generated_video.mp4")
             self.assertEqual(len(calls), 2)
             report = json.loads((root / "flow_video_diagnostics.json").read_text())
-            self.assertEqual(report["submissions_estimated"], 2)
+            self.assertEqual(len(report["attempts"]), 2)
             self.assertEqual([attempt["failure"]["media_id"] for attempt in report["attempts"]], ["media-1", "media-2"])
 
     def test_flow_api_fallback_is_stage_specific_when_enabled(self):
@@ -167,7 +167,7 @@ class FlowProviderTests(FrozenFlowCalls, unittest.TestCase):
             prompt.write_text("Move slowly")
             freeze(root, image={"scene": "cloud"}, video="Move slowly")
             env = {"MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "true", "GOOGLE_API_KEY_PRIMARY": "test"}
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, env, clear=True), patch('utils.get_pipeline_now', return_value=__import__('datetime').datetime(2026,10,27,12)):
                 with patch("flow_media_client.FlowMediaClient._generate_image", side_effect=FlowCommandError("image", "auth_required", submission_state="not_attempted")):
                     with patch("google_image_client.GoogleImageClient.generate_from_json", side_effect=lambda _prompt, path: Image.new("RGB", (768, 1024), "white").save(path)):
                         ImageGenerator().generate({"scene": "cloud"}, str(art))

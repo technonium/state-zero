@@ -118,7 +118,7 @@ class LocalWorkTests(unittest.TestCase):
             root=Path(tmp);out=root/'generated_video.mp4';diag=root/'flow_video_diagnostics.json'
             original=root/'original.mp4';original.write_bytes(b'validated fixture')
             payload={'succeeded':True,'local_path':str(original),'media_id':'exact','request':{}}
-            diag.write_text(json.dumps({'failure':{'category':'local_processing_failed'},'result':payload}))
+            diag.write_text(json.dumps({'record_version':2, 'failure':{'category':'local_processing_failed'},'result':payload}))
             client=FlowMediaClient()
             with patch.object(client,'_daily_attempts',return_value=[{'number':1}]), \
                     patch.object(client,'_local_result',return_value=payload), \
@@ -172,7 +172,7 @@ class RescueTests(unittest.TestCase):
     def test_local_only_mode_cannot_recover_remotely_or_select_api(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ,{'STATE_ZERO_LOCAL_ONLY_DEADLINE':'1'}):
             out=Path(tmp)/'generated_video.mp4'
-            out.with_name('flow_video_diagnostics.json').write_text('{}')
+            out.with_name('flow_video_diagnostics.json').write_text('{"record_version":2}')
             c=FlowMediaClient()
             with patch.object(c,'_daily_attempts',return_value=[]),patch.object(c,'_recover_pending') as remote, \
                     patch('flow_media_client.GoogleVideoClient') as api,patch.object(c,'_generation_seconds',return_value=7200):
@@ -424,7 +424,7 @@ class OperationalReviewTests(unittest.TestCase):
     def test_worker_restarts_are_counted_across_the_original_attempt(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);context=root/'flow_video_attempt_1.context.json';context.write_text('{}')
-            diagnostic=root/'flow_video_diagnostics.json';diagnostic.write_text('{}')
+            diagnostic=root/'flow_video_diagnostics.json';diagnostic.write_text('{"record_version":2}')
             client=FlowMediaClient()
             with patch.object(client,'_generation_seconds',return_value=7200), \
                     patch.object(client,'_recovery_command',return_value=(3,{'error_class':'TargetClosedError'})) as worker:
