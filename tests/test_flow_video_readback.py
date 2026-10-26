@@ -1,4 +1,5 @@
 """Exact-video recovery must survive missing browser responses without spending."""
+import tests  # Explicit notification isolation before production imports.
 import asyncio
 import copy
 import hashlib

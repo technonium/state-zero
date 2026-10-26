@@ -1,4 +1,5 @@
 """Regression checks for recovery ownership and private operational messages."""
+import tests  # Explicit notification isolation before production imports.
 import os
 import hashlib
 import json

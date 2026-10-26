@@ -24,8 +24,11 @@ import requests
 from zoneinfo import ZoneInfo
 from utils import load_project_dotenv, sanitize_error
 
+_TEST_MODE = os.getenv('STATE_ZERO_TEST_MODE') == '1'
+
 def _in_test_process() -> bool:
-    return 'unittest' in sys.modules or 'pytest' in sys.modules
+    # Keep test isolation when a fixture temporarily clears the environment.
+    return _TEST_MODE or os.getenv('STATE_ZERO_TEST_MODE') == '1'
 
 
 if not _in_test_process():

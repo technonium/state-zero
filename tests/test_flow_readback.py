@@ -1,4 +1,5 @@
 """Synthetic current-host listing and lost-response recovery boundaries."""
+import tests  # Explicit notification isolation before production imports.
 import json
 import os
 from pathlib import Path

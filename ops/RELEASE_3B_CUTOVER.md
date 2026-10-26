@@ -9,14 +9,14 @@ New controlling parent records (Flow, or API-default diagnostics) carry `record_
 | Removed parent field or inference | Remaining authority |
 | --- | --- |
 | `generation_started`, `daily_policy` | Conservative numbered reservation and explicit record version |
-| `attempt.submit_attempted`, copied failure `submission_state` | Existing child forwarding/block evidence; a missing marker never proves no send |
+| `attempt.submit_attempted`, copied failure `submission_state` | Existing child forwarding/block evidence; absent marker proves no send because atomic marker creation precedes the click and the route guard requires it |
 | Mixed `attempt.status`, `attempt.recovery_exhausted` | Separate typed attempt failure; persisted search/retrieval limits and terminal provider failure |
 | Parent `result.succeeded` | Existing exact child receipt and validated original bytes; upstream and child contracts unchanged |
 | Duplicate `output_sha256` | One `selected_sha256`/`selected_file`/provider, committed before promotion; distinct original checksum retained |
 | Completion labels in `api_fallback_state` and `logical_attempt` | Immutable `api_reserved` or existing logical reservation, resumable operation, selected provider and processed bytes |
 | `retry_count`, `submissions_estimated`, duplicate success notification branch | Durable attempts/worker counters and the existing deduplicated completion transition |
 
-A pre-submit exception hint without child evidence now consumes one uncertain reservation. It cannot authorize another CLI submission or an early paid API call; unresolved-at-noon handling remains. A confirmed failed generation still permits the existing bounded replacement. Restrictions and identity/cleanup failures still block it.
+A missing marker permits a free Flow retry, capped at two pre-submit attempts per stage/date independently of the two-submission allowance. An existing unreadable or contradictory marker fails closed; an attempted/forwarded unresolved result retains noon-only API eligibility. A confirmed failed generation still permits the existing bounded replacement. Restrictions and identity/cleanup failures still block it.
 
 ## Before an approved rollout
 

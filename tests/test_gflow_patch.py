@@ -1,4 +1,5 @@
 """Run in the shadow image to check the pinned CLI panel recovery patch."""
+import tests  # Explicit notification isolation before production imports.
 import unittest
 import sys
 import os
@@ -311,6 +312,16 @@ class ImageSubmissionGuardTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(marker.read_text())['state'],'forwarded')
         route.continue_.assert_awaited_once()
         route.abort.assert_not_awaited()
+
+    async def test_managed_guard_aborts_without_pre_click_marker(self):
+        from gflow_cli.api.image import Model
+        from gflow_cli.api.transports.migrated_composer import _guard_image_submit
+        route = MagicMock(abort=AsyncMock(), continue_=AsyncMock())
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+                'GFLOW_SHADOW_SUBMIT_MARKER': str(Path(tmp)/'absent.submit')}):
+            self.assertIsNotNone(await _guard_image_submit(route,
+                MagicMock(post_data=self.body('BELUGA')), (), Model.NARWHAL, 'Nano Banana 2.1'))
+        route.abort.assert_awaited_once(); route.continue_.assert_not_awaited()
 
     async def test_required_context_write_failure_prevents_forwarding(self):
         from gflow_cli.api.image import Model

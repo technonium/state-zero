@@ -143,7 +143,7 @@ class FlowMediaClient:
                 if (saved.get("selected_sha256") and canonical.is_file() and not failure
                         and hashlib.sha256(canonical.read_bytes()).hexdigest() == saved["selected_sha256"]):
                     continue
-                if not markers and not saved.get('attempts') and not saved.get('pending_attempt'):
+                if not markers:
                     continue
                 if (states and all(state == "blocked_before_submission" for state in states)
                         and failure.get("category") in {"pre_submit_transient", "pre_submit_timeout", "auth_required", "blocked_before_submission"}):
@@ -292,6 +292,9 @@ class FlowMediaClient:
             by_number[pending['number']] = pending | by_number.get(pending['number'], {})
         if sorted(by_number) != list(range(1, len(by_number) + 1)):
             raise invalid
+        # The child creates its marker before clicking; the route guard refuses an unmarked send.
+        for attempt in by_number.values():
+            attempt['submission'] = 'not_attempted'
         for marker in diagnostics.parent.glob(f'flow_{stage}_attempt_*.submit'):
             try:
                 number = int(marker.stem.rsplit('_', 1)[1])
@@ -319,7 +322,7 @@ class FlowMediaClient:
             except (OSError, ValueError, AttributeError, KeyError, TypeError):
                 raise invalid from None
             attempt['submission'] = evidence['state']
-        if sum(a.get('submission') != 'blocked_before_submission' for a in by_number.values()) > 2 or sum(a.get('submission') == 'blocked_before_submission' for a in by_number.values()) > 2:
+        if sum(a['submission'] not in {'not_attempted', 'blocked_before_submission'} for a in by_number.values()) > 2 or sum(a['submission'] in {'not_attempted', 'blocked_before_submission'} for a in by_number.values()) > 2:
             raise FlowCommandError(stage, 'request_identity_unverified')
         return sorted(by_number.values(), key=lambda a: a['number'])
 
@@ -381,7 +384,7 @@ class FlowMediaClient:
             error = FlowCommandError(stage, **failure) if failure else None
             if error and error.category=='execution_busy':
                 self._check_browser_ownership(diagnostics,stage)
-                error=FlowCommandError(stage,'post_submit_error' if last.get('submission') != 'blocked_before_submission'
+                error=FlowCommandError(stage,'post_submit_error' if last.get('submission') not in {'not_attempted', 'blocked_before_submission'}
                     else 'pre_submit_transient')
             if error and self._stops_replacement(error):
                 raise error
@@ -407,7 +410,7 @@ class FlowMediaClient:
                     raise error
                 generate(local)
                 return self._finish_daily(stage, output, diagnostics, 'flow')
-            if attempts and attempts[-1].get('submission') != 'blocked_before_submission':
+            if attempts and attempts[-1]['submission'] not in {'not_attempted', 'blocked_before_submission'}:
                 attempt = attempts[-1]
                 try:
                     recovered = self._recover_pending(stage, diagnostics, attempt, output)
@@ -428,16 +431,19 @@ class FlowMediaClient:
                     except FlowCommandError as exc:
                         if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                             raise
-            used = sum(a.get('submission') != 'blocked_before_submission' for a in attempts)
+            submitted = [a for a in attempts if a['submission'] not in {'not_attempted', 'blocked_before_submission'}]
+            used = len(submitted)
+            pre_submit = sum(a['submission'] == 'not_attempted' for a in attempts)
             current=FlowMediaClient._read_diagnostics(diagnostics)
             identified=bool(current.get('retrieval',{}).get('candidate'))
-            confirmed_failure=bool(error and error.category=='generation_failed' and error.retryable)
+            last_sent_failure = (submitted[-1].get('failure') or {}) if submitted else {}
+            confirmed_failure = last_sent_failure.get('category') == 'generation_failed' and last_sent_failure.get('retryable') is True
             unresolved=bool(used and not identified and not confirmed_failure)
             from utils import get_pipeline_now
             if unresolved and get_pipeline_now().hour < 12:
                 raise FlowCommandError(stage,'request_identity_unverified',
                     detail='Submitted result remains unresolved; retry read-only search next slot. Paid API is eligible from 12:00 IST.')
-            skip_flow = identified or unresolved or error and error.category in {'auth_required', 'credits_exhausted'}
+            skip_flow = identified or unresolved or pre_submit >= 2 or error and error.category == 'credits_exhausted'
             if used < 2 and not skip_flow and self._generation_seconds() >= flow_timeout + following_video:
                 number = max([a['number'] for a in attempts], default=0) + 1
                 attempt = {'number': number, 'reserved_at': time.time()}

@@ -1,4 +1,5 @@
 """Daily retry policy uses temporary state and mocked provider boundaries."""
+import tests  # Explicit notification isolation before production imports.
 import hashlib
 import json
 import os
@@ -284,6 +285,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         calls = []
         def uncertain(request, output, recovered=None):
             calls.append('flow')
+            self.image_marker(calls.count('flow'))
             raise FlowCommandError('image', 'generation_failed', retryable=True, submission_state='uncertain')
         api = Mock()
         api.generate_from_json.side_effect = self.save_image
@@ -309,6 +311,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
             if recovered:
                 self.save_image(request, output)
                 return output
+            self.image_marker()
             raise FlowCommandError('image', 'submission_uncertain')
         with patch.object(client, '_generate_image', side_effect=generate) as generate, \
                 patch.object(client, '_recover_pending', return_value={'media': 'known'}, create=True), \
@@ -394,7 +397,10 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.freeze()
         target = self.root / 'generated_art.png'
         client = FlowMediaClient()
-        with patch.object(client, '_generate_image', side_effect=KeyboardInterrupt):
+        def crash(*args):
+            self.image_marker()
+            raise KeyboardInterrupt
+        with patch.object(client, '_generate_image', side_effect=crash):
             with self.assertRaises(KeyboardInterrupt):
                 client.generate_image({}, target)
         api = Mock()
@@ -683,15 +689,16 @@ class DailyFlowPolicyTests(unittest.TestCase):
         recover.assert_not_called()
         api.assert_not_called()
 
-    def test_auth_error_without_child_evidence_cannot_authorize_early_api(self):
+    def test_two_pre_click_auth_failures_exhaust_free_retries(self):
         self.freeze()
         with patch.object(FlowMediaClient, '_generate_image', side_effect=FlowCommandError(
                 'image', 'auth_required', submission_state='not_attempted')) as flow, \
+                patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'false'}), \
                 patch('flow_media_client.GoogleImageClient') as api:
             with self.assertRaises(FlowCommandError) as error:
                 FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
-        self.assertEqual(error.exception.category, 'request_identity_unverified')
-        flow.assert_called_once(); api.assert_not_called()
+        self.assertEqual(error.exception.category, 'attempts_exhausted')
+        self.assertEqual(flow.call_count, 2); api.assert_not_called()
 
     def test_wrong_request_cannot_use_an_unrelated_frozen_manifest(self):
         self.freeze()
@@ -761,16 +768,19 @@ class DailyFlowPolicyTests(unittest.TestCase):
                 self.assertTrue(FlowMediaClient._stops_replacement(caught.exception))
                 self.assertIn('provider reason', caught.exception.detail)
 
-    def test_pre_submit_hint_without_child_evidence_keeps_one_uncertain_reservation(self):
+    def test_no_marker_retry_cap_survives_later_invocations(self):
         self.freeze()
         with patch.object(FlowMediaClient, '_generate_image', side_effect=FlowCommandError(
                 'image', 'pre_submit_timeout', submission_state='not_attempted')) as flow, \
+                patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'false'}), \
                 patch('flow_media_client.GoogleImageClient') as api:
-            with self.assertRaises(FlowCommandError):
-                FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
-        flow.assert_called_once(); api.assert_not_called()
+            for _ in range(3):
+                with self.assertRaises(FlowCommandError) as error:
+                    FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
+                self.assertEqual(error.exception.category, 'attempts_exhausted')
+        self.assertEqual(flow.call_count, 2); api.assert_not_called()
         saved = json.loads((self.root / 'flow_image_diagnostics.json').read_text())
-        self.assertEqual(len(saved['attempts']), 1)
+        self.assertEqual(len(saved['attempts']), 2)
         self.assertNotIn('submit_attempted', saved['attempts'][0])
 
     def test_marker_validation_refusal_survives_lost_cli_error_response(self):
@@ -821,7 +831,10 @@ class DailyFlowPolicyTests(unittest.TestCase):
         target = self.root / 'generated_art.png'
         candidate = self.save_image({}, self.root / '.generated_art.api.png')
         client = FlowMediaClient()
-        with patch.object(client, '_generate_image', side_effect=KeyboardInterrupt):
+        def crash(*args):
+            self.image_marker()
+            raise KeyboardInterrupt
+        with patch.object(client, '_generate_image', side_effect=crash):
             with self.assertRaises(KeyboardInterrupt):
                 client.generate_image({}, target)
         diagnostic = self.root / 'flow_image_diagnostics.json'

@@ -1,4 +1,5 @@
 """Completed-date record cutover and spend-boundary replays; no live provider calls."""
+import tests  # Explicit notification isolation before production imports.
 import hashlib
 import json
 import os
@@ -79,16 +80,87 @@ class ReleaseThreeRecordTests(unittest.TestCase):
             FlowMediaClient._write_diagnostics(self.record, {'request_hash': 'new'})
         self.assertEqual(self.record.read_bytes(), before)
 
-    def test_missing_child_marker_never_proves_no_send_or_authorizes_retry(self):
-        with patch.object(FlowMediaClient, '_run_json', side_effect=FlowCommandError(
-                'image', 'pre_submit_timeout', submission_state='not_attempted')) as cli, \
+    def test_upload_failure_without_marker_gets_free_retry_before_noon(self):
+        def upload_failure(command, timeout, marker):
+            if marker.name == 'flow_image_attempt_1.submit':
+                raise FlowCommandError('image', 'pre_submit_transient',
+                    error_class='UploadResponseUnavailableError', detail='Exact upload recovery failed')
+            return self.image(command, timeout, marker)
+        with patch.object(FlowMediaClient, '_run_json', side_effect=upload_failure) as cli, \
+                patch.object(FlowMediaClient, '_recover_pending') as recovery, \
                 patch('flow_media_client.GoogleImageClient') as api:
-            with self.assertRaises(FlowCommandError) as error:
-                FlowMediaClient().generate_image({}, self.output)
-        self.assertEqual(error.exception.category, 'request_identity_unverified')
-        cli.assert_called_once(); api.assert_not_called()
+            FlowMediaClient().generate_image({}, self.output)
+        self.assertEqual(cli.call_count, 2)
+        recovery.assert_not_called(); api.assert_not_called()
         saved = json.loads(self.record.read_text()); self.assert_new_record(saved)
-        self.assertEqual(len(saved['attempts']), 1)
+        self.assertEqual(len(saved['attempts']), 2)
+        self.assertFalse((self.root/'flow_image_attempt_1.submit').exists())
+        self.assertEqual(saved['provider'], 'flow')
+
+    def test_pre_click_timeout_and_auth_get_free_retry(self):
+        for category in ('pre_submit_timeout', 'auth_required'):
+            with self.subTest(category=category), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp); freeze(root)
+                count = 0
+                def failed_then_sent(command, timeout, marker):
+                    nonlocal count
+                    count += 1
+                    if count == 1: raise FlowCommandError('image', category)
+                    return self.image(command, timeout, marker)
+                with patch.object(FlowMediaClient, '_run_json', side_effect=failed_then_sent), \
+                        patch('flow_media_client.GoogleImageClient') as api:
+                    FlowMediaClient().generate_image({}, root/'generated_art.png')
+                self.assertEqual(count, 2); api.assert_not_called()
+
+    def test_video_upload_failure_gets_free_retry_with_exact_frame_and_receipt(self):
+        from flow_fixture import video_receipt
+        art = self.root/'input_art.png'; Image.new('RGB', (768, 1024)).save(art)
+        output = self.root/'generated_video.mp4'
+        diagnostic = self.root/'flow_video_diagnostics.json'
+        media = '22222222-2222-4222-8222-222222222222'
+        def upload_then_sent(command, timeout, marker):
+            if marker.name == 'flow_video_attempt_1.submit':
+                raise FlowCommandError('video', 'pre_submit_transient', error_class='UploadResponseUnavailableError')
+            video_receipt(self.root, json.loads(diagnostic.read_text())['request_hash'], media, attempt=2)
+            raw = Path(command[command.index('--output')+1]); raw.write_bytes(b'validated-video')
+            return dict(succeeded=True, media_id=media, local_path=str(raw),
+                request=dict(count=1,model='veo_3_1_fast',mode='i2v',aspect='portrait'))
+        with patch.object(FlowMediaClient, '_run_json', side_effect=upload_then_sent) as cli, \
+                patch.object(FlowMediaClient, '_probe_video', return_value=(1080,1920,8,True)), \
+                patch.object(FlowMediaClient, '_recover_pending') as recovery, \
+                patch('flow_media_client.GoogleVideoClient') as api:
+            # Preserve the real local frame conversion; generation is mocked separately.
+            from google_video_client import GoogleVideoClient
+            api._to_letterboxed_png_bytes = GoogleVideoClient._to_letterboxed_png_bytes
+            FlowMediaClient().generate_video('move', art, output)
+        self.assertEqual(cli.call_count, 2); api.assert_not_called(); recovery.assert_not_called()
+        self.assertEqual(json.loads(diagnostic.read_text())['provider'], 'flow')
+        self.assertFalse((self.root/'flow_video_attempt_1.submit').exists())
+
+    def test_unreadable_child_marker_never_authorizes_free_retry(self):
+        def broken(command, timeout, marker):
+            marker.write_text('{broken')
+            raise FlowCommandError('image', 'pre_submit_timeout')
+        with patch.object(FlowMediaClient, '_run_json', side_effect=broken) as cli, \
+                patch('flow_media_client.GoogleImageClient') as api, self.assertRaises(FlowCommandError):
+            FlowMediaClient().generate_image({}, self.output)
+        cli.assert_called_once(); api.assert_not_called()
+
+    def test_upload_retry_does_not_erase_previous_confirmed_generation_failure(self):
+        def failed_then_upload_then_sent(command, timeout, marker):
+            number = int(marker.stem.rsplit('_', 1)[1])
+            if number == 1:
+                marker.write_text('submit_attempted\n')
+                raise FlowCommandError('image', 'generation_failed', retryable=True)
+            if number == 2:
+                raise FlowCommandError('image', 'pre_submit_transient', error_class='UploadResponseUnavailableError')
+            return self.image(command, timeout, marker)
+        with patch.object(FlowMediaClient, '_run_json', side_effect=failed_then_upload_then_sent) as cli, \
+                patch.object(FlowMediaClient, '_recover_pending', return_value=None), \
+                patch('flow_media_client.GoogleImageClient') as api:
+            FlowMediaClient().generate_image({}, self.output)
+        self.assertEqual(cli.call_count, 3); api.assert_not_called()
+        self.assertEqual(len(list(self.root.glob('*.submit'))), 2)
 
     def test_child_forwarding_wins_over_a_pre_submit_exception_hint(self):
         def lost(command, timeout, marker):

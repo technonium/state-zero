@@ -1,4 +1,5 @@
 """Real boundary behavior with isolated storage and mocked external calls."""
+import tests  # Explicit notification isolation before production imports.
 import hashlib
 import json
 import os
@@ -347,7 +348,7 @@ class ExecutionHardeningTests(unittest.TestCase):
         self.assertEqual(start.call_count, 1); self.assertEqual(poll.call_count, 1)
         self.assertEqual(output.read_bytes(), b'validated-video')
 
-    def test_unknown_upload_outcome_waits_until_noon_without_a_second_cli(self):
+    def test_upload_failures_without_markers_use_two_free_retries_then_bounded_api(self):
         self.freeze()
         art = self.root / 'generated_art.png'; Image.new('RGB', (768, 1024)).save(art)
         output = self.root / 'generated_video.mp4'
@@ -361,15 +362,13 @@ class ExecutionHardeningTests(unittest.TestCase):
                 patch.object(GoogleVideoClient, 'generate_from_image', side_effect=video) as api, \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080, 1920, 8, True)), \
                 patch.object(FlowMediaClient, '_notify_transition'):
-            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,10)), self.assertRaises(FlowCommandError):
+            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,10)):
                 FlowMediaClient().generate_video('original', art, output)
-            flow.assert_called_once(); api.assert_not_called()
-            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,12)):
                 FlowMediaClient().generate_video('original', art, output)
-        self.assertEqual(flow.call_count, 1); self.assertEqual(api.call_count, 1)
+        self.assertEqual(flow.call_count, 2); self.assertEqual(api.call_count, 1)
         self.assertEqual(list(self.root.glob('flow_video_attempt_*.submit')), [])
         saved = json.loads((self.root / 'flow_video_diagnostics.json').read_text())
         self.assertEqual(saved['provider'], 'google_api')
-        self.assertEqual(saved['fallback_reason'], 'unresolved_at_noon')
-        self.assertEqual(len(saved['attempts']), 1)
+        self.assertEqual(saved['fallback_reason'], 'pre_submit_transient')
+        self.assertEqual(len(saved['attempts']), 2)
         self.assertNotIn('submit_attempted', saved['attempts'][0])

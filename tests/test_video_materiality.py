@@ -1,4 +1,5 @@
 """Focused tests for video prompt materiality guardrails."""
+import tests  # Explicit notification isolation before production imports.
 
 import os
 import sys

@@ -1,4 +1,5 @@
 """Launch regressions: observed progress, local work, and publication evidence."""
+import tests  # Explicit notification isolation before production imports.
 import asyncio
 import json
 import os

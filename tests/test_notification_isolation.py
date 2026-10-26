@@ -1,4 +1,5 @@
 """Test runners must not load notification credentials or reach Telegram."""
+import tests  # Explicit notification isolation before production imports.
 import os
 import runpy
 import subprocess
@@ -13,9 +14,9 @@ import notifier
 
 
 class NotificationIsolationTests(unittest.TestCase):
-    def test_normal_interpreter_and_pytest_and_cached_credentials(self):
+    def test_explicit_flag_and_production_stack_imports(self):
         code = """
-import sys
+import os, sys, unittest
 import requests
 import utils
 loads = []
@@ -28,26 +29,32 @@ def fake_post(*args, **kwargs):
     return Reply()
 requests.post = fake_post
 mode = sys.argv[1]
-if mode == 'pytest': sys.modules['pytest'] = object()
+if mode == 'test': os.environ['STATE_ZERO_TEST_MODE'] = '1'
+if mode == 'production-stack':
+    import pipeline, gflow_cli
+    import playwright.sync_api
+sys.modules['pytest'] = object()
 import notifier
 instance = notifier.Notifier()
-if mode == 'late-unittest': sys.modules['unittest'] = object()
+assert instance._is_enabled()
+if mode == 'late-test': os.environ['STATE_ZERO_TEST_MODE'] = '1'
+if mode == 'test': os.environ.clear()
 try:
     instance._telegram_request('sendMessage')
 except notifier.NotificationError:
-    assert mode != 'normal'
+    assert mode in ('test', 'late-test')
 else:
-    assert mode == 'normal'
-assert len(sends) == (1 if mode == 'normal' else 0)
-assert len(loads) == (0 if mode == 'pytest' else 1)
+    assert mode in ('normal', 'production-stack')
+assert len(sends) == (1 if mode in ('normal', 'production-stack') else 0)
+assert not loads if mode == 'test' else loads
 """
         env = {'PATH': os.environ.get('PATH', ''),
             'PYTHONPATH': str(Path(notifier.__file__).parent),
             'TELEGRAM_BOT_TOKEN': 'synthetic-bot', 'TELEGRAM_CHAT_ID': 'synthetic-chat'}
-        for mode in ('normal', 'pytest', 'late-unittest'):
+        for mode in ('normal', 'production-stack', 'test', 'late-test'):
             with self.subTest(mode=mode):
                 result = subprocess.run([sys.executable, '-B', '-c', code, mode], env=env,
-                    capture_output=True, text=True, timeout=20)
+                    capture_output=True, text=True, timeout=45)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_import_does_not_load_project_dotenv_under_test_runner(self):

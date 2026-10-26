@@ -1,3 +1,4 @@
+import tests  # Explicit notification isolation before production imports.
 import sys
 import unittest
 from datetime import datetime

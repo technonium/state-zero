@@ -1,3 +1,4 @@
+import tests  # Explicit notification isolation before production imports.
 import json
 import os
 import subprocess
@@ -144,7 +145,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 for flag in ('false', 'true', 'true'):
                     with patch.dict(os.environ, {'FLOW_SHADOW_RECOVERY_LOCKED': flag}), self.assertRaises(FlowCommandError):
                         self.frozen_image(client, {}, Path(tmp) / 'art.png')
-            generate.assert_called_once()
+            self.assertEqual(generate.call_count, 2)
 
     def test_legacy_recovery_flag_cannot_restart_auth_failed_video(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True):
@@ -155,9 +156,9 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 for flag in ('false', 'true'):
                     with patch.dict(os.environ, {'FLOW_SHADOW_RECOVERY_LOCKED': flag}), self.assertRaises(FlowCommandError):
                         self.frozen_video(client, 'move', art, root / 'video.mp4')
-            generate.assert_called_once()
+            self.assertEqual(generate.call_count, 2)
 
-    def test_missing_child_evidence_keeps_one_conservative_reservation(self):
+    def test_missing_marker_gets_at_most_two_free_pre_submit_attempts(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
                 'FLOW_SHADOW_RECOVERY_LOCKED': 'true'}, clear=True):
             error = FlowCommandError('image', 'pre_submit_timeout', submission_state='not_attempted')
@@ -165,7 +166,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 for _ in range(3):
                     with self.assertRaises(FlowCommandError):
                         self.frozen_image(FlowMediaClient(), {}, Path(tmp) / 'art.png')
-                self.assertEqual(generate.call_count, 1)
+                self.assertEqual(generate.call_count, 2)
 
     def test_existing_canonical_without_identity_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -257,7 +258,11 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             'MEDIA_GENERATION_PROVIDER': 'flow', 'FLOW_API_FALLBACK_ENABLED': 'true'}, clear=True):
             for i, error in enumerate(cases):
                 freeze(Path(tmp)/str(i), image={'scene': 'cloud'})
-                with self.subTest(error=str(error)), patch.object(FlowMediaClient, '_run_json', side_effect=error) as flow, \
+                def fail(command, timeout, marker):
+                    if isinstance(error, FlowCommandError) and error.category == 'post_submit_error':
+                        marker.write_text('submit_attempted\n')
+                    raise error
+                with self.subTest(error=str(error)), patch.object(FlowMediaClient, '_run_json', side_effect=fail) as flow, \
                         patch('google_image_client.GoogleImageClient.generate_from_json') as api:
                     with self.assertRaises(Exception):
                         ImageGenerator().generate({'scene': 'cloud'}, str(Path(tmp) / str(i) / 'art.png'))
@@ -279,7 +284,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                           side_effect=api_image) as api, patch('notifier.Notifier.notify_status', side_effect=RuntimeError('offline')) as notify:
                 self.frozen_image(client, {'scene': 'cloud'}, target)
                 self.frozen_image(client, {'scene': 'cloud'}, target)
-            self.assertEqual(flow.call_count, 1)
+            self.assertEqual(flow.call_count, 2)
             self.assertEqual(api.call_count, 1)
             notify.assert_called()
             self.assertEqual(json.loads((Path(tmp) / 'flow_image_diagnostics.json').read_text())['provider'], 'google_api')
@@ -386,7 +391,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 for _ in range(2):
                     with self.assertRaises(Exception):
                         self.frozen_image(client, {'scene': 'cloud'}, Path(tmp) / 'art.png')
-            self.assertEqual(flow.call_count, 1)
+            self.assertEqual(flow.call_count, 2)
             self.assertEqual(api.call_count, 1)
 
     def test_policy_detail_survives_a_later_invocation(self):

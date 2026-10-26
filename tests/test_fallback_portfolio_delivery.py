@@ -1,4 +1,5 @@
 """Fallback delivery uses the real mounted publisher with a simulated public HTTP boundary."""
+import tests  # Explicit notification isolation before production imports.
 import hashlib
 import io
 import json

@@ -1,4 +1,5 @@
 """Credit-free checks at the verdict, post-publication and state-write boundaries."""
+import tests  # Explicit notification isolation before production imports.
 import json
 import contextlib
 import hashlib

@@ -1,3 +1,4 @@
+import tests  # Explicit notification isolation before production imports.
 import os
 import stat
 import sys
