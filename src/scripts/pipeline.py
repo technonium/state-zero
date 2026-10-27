@@ -355,6 +355,7 @@ class WHOOPPipeline:
     def _claim_daily_run_or_exit(self):
         if hasattr(self, 'output_dir') and self.post_to_instagram:
             self._check_publication_before_claim()
+            self._notify_noon_not_posted()
         decision, state = self.daily_run.acquire(**({'execution_fd': self.execution_lock_fd}
             if getattr(self, 'execution_lock_fd', None) is not None else {}))
         if decision == 'owner':
@@ -386,6 +387,22 @@ class WHOOPPipeline:
             f"(status={status}). Exiting cleanly.{Style.RESET_ALL}"
         )
         raise SystemExit(0)
+
+    def _notify_noon_not_posted(self):
+        now = self._now()
+        if not self.post_to_instagram or self.run_date != now.date().isoformat() or now.hour < 12:
+            return
+        state = self.daily_run.load_state() or {}
+        if state.get('status') == 'POSTED':
+            return
+        step = state.get('last_error_step') or 'unavailable'
+        error = state.get('last_error_message') or 'No saved failure details.'
+        next_action = ('14:00 IST rescue is running now.' if self._is_terminal_rescue_run()
+                       else '14:00 IST rescue remains scheduled; normal retries continue.')
+        self.daily_run.notify_once(self.run_date, lambda: safe_notify_status(self.run_date,
+            'NOON_NOT_POSTED', f'Not POSTED by noon. Last failed step: {sanitize_error(step)[:100]}. '
+            f'{sanitize_error(error)[:600]} {next_action}'),
+            marker_key='noon_not_posted_alert_at')
 
     def _check_publication_before_claim(self):
         from instagram_poster import read_publication_record, InstagramPublicationUncertain

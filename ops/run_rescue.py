@@ -8,7 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/scripts'))
 
 
-def main():
+def _run():
     if not os.getenv('DISPLAY'):
         return subprocess.run(['xvfb-run','-a',sys.executable,'-u',str(Path(__file__).resolve())]).returncode
     from flow_media_client import FlowMediaClient
@@ -34,6 +34,26 @@ def main():
             safe_notify_status(day,'RESCUE_EXECUTION_BUSY',message)
         return 75
 
+
+
+def main():
+    try:
+        return _run()
+    except Exception as exc:
+        message = f'14:00 rescue failed unexpectedly ({type(exc).__name__}).'
+        try:
+            from utils import sanitize_error
+            message += ' ' + sanitize_error(str(exc))[:800]
+        except Exception:
+            pass
+        print(message, file=sys.stderr)
+        try:
+            from notifier import safe_notify_status
+            from utils import get_pipeline_run_date_str
+            safe_notify_status(get_pipeline_run_date_str(), 'RESCUE_FAILED', message)
+        except Exception:
+            print('Rescue failure alert could not be delivered.', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':
