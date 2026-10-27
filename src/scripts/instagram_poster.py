@@ -15,10 +15,10 @@ from typing import Optional, Tuple
 # Import token manager - works both as script and module
 try:
     from .instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
-    from .utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy, sanitize_error
+    from .utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy, sanitize_error, instagram_graph_api_version
 except ImportError:
     from instagram_token_manager import InstagramTokenManager, get_instagram_token_manager
-    from utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy, sanitize_error
+    from utils import SUPPORTED_INSTAGRAM_PUBLISH_STRATEGIES, ensure_path, get_output_root, resolve_instagram_publish_strategy, sanitize_error, instagram_graph_api_version
 
 
 class InstagramPublishDiagnosticsError(RuntimeError):
@@ -98,7 +98,7 @@ class InstagramPoster:
         else:
             self.user_id = self.token_manager.get_user_id()
             
-        graph_api_version = (os.getenv("INSTAGRAM_GRAPH_API_VERSION") or "v25.0").strip() or "v25.0"
+        graph_api_version = instagram_graph_api_version()
         self.base_url = f"https://graph.facebook.com/{graph_api_version}"
         self.graph_api_version = graph_api_version
         self.mock_mode = not self.access_token or self.access_token == 'mock'

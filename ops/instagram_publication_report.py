@@ -27,7 +27,8 @@ def report(run_date):
     token=os.getenv('INSTAGRAM_ACCESS_TOKEN') or stored.get('access_token')
     if not token:
         return result | {'container_status':'authentication_unavailable'}
-    version=os.getenv('INSTAGRAM_GRAPH_API_VERSION','v25.0')
+    from utils import instagram_graph_api_version
+    version=instagram_graph_api_version()
     if not __import__('re').fullmatch(r'v\d+\.\d+',version):
         raise ValueError('Invalid Graph API version')
     try:

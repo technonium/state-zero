@@ -190,16 +190,12 @@ def main():
     expires_at = report.get("expires_at")
 
     if days_left is None or not expires_at:
-        msg = "Instagram token is valid. Expiry date unavailable (set FACEBOOK_APP_ID/SECRET for expiry alerts)."
+        msg = "Instagram token expiry is unknown. Set FACEBOOK_APP_ID/SECRET for expiry alerts."
         if state.get("last_no_expiry_notice_date") != run_date:
-            notifier.notify_status(
-                run_date=run_date,
-                status="TOKEN_HEALTH_OK",
-                message=msg,
-            )
-            state["last_no_expiry_notice_date"] = run_date
+            if notifier.notify_warning(run_date=run_date, step="InstagramTokenHealth", message=msg):
+                state["last_no_expiry_notice_date"] = run_date
         _save_state(state_path, state)
-        print("Token healthcheck: valid, expiry unknown.")
+        print("Token healthcheck: expiry unknown.")
         return
 
     state["last_expires_at"] = expires_at

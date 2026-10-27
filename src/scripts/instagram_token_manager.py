@@ -21,7 +21,7 @@ import hashlib
 import tempfile
 from datetime import datetime, timedelta, timezone
 import httpx
-from utils import get_state_root, ensure_path
+from utils import get_state_root, ensure_path, instagram_graph_api_version, sanitize_error
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,6 @@ MIN_REFRESH_AGE_DAYS = 1
 
 # Token refresh endpoint
 REFRESH_URL = "https://graph.instagram.com/refresh_access_token"
-GRAPH_BASE_URL = "https://graph.facebook.com/v21.0"
 REQUIRED_PUBLISH_SCOPES = {"instagram_content_publish"}
 
 
@@ -165,7 +164,7 @@ class InstagramTokenManager:
             os.chmod(self.token_state_file, 0o600)
             logger.info(f"Token state saved to {self.token_state_file}")
         except Exception as e:
-            logger.error(f"Failed to save token state: {e}")
+            logger.error(f"Failed to save token state: {sanitize_error(str(e))}")
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:
@@ -236,6 +235,19 @@ class InstagramTokenManager:
         )
         return False
 
+    @staticmethod
+    def _response_error(response) -> str:
+        codes = []
+        try:
+            error = response.json().get('error', {})
+            for name in ('code', 'error_subcode'):
+                value = error.get(name)
+                if type(value) is int:
+                    codes.append(f'{name}={value}')
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return f'HTTP {response.status_code}' + (' ' + ' '.join(codes) if codes else '')
+
     def _validate_token_value(self, token: str) -> tuple[bool, str]:
         """
         Validate any token against Graph API using configured Instagram user id.
@@ -249,7 +261,7 @@ class InstagramTokenManager:
         try:
             with httpx.Client(timeout=20.0) as client:
                 response = client.get(
-                    f"{GRAPH_BASE_URL}/{self.user_id}",
+                    f"https://graph.facebook.com/{instagram_graph_api_version()}/{self.user_id}",
                     params={
                         "fields": "id,username",
                         "access_token": token,
@@ -257,10 +269,9 @@ class InstagramTokenManager:
                 )
             if response.status_code == 200:
                 return True, "Token accepted by Graph API."
-            body = response.text[:500]
-            return False, f"Graph token validation failed ({response.status_code}): {body}"
+            return False, f"Graph token validation failed: {self._response_error(response)}"
         except Exception as e:
-            return False, f"Graph token validation request failed: {e}"
+            return False, f"Graph token validation request failed: {sanitize_error(str(e))}"
 
     def _inspect_token_health_for_value(self, token: str) -> dict:
         """
@@ -290,7 +301,7 @@ class InstagramTokenManager:
         try:
             with httpx.Client(timeout=20.0) as client:
                 response = client.get(
-                    f"{GRAPH_BASE_URL}/debug_token",
+                    f"https://graph.facebook.com/{instagram_graph_api_version()}/debug_token",
                     params={
                         "input_token": token,
                         "access_token": app_access_token,
@@ -314,7 +325,7 @@ class InstagramTokenManager:
                 report["detail"] = "debug_token reports invalid token."
             return report
         except Exception as e:
-            report["detail"] = f"{detail} | debug_token error: {e}"
+            report["detail"] = f"{detail} | debug_token error: {sanitize_error(str(e))}"
             return report
 
     async def _perform_refresh_request(self):
@@ -355,8 +366,7 @@ class InstagramTokenManager:
             response = await self._perform_refresh_request()
 
             if response.status_code != 200:
-                body = response.text[:500]
-                logger.error(f"Token refresh failed: {response.status_code} - {body}")
+                logger.error("Token refresh failed: %s", self._response_error(response))
                 self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
                 return False
 
@@ -365,7 +375,7 @@ class InstagramTokenManager:
             # Extract new token
             new_token = data.get('access_token')
             if not new_token:
-                logger.error(f"No access_token in refresh response: {data}")
+                logger.error("No access_token in refresh response")
                 self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
                 return False
 
@@ -382,8 +392,6 @@ class InstagramTokenManager:
                 self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
                 return False
 
-            old_token_prefix = self.access_token[:20] + '...'
-
             # Persist token to state file only (not .env)
             self.access_token = new_token
             self.last_refresh = datetime.now()
@@ -393,18 +401,16 @@ class InstagramTokenManager:
             self._record_refresh_attempt(True, reason, attempt_started_at=attempt_started_at)
 
             logger.info(f"✅ Instagram token refreshed successfully!")
-            logger.info(f"   Old token: {old_token_prefix}")
-            logger.info(f"   New token: {new_token[:20]}...")
             logger.info(f"   Token expires in: {expires_in} seconds (~{expires_in // 86400} days)")
             
             return True
 
         except httpx.RequestError as e:
-            logger.error(f"Network error during token refresh: {e}")
+            logger.error(f"Network error during token refresh: {sanitize_error(str(e))}")
             self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
             return False
         except Exception as e:
-            logger.error(f"Unexpected error during token refresh: {e}", exc_info=True)
+            logger.error(f"Unexpected error during token refresh: {sanitize_error(str(e))}")
             self._record_refresh_attempt(False, reason, attempt_started_at=attempt_started_at)
             return False
         finally:
@@ -418,7 +424,7 @@ class InstagramTokenManager:
             import asyncio
             return asyncio.run(self._refresh_token_async(reason=reason))
         except Exception as e:
-            logger.error(f"Token refresh failed: {e}")
+            logger.error(f"Token refresh failed: {sanitize_error(str(e))}")
             return False
 
     def maybe_auto_refresh(self, report: dict = None, force_on_invalid: bool = False) -> tuple[bool, str]:
@@ -526,7 +532,7 @@ if __name__ == '__main__':
     manager = InstagramTokenManager.get_instance()
     try:
         token = manager.get_valid_token()
-        print(f"Current token: {token[:30]}...")
+        print("Current token is configured.")
         print(f"User ID: {manager.get_user_id()}")
     except Exception as e:
-        print(f"Token check failed: {e}")
+        print(f"Token check failed: {sanitize_error(str(e))}")

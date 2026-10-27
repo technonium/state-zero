@@ -30,6 +30,10 @@ LOCAL_PATH_PREFIXES = (
 )
 
 
+def instagram_graph_api_version() -> str:
+    return (os.getenv('INSTAGRAM_GRAPH_API_VERSION') or 'v25.0').strip() or 'v25.0'
+
+
 def env_bool(name: str, default: bool = False) -> bool:
     val = os.getenv(name)
     if val is None:
