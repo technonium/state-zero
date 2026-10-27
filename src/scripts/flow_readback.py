@@ -7,6 +7,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from state_zero_models import FLOW_IMAGE_ENUM, FLOW_IMAGE_LABEL, FLOW_IMAGE_WIRE, FLOW_VIDEO_RESULT, FLOW_VIDEO_WIRE
 from urllib.parse import parse_qs, unquote_plus, urljoin, urlsplit, urlunsplit
 
 
@@ -202,7 +203,7 @@ def bind_request(data, marker, payload, prompt):
     row = payload[1][0]
     if type(row[3]) is not int or not 0 <= row[3] < 2**32 or row[8] != [[[prompt]]]:
         raise ReadbackUnavailable('Actual image request identity unavailable')
-    data.update(seed=row[3], prompt_hash=fingerprint(prompt), model='BELUGA', aspect=4, count=1,
+    data.update(seed=row[3], prompt_hash=fingerprint(prompt), model=FLOW_IMAGE_WIRE, aspect=4, count=1,
                 recovery_deadline=None, response={'response_finished': False, 'body_readable': False, 'decoded': False})
     save(context_path(marker), data)
 
@@ -212,7 +213,7 @@ def select_image(listing, data):
         raise ReadbackUnsupported('Baseline unavailable')
     if (data.get('version') != 1 or not isinstance(data.get('baseline'), list)
             or any(not isinstance(item, str) for item in data['baseline'])
-            or data.get('model') != 'BELUGA' or data.get('aspect') != 4 or data.get('count') != 1
+            or data.get('model') != FLOW_IMAGE_WIRE or data.get('aspect') != 4 or data.get('count') != 1
             or type(data.get('seed')) is not int or not re.fullmatch('[0-9a-f]{64}', data.get('prompt_hash', ''))):
         raise ReadbackIdentityError('Incomplete image readback identity')
     matches = []
@@ -342,8 +343,8 @@ async def recover_context(client, context_file, project, request_hash, deadline,
                 or evidence.get('state') != 'forwarded' or evidence.get('actual_model') != data.get('model')
                 or evidence.get('readback_hash') != identity_hash(data)):
             raise ReadbackIdentityError('Submitted video identity differs')
-    elif (evidence.get('state') != 'forwarded' or evidence.get('actual_model') != 'BELUGA'
-            or evidence.get('selected_model') != 'Nano Banana 2.1' or evidence.get('expected_model') != 'NARWHAL'
+    elif (evidence.get('state') != 'forwarded' or evidence.get('actual_model') != FLOW_IMAGE_WIRE
+            or evidence.get('selected_model') != FLOW_IMAGE_LABEL or evidence.get('expected_model') != FLOW_IMAGE_ENUM
             or evidence.get('readback_hash') != identity_hash(data)):
         raise ReadbackIdentityError('Submitted request not verified')
     return await recover_candidate(client,context_file,data,deadline,output,mode,candidate,
@@ -367,15 +368,15 @@ async def recover_candidate(client, context_file, data, deadline, output, mode, 
                                   workflow_id=known.get('workflow_id') or workflow_id)
                 result=dict(request_hash=data['request_hash'],profile=data['profile'],project_id=data['project_id'],
                     succeeded=True,media_id=clip['media_id'],workflow_id=clip['workflow_id'],
-                    request={'count':1,'model':'veo_3_1_fast','mode':'i2v','aspect':'portrait'})
+                    request={'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'})
                 selected={'bytes':clip['bytes']}
             else:
                 image=select_image(listing,data)
                 if media_id and image.media_id!=media_id:
                     raise ReadbackIdentityError('Known image result conflicts with exact match')
                 result=dict(request_hash=data['request_hash'],profile=data['profile'],project_id=data['project_id'],
-                    count=1,model='NARWHAL',images=[dict(media_name=image.media_id,workflow_id=image.workflow_id,
-                    model_name_type='BELUGA',aspect_ratio='IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR')])
+                    count=1,model=FLOW_IMAGE_ENUM,images=[dict(media_name=image.media_id,workflow_id=image.workflow_id,
+                    model_name_type=FLOW_IMAGE_WIRE,aspect_ratio='IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR')])
                 selected={'dimensions':list(image.dimensions)}
             recovery_phase('match')
             found=dict(kind='video' if video else 'image',context_sha256=context_hash,result=result,**selected)
@@ -442,7 +443,7 @@ def select_video(listing, data, *, media_id=None, workflow_id=None):
     """Select one completed original using recorded identities, never list order."""
     from gflow_cli.api.transports.batchexecute import generation_record
     from gflow_cli.errors import WireFormatError
-    model = 'veo_3_1_i2v_s_fast_portrait'
+    model = FLOW_VIDEO_WIRE
     if (data.get('model') != model or data.get('aspect') != 'portrait'
             or data.get('count') != 1 or data.get('duration') != 8):
         raise ReadbackIdentityError('Saved video settings differ')
@@ -567,7 +568,7 @@ async def prepare_video(page, project, prompt, source, frame_id):
                  project_id=project, profile=os.getenv('GFLOW_PROFILE', 'shadow'),
                  frozen_inputs_sha256=hashlib.sha256(path.with_name('flow_inputs.json').read_bytes()).hexdigest(),
                  source_hash=hashlib.sha256(source.read_bytes()).hexdigest(), frame_id=frame_id,
-                 prompt_hash=fingerprint(prompt), model='veo_3_1_i2v_s_fast_portrait',
+                 prompt_hash=fingerprint(prompt), model=FLOW_VIDEO_WIRE,
                  aspect='portrait', count=1, duration=8)
     if path.exists():
         previous = json.loads(path.read_text())
@@ -656,7 +657,7 @@ def video_receipt(data, record, context_file):
         raise ReadbackIdentityError('Video result project differs')
     result = {'request_hash':data['request_hash'], 'profile':data['profile'],
               'project_id':data['project_id'], 'media_id':record.media_id, 'workflow_id':record.workflow_id,
-              'succeeded':True, 'request':{'count':1,'model':'veo_3_1_fast','mode':'i2v','aspect':'portrait'}}
+              'succeeded':True, 'request':{'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'}}
     path = receipt_path(context_file)
     if path.exists():
         previous=json.loads(path.read_text())

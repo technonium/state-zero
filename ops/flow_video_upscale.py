@@ -11,6 +11,7 @@ import time
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src/scripts'))
+from state_zero_models import FLOW_VIDEO_WIRE
 
 
 async def download_existing(project_id, media_id, output, *, workflow_id=None, deadline=None):
@@ -24,7 +25,7 @@ async def download_existing(project_id, media_id, output, *, workflow_id=None, d
     profile = get_settings().profile_subdir(os.getenv('GFLOW_PROFILE', 'shadow'))
     async with FlowApiClient(profile_dir=profile, headless=False) as client:
         listing = await snapshot(client._context, project_id, min(deadline,time.time()+30))
-        clip = select_video(listing, dict(project_id=project_id,model='veo_3_1_i2v_s_fast_portrait',
+        clip = select_video(listing, dict(project_id=project_id,model=FLOW_VIDEO_WIRE,
             aspect='portrait',count=1,duration=8),media_id=media_id,workflow_id=workflow_id)
         page=client.page
         route=f'/project/{project_id}/edit/{media_id}'

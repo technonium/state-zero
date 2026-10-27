@@ -143,6 +143,15 @@
  
  
  def _redacted_page_url(page: Any) -> str:
+@@ -1883,7 +1926,7 @@
+             await page.keyboard.press("Escape")
+             raise ConfigurationError(
+                 detail=(
+-                    f"model '{model.value}' is not offered on this account's migrated Flow "
++                    f"expected_model_not_offered: model '{model.value}' is not offered on this account's migrated Flow "
+                     f"host; offered: {', '.join(offered)}"
+                 ),
+                 remediation_hint="Pass --model with one of the offered names, or omit it.",
 @@ -1926,6 +1969,7 @@
                  ) from None
          current = (await button.text_content() or "").strip()
@@ -151,7 +160,15 @@
              log.info("migrated.image_model_already_selected", model=current, requested=model.value)
              return
          await button.click(timeout=4000)
-@@ -1943,7 +1987,15 @@
+@@ -1937,13 +1981,22 @@
+             await page.keyboard.press("Escape")
+             raise ConfigurationError(
+                 detail=(
+-                    f"image model '{model.value}' matched {len(hits)} entries on the migrated "
++                    ("expected_model_not_offered: " if not hits else "")
++                    + f"image model '{model.value}' matched {len(hits)} entries on the migrated "
+                     f"host; offered: {', '.join(offered)}"
+                 ),
                  remediation_hint="Choose one offered image model or omit --model.",
              )
          await items.nth(hits[0]).click(timeout=4000)
@@ -168,7 +185,7 @@
  
      # --- start frame (i2v) ------------------------------------------------------
  
-@@ -2014,15 +2066,28 @@
+@@ -2014,15 +2067,28 @@
          route = f"batchexecute:{UPLOAD_RPC}"
  
          async def on_response(response: Any) -> None:
@@ -197,7 +214,7 @@
                      from gflow_cli.data.redaction import redact_error_detail
                      reply.set_exception(UploadResponseUnavailableError(
                          detail=f"upload_response_read_failed: HTTP 200 rpc={UPLOAD_RPC} {type(exc).__name__}: "
-@@ -2043,6 +2108,10 @@
+@@ -2043,6 +2109,10 @@
              if "batchexecute" in url and _rpcid(url) == UPLOAD_RPC:
                  sent = True
  
@@ -208,7 +225,7 @@
          page.on("response", on_response)
          page.on("request", on_request)
          try:
-@@ -2102,14 +2171,18 @@
+@@ -2102,14 +2172,18 @@
              # ours to choose, so uniqueness needs no copy on disk (and leaves no temp file
              # to leak). `read_bytes` is off-thread for the same reason the header read in
              # `client.py` is — the file is up to MAX_IMAGE_BYTES.
@@ -228,7 +245,7 @@
                  }
              )
              try:
-@@ -2210,6 +2283,7 @@
+@@ -2210,6 +2284,7 @@
              log.info("migrated.frame_uploaded", media_id=media_id, status=status)
              return media_id, display_name
          finally:
@@ -236,7 +253,7 @@
              page.remove_listener("response", on_response)
              page.remove_listener("request", on_request)
  
-@@ -2869,10 +2943,11 @@
+@@ -2869,10 +2944,11 @@
              def request_event(event):
                  def record(request):
                      if request in forwarded or workflow and any(v in _post_data(request) for v in workflow.values()):
@@ -249,7 +266,7 @@
                      (page,'requestfinished',request_event('request_finished')),
                      (page,'requestfailed',request_event('request_failed'))]:
                  emitter.on(event,callback)
-@@ -3106,6 +3181,10 @@
+@@ -3106,6 +3182,10 @@
          # Generate. A deterministic DOM failure therefore cannot spend a request or
          # enter the transport retry loop.
          submit = await self._pre_submit_gate(page)
@@ -260,7 +277,7 @@
          loop = asyncio.get_running_loop()
          result: asyncio.Future[list[GeneratedImage]] = loop.create_future()
          route_error: asyncio.Future[WireFormatError] = loop.create_future()
-@@ -3121,6 +3200,7 @@
+@@ -3121,6 +3201,7 @@
                  )
  
          async def on_response(response: Any) -> None:
@@ -268,7 +285,7 @@
              url = str(getattr(response, "url", ""))
              if _rpcid(url) != IMAGE_SUBMIT_RPC or result.done():
                  return
-@@ -3134,8 +3214,18 @@
+@@ -3134,8 +3215,18 @@
                      )
                  )
                  return
@@ -287,7 +304,7 @@
                  refusal = _submit_refusal(text, (IMAGE_SUBMIT_RPC,))
                  if refusal is not None:
                      raise refusal
-@@ -3158,6 +3248,8 @@
+@@ -3158,6 +3249,8 @@
                          detail="migrated image submit returned no ogiZ0b frame",
                          route=f"batchexecute:{IMAGE_SUBMIT_RPC}",
                      )
@@ -296,7 +313,7 @@
                  images = [
                      GeneratedImage(
                          media_name=record.media_id,
-@@ -3179,6 +3271,10 @@
+@@ -3179,6 +3272,10 @@
                      for record in records
                  ]
              except Exception as exc:  # noqa: BLE001 - delivered through the waiting future
@@ -307,7 +324,7 @@
                  result.set_exception(exc)
                  return
              result.set_result(images)
-@@ -3187,7 +3283,7 @@
+@@ -3187,7 +3284,7 @@
              return _rpcid(url) == IMAGE_SUBMIT_RPC
  
          async def guard(route: Any, raw_request: Any) -> None:
@@ -316,7 +333,7 @@
              log.info(
                  "migrated.image_submit_guarded",
                  outcome="aborted" if problem else "passed",
-@@ -3198,11 +3294,17 @@
+@@ -3198,11 +3295,17 @@
                      WireFormatError(detail=problem, route=f"batchexecute:{IMAGE_SUBMIT_RPC}")
                  )
  
@@ -336,7 +353,7 @@
              enable_deadline = time.monotonic() + SUBMIT_ENABLE_BUDGET_S
              while not await submit.is_enabled():
                  if time.monotonic() >= enable_deadline:
-@@ -3235,13 +3337,15 @@
+@@ -3235,13 +3338,15 @@
              # reported a different, correct error. Not a no-op — do not delete.
              if result.done() and not result.cancelled():
                  result.exception()

@@ -12,6 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from state_zero_models import FLOW_VIDEO_LABEL, FLOW_IMAGE_ALIAS, FLOW_IMAGE_ENUM, FLOW_IMAGE_LABEL, FLOW_IMAGE_WIRE, FLOW_VIDEO_ALIAS, FLOW_VIDEO_RESULT, FLOW_VIDEO_WIRE, GOOGLE_IMAGE_MODEL, GOOGLE_VIDEO_MODEL
 
 from PIL import Image
 
@@ -53,8 +54,8 @@ class FlowMediaClient:
         return {name: os.getenv(name, default) for name, default in (
             ('GFLOW_PROFILE', 'shadow'), ('FLOW_PREFLIGHT_PROJECT_ID', ''),
             ('FLOW_IMAGE_UPSCALE_2K', 'false'), ('FLOW_VIDEO_UPSCALE_1080P', 'true'),
-            ('GOOGLE_IMAGE_MODEL', 'gemini-nano-banana-2.1'),
-            ('GOOGLE_VIDEO_MODEL', 'veo-3.1-fast-generate-preview'))}
+            ('GOOGLE_IMAGE_MODEL', GOOGLE_IMAGE_MODEL),
+            ('GOOGLE_VIDEO_MODEL', GOOGLE_VIDEO_MODEL))}
 
     @staticmethod
     def _input_names(directory: Path) -> list[str]:
@@ -246,7 +247,7 @@ class FlowMediaClient:
         diagnostics = output.with_name(f"flow_{stage}_diagnostics.json")
         identity = {"request": request, "profile": self.profile,
                     "project": os.getenv("FLOW_PREFLIGHT_PROJECT_ID", ""),
-                    "settings": "Nano Banana 2.1/3:4/x1" if stage == "image" else "veo-fast/i2v/9:16/x1/8s"}
+                    "settings": f"{FLOW_IMAGE_LABEL}/3:4/x1" if stage == "image" else f"{FLOW_VIDEO_ALIAS}/i2v/9:16/x1/8s"}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         with output.with_name(".flow-generation.lock").open("a") as lock:
             os.chmod(lock.name, 0o600)
@@ -318,13 +319,13 @@ class FlowMediaClient:
                 if blocked and (not isinstance(evidence.get('reason'), str) or not evidence['reason']):
                     raise invalid
                 if stage == 'image' and evidence['state'] == 'forwarded' and (
-                        evidence.get('expected_model') != 'NARWHAL' or evidence.get('actual_model') != 'BELUGA' or
-                        evidence.get('selected_model') != 'Nano Banana 2.1'):
+                        evidence.get('expected_model') != FLOW_IMAGE_ENUM or evidence.get('actual_model') != FLOW_IMAGE_WIRE or
+                        evidence.get('selected_model') != FLOW_IMAGE_LABEL):
                     raise invalid
                 if stage == 'video' and raw != 'submit_attempted\n':
                     from flow_readback import identity_hash
                     context=json.loads(marker.with_suffix('.context.json').read_text())
-                    if (evidence.get('actual_model') != 'veo_3_1_i2v_s_fast_portrait'
+                    if (evidence.get('actual_model') != FLOW_VIDEO_WIRE
                             or evidence.get('readback_hash') != identity_hash(context)):
                         raise invalid
             except (OSError, ValueError, AttributeError, KeyError, TypeError):
@@ -770,12 +771,12 @@ class FlowMediaClient:
             marker = json.loads(diagnostics.with_name(f'flow_image_attempt_{attempt["number"]}.submit').read_text())
             if (result['request_hash'] != saved['request_hash'] or result['profile'] != self.profile or
                     result['project_id'] != os.getenv('FLOW_PREFLIGHT_PROJECT_ID', '') or
-                    result['count'] != 1 or result['model'] != 'NARWHAL' or len(result['images']) != 1 or
+                    result['count'] != 1 or result['model'] != FLOW_IMAGE_ENUM or len(result['images']) != 1 or
                     not result['images'][0]['media_name'] or
-                    result['images'][0]['model_name_type'] not in (None, 'BELUGA') or
+                    result['images'][0]['model_name_type'] not in (None, FLOW_IMAGE_WIRE) or
                     result['images'][0]['aspect_ratio'] != 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR' or
-                    marker.get('state') != 'forwarded' or marker.get('actual_model') != 'BELUGA' or
-                    marker.get('expected_model') != 'NARWHAL' or marker.get('selected_model') != 'Nano Banana 2.1'):
+                    marker.get('state') != 'forwarded' or marker.get('actual_model') != FLOW_IMAGE_WIRE or
+                    marker.get('expected_model') != FLOW_IMAGE_ENUM or marker.get('selected_model') != FLOW_IMAGE_LABEL):
                 raise ValueError('Receipt identity differs')
             return result
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -795,7 +796,7 @@ class FlowMediaClient:
                     or result['project_id'] != os.getenv('FLOW_PREFLIGHT_PROJECT_ID','')
                     or not re.fullmatch(r'[0-9a-f-]{36}',result['media_id']) or not re.fullmatch(r'[0-9a-f-]{36}',result['workflow_id'])
                     or result.get('succeeded') is not True
-                    or result['request'] != {'count':1,'model':'veo_3_1_fast','mode':'i2v','aspect':'portrait'}
+                    or result['request'] != {'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'}
                     or marker['state'] != 'forwarded' or marker['readback_hash'] != identity_hash(context)):
                 raise ValueError('Video receipt identity differs')
             return result
@@ -823,7 +824,7 @@ class FlowMediaClient:
     def image_command(self, prompt_json: dict, raw_path: Path) -> list[str]:
         command = [
             "gflow", "image", "t2i", GoogleImageClient._build_prompt_from_json(prompt_json),
-            "--model", "nano2", "--aspect", "3:4", "--count", "1",
+            "--model", FLOW_IMAGE_ALIAS, "--aspect", "3:4", "--count", "1",
             "--output", str(raw_path), "--profile", self.profile, "--json",
         ]
         if project_id := os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip():
@@ -833,7 +834,7 @@ class FlowMediaClient:
     def video_command(self, prompt: str, start_frame: Path, raw_path: Path) -> list[str]:
         command = [
             "gflow", "video", "i2v", "--initial-frame", str(start_frame), prompt,
-            "--model", "veo-fast", "--aspect", "9:16", "--count", "1",
+            "--model", FLOW_VIDEO_ALIAS, "--aspect", "9:16", "--count", "1",
         ]
         if project_id := os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip():
             command.extend(("--project", project_id))
@@ -910,6 +911,14 @@ class FlowMediaClient:
                 except (ValueError, OSError):
                     pass
             detail = str(error.get("detail") or "")
+            if (error_class == 'ConfigurationError' and not clicked
+                    and detail.startswith('expected_model_not_offered:')):
+                expected = FLOW_IMAGE_LABEL if command[1] == 'image' else FLOW_VIDEO_LABEL
+                if marker is not None:
+                    client._notify_transition(marker.with_name(f'flow_{command[1]}_diagnostics.json'),
+                        f'FLOW_{command[1].upper()}_MODEL_CHANGED',
+                        f'Flow model changed ({expected} not found) — update the model setting')
+
             if verdicts:
                 detail += ' [provider reason: decoded verdict requires reconciliation]'
             for value in command[2:]:
@@ -1022,7 +1031,7 @@ class FlowMediaClient:
                     "images": [{k: image.get(k) for k in ("local_path", "media_name", "model_name_type")} for image in payload.get("images", [])]}})
             except FlowCommandError as exc:
                 if exc.category == "post_submit_error" and exc.media_id:
-                    self._write_diagnostics(diagnostics, {"result": {"count": 1, "model": "NARWHAL",
+                    self._write_diagnostics(diagnostics, {"result": {"count": 1, "model": FLOW_IMAGE_ENUM,
                         "project_id": os.getenv("FLOW_PREFLIGHT_PROJECT_ID", ""),
                         "images": [{"local_path": None, "media_name": exc.media_id, "model_name_type": None}]}})
                 raise
@@ -1036,11 +1045,11 @@ class FlowMediaClient:
         except (OSError, ValueError):
             submission = {}
         beluga_confirmed = (submission.get("state") == "forwarded" and
-                            submission.get("expected_model") == "NARWHAL" and
-                            submission.get("actual_model") == "BELUGA" and
-                            submission.get("selected_model") == "Nano Banana 2.1")
-        if (payload.get("model") != "NARWHAL" or
-                wire_model not in (None, "BELUGA") or
+                            submission.get("expected_model") == FLOW_IMAGE_ENUM and
+                            submission.get("actual_model") == FLOW_IMAGE_WIRE and
+                            submission.get("selected_model") == FLOW_IMAGE_LABEL)
+        if (payload.get("model") != FLOW_IMAGE_ENUM or
+                wire_model not in (None, FLOW_IMAGE_WIRE) or
                 not beluga_confirmed):
             raise FlowCommandError('image', 'provider_rejected', detail='Flow image MODEL differs from requested settings')
         try:
@@ -1092,7 +1101,7 @@ class FlowMediaClient:
             self._write_diagnostics(output_path.with_name("flow_image_diagnostics.json"), {
                 "provider": "flow", "started_at": started_at,
                 "ended_at": datetime.now(timezone.utc).isoformat(),
-                "model": "Nano Banana 2.1", "selected_model": submission.get("selected_model"), "wire_model": submission.get("actual_model"), "response_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
+                "model": FLOW_IMAGE_LABEL, "selected_model": submission.get("selected_model"), "wire_model": submission.get("actual_model"), "response_model": wire_model, "model_attribution_confirmed": beluga_confirmed,
                 "aspect": "3:4", "source_width": width,
                 "source_height": height, "flow_2k_upscaled": upscaled,
                 "media_id": item.get("media_name"), "project_id": payload.get("project_id"),
@@ -1150,7 +1159,7 @@ class FlowMediaClient:
                                    submission_state='attempted') from None
         request = payload.get("request") or {}
         if (not payload.get("succeeded") or request.get("count") != 1 or
-                request.get("model") != "veo_3_1_fast" or request.get("mode") != "i2v" or
+                request.get("model") != FLOW_VIDEO_RESULT or request.get("mode") != "i2v" or
                 request.get("aspect") != "portrait"):
             raise FlowCommandError('video', 'provider_rejected', detail='Flow video MODEL or SETTINGS differ')
         width, height, duration, has_audio = self._validate_original('video', source, saved.get('original_sha256'))
@@ -1205,7 +1214,7 @@ class FlowMediaClient:
             self._write_diagnostics(output_path.with_name("flow_video_diagnostics.json"), {
                 "provider": "flow", "started_at": started_at,
                 "ended_at": datetime.now(timezone.utc).isoformat(),
-                "model": "veo-fast", "aspect": "9:16", "media_id": payload.get("media_id"),
+                "model": FLOW_VIDEO_ALIAS, "aspect": "9:16", "media_id": payload.get("media_id"),
                 "source_width": width, "source_height": height, "duration_seconds": duration,
                 "source_has_audio": has_audio, "locally_scaled_to_1080p": selected == source and width == 720,
                 "upscale_status": upscale_status, "selected_video_file": selected.name,

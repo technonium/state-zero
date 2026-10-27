@@ -30,6 +30,7 @@ def classify_editor(
 
 
 async def inspect_editor(project_id: str, profile: str) -> tuple[str, str | None, str | None]:
+    from state_zero_models import FLOW_IMAGE_ENUM, FLOW_VIDEO_ENUM
     from gflow_cli.api.image import Aspect as ImageAspect, GenerateImageRequest, Model as ImageModel
     from gflow_cli.api.video import Aspect as VideoAspect, GenerateVideoRequest, Mode, VideoModel
     from gflow_cli.browser_manager import channel_for_profile
@@ -87,11 +88,11 @@ async def inspect_editor(project_id: str, profile: str) -> tuple[str, str | None
             checks = (
                 ("image_settings", lambda page: MigratedComposer().apply_image_settings(
                     page, GenerateImageRequest(prompt="preflight only",
-                                               aspect=ImageAspect.PORTRAIT_THREE_FOUR, model=ImageModel.NARWHAL, count=1))),
+                                               aspect=ImageAspect.PORTRAIT_THREE_FOUR, model=getattr(ImageModel, FLOW_IMAGE_ENUM), count=1))),
                 ("video_settings", lambda page: MigratedComposer().apply_video_settings(
                     page, GenerateVideoRequest(prompt="preflight only", mode=Mode.I2V,
                                                aspect=VideoAspect.PORTRAIT,
-                                               model=VideoModel.VEO_3_1_FAST, count=1,
+                                               model=getattr(VideoModel, FLOW_VIDEO_ENUM), count=1,
                                                start_image=Path("/preflight/no-upload.png")))),
             )
             for check_name, check in checks:

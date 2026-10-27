@@ -4,6 +4,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from state_zero_models import GOOGLE_IMAGE_MODEL
 
 import requests
 
@@ -25,7 +26,7 @@ class GoogleImageClient:
         primary = os.getenv("GOOGLE_API_KEY_PRIMARY", "")
         fallback = os.getenv("GOOGLE_API_KEY_FALLBACK", "")
         self.router = GoogleKeyRouter(primary, fallback)
-        self.model = os.getenv("GOOGLE_IMAGE_MODEL", "gemini-nano-banana-2.1")
+        self.model = os.getenv("GOOGLE_IMAGE_MODEL", GOOGLE_IMAGE_MODEL)
 
     @staticmethod
     def _build_prompt_from_json(prompt_json: dict) -> str:

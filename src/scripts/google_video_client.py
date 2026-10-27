@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from state_zero_models import GOOGLE_VIDEO_MODEL
 from urllib.parse import urlparse, urljoin
 
 # Add src/scripts to path to import utils
@@ -30,7 +31,7 @@ class GoogleVideoClient:
         primary = os.getenv("GOOGLE_API_KEY_PRIMARY", "")
         fallback = os.getenv("GOOGLE_API_KEY_FALLBACK", "")
         self.router = GoogleKeyRouter(primary, fallback)
-        self.default_model = os.getenv("GOOGLE_VIDEO_MODEL", "veo-3.1-fast-generate-preview")
+        self.default_model = os.getenv("GOOGLE_VIDEO_MODEL", GOOGLE_VIDEO_MODEL)
         self.timeout_seconds = int(os.getenv("GOOGLE_VIDEO_TIMEOUT_SECONDS", "900"))
         self.poll_seconds = int(os.getenv("GOOGLE_VIDEO_POLL_SECONDS", "10"))
 

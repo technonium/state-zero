@@ -406,15 +406,21 @@ class NanoBanana21SelectionTests(unittest.TestCase):
 class NanoBanana21ReadbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_missing_model_fails_before_submit(self):
         from gflow_cli.api.image import Model
+        from gflow_cli.api.video import VideoModel
         from gflow_cli.exceptions import ConfigurationError
-        button = MagicMock(wait_for=AsyncMock(), text_content=AsyncMock(return_value='Nano Banana 2'), click=AsyncMock())
-        pane = MagicMock(); pane.locator.return_value.filter.return_value.first = button
-        items = MagicMock(all_text_contents=AsyncMock(return_value=['Nano Banana 2', 'Nano Banana 2 Lite']))
-        items.first.wait_for = AsyncMock()
-        page = MagicMock(); page.locator.return_value = items; page.keyboard.press = AsyncMock()
-        with self.assertRaises(ConfigurationError):
-            await MigratedComposer()._select_image_model(page, pane, Model.NARWHAL)
-        items.nth.assert_not_called()
+        for method, model, offered in (
+                ('_select_image_model', Model.NARWHAL, ['Nano Banana 2', 'Nano Banana 2 Lite']),
+                ('_select_model', VideoModel.VEO_3_1_FAST, ['Veo 3.1 - Lite'])):
+            with self.subTest(method=method):
+                button = MagicMock(wait_for=AsyncMock(), text_content=AsyncMock(return_value='Other'), click=AsyncMock())
+                pane = MagicMock(); pane.locator.return_value.filter.return_value.first = button
+                items = MagicMock(all_text_contents=AsyncMock(return_value=offered))
+                items.first.wait_for = AsyncMock()
+                page = MagicMock(); page.locator.return_value = items; page.keyboard.press = AsyncMock()
+                with self.assertRaises(ConfigurationError) as error:
+                    await getattr(MigratedComposer(), method)(page, pane, model)
+                self.assertIn('expected_model_not_offered:', str(error.exception))
+                items.nth.assert_not_called()
 
     async def test_failed_readback_is_rejected(self):
         from gflow_cli.api.image import Model
