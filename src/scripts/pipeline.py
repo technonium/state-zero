@@ -689,13 +689,16 @@ class WHOOPPipeline:
             warning_details = f"{details_tail}\n\n{cleanup_tail}" if details_tail else cleanup_tail
 
         notifier = get_notifier()
-        notifier.notify_warning(
+        self.daily_run.notify_once(notifier_step, lambda: notifier.notify_warning(
             run_date=self.run_date,
             step=notifier_step,
             message=notifier_message,
             details_tail=warning_details,
-        )
+        ))
         if retry_cleanup_notes:
+            self.daily_run.notify_once('RETRY_CLEANUP_REQUIRED', lambda: safe_notify_status(
+                self.run_date, 'RETRY_CLEANUP_REQUIRED',
+                'Retry state or ownership cleanup failed; reconciliation may be required. Diagnostics retained privately.'))
             print(f"{Fore.YELLOW}⚠ {' | '.join(retry_cleanup_notes)}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}⚠ {retry_message}{Style.RESET_ALL}")
         raise SystemExit(0)
@@ -753,22 +756,10 @@ class WHOOPPipeline:
             cleanup_tail = '\n'.join(retry_cleanup_notes)
             warning_details = f"{exc.details}\n\n{cleanup_tail}" if exc.details else cleanup_tail
 
-        if frozen_flow:
-            from flow_media_client import FlowMediaClient
-            diagnostic = self.output_dir / ('flow_video_diagnostics.json' if
-                (self.output_dir / 'flow_video_diagnostics.json').exists() else 'flow_image_diagnostics.json')
-            if diagnostic.exists():
-                signature = hashlib.sha256((exc.stage + exc.message).encode()).hexdigest()[:12]
-                FlowMediaClient()._notify_transition(diagnostic, f'SAVED_RUN_PENDING_{signature}', retry_message)
-            else:
-                safe_notify_status(self.run_date, 'SAVED_RUN_PENDING', retry_message)
-        else:
-            try:
-                get_notifier().notify_warning(run_date=self.run_date, step=exc.stage,
-                    message=f'{exc.message} Next retry ~{next_slot}.', details_tail=warning_details)
-            except Exception:
-                print('Retry notification unavailable; saved run remains intact.')
         if retry_cleanup_notes:
+            self.daily_run.notify_once('RETRY_CLEANUP_REQUIRED', lambda: safe_notify_status(
+                self.run_date, 'RETRY_CLEANUP_REQUIRED',
+                'Retry state or ownership cleanup failed; reconciliation may be required. Diagnostics retained privately.'))
             print(f"{Fore.YELLOW}⚠ {' | '.join(retry_cleanup_notes)}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}⚠ {retry_message}{Style.RESET_ALL}")
         raise SystemExit(0)
@@ -1011,11 +1002,7 @@ class WHOOPPipeline:
         if exc.fallback_eligible and self.post_to_instagram and not self.in_emergency_fallback:
             if self._is_terminal_rescue_run():
                 if exc.emergency_fallback_allowed and env_bool('EMERGENCY_FALLBACK_ENABLED', default=False):
-                    try:
-                        get_notifier().notify_warning(run_date=self.run_date, step=exc.stage,
-                            message=f'{exc.message} Emergency fallback will be attempted.', details_tail=exc.details)
-                    except Exception:
-                        print('Emergency notification unavailable; continuing rescue.')
+                    print(f'Emergency fallback will be attempted after {exc.stage}: {exc.message}')
                     if self._run_emergency_fallback(exc.stage, exc.message):
                         print(f"{Fore.GREEN}🎉 Pipeline completed via emergency post fallback! 🎉{Style.RESET_ALL}")
                         return True
@@ -2352,13 +2339,6 @@ class WHOOPPipeline:
         )
         
         self._mark_session(session, 'AUTO_FALLBACK_RUNNING', 'Manual deadline reached before both assets were received.')
-        # Use safe wrapper - deadline fallback cannot be blocked by Telegram API errors
-        safe_send_telegram_message(
-            f"Manual deadline reached for {self.run_date}. Running automatic image+video generation now.",
-            run_date=self.run_date,
-            context=' (deadline fallback)'
-        )
-
         art_path, video_path = self._manual_fallback_media(image_json, session)
         self._mark_session(session, 'COMPLETED', 'Completed via automatic fallback.')
         return art_path, video_path

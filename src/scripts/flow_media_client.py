@@ -103,12 +103,20 @@ class FlowMediaClient:
 
     def _notify_transition(self, diagnostics: Path, status: str, message: str) -> None:
         saved = FlowMediaClient._read_diagnostics(diagnostics)
-        if saved.get('last_notification') == status:
+        events = saved.get('notification_events', {})
+        if not isinstance(events, dict):
+            events = {}
+        if status in events or saved.get('last_notification') == status:
             return
+        internal = status.startswith(('SAVED_RUN_PENDING', 'FLOW_IMAGE_RECOVER', 'FLOW_VIDEO_RECOVER')) or status in {
+            f'FLOW_{stage}_{suffix}' for stage in ('IMAGE', 'VIDEO')
+            for suffix in ('REPLACEMENT', 'API_COMPLETE', 'IDENTIFIED_NOT_RETRIEVED')}
+        print(f'{status}: {message}')
         from notifier import safe_notify_status
         from utils import get_pipeline_run_date_str
-        if safe_notify_status(get_pipeline_run_date_str(), status, message):
-            self._write_diagnostics(diagnostics, {'last_notification': status})
+        if internal or safe_notify_status(get_pipeline_run_date_str(), status, message):
+            events[status] = {'channel': 'log' if internal else 'telegram', 'at': time.time()}
+            self._write_diagnostics(diagnostics, {'notification_events': events})
 
     @staticmethod
     def _check_browser_ownership(diagnostics: Path, stage: str) -> None:
@@ -476,7 +484,7 @@ class FlowMediaClient:
             self._write_diagnostics(diagnostics, {'api_reserved': True,
                 'fallback_reason': 'unresolved_at_noon' if unresolved else error.category if error else 'generation_window'})
             self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_API_FALLBACK',
-                                    f'Flow {stage}: using paid Google API fallback with saved inputs.')
+                                    f'Paid Google MEDIA API {stage} request reserved; dispatch follows. Provider acceptance/charge is not yet confirmed.')
             client = GoogleImageClient() if stage == 'image' else GoogleVideoClient()
             client.router.retry_ambiguous_calls = False
             client.generation_deadline = time.time() + max(0, self._generation_seconds())

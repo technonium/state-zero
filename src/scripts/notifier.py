@@ -11,6 +11,7 @@ and success notifications through Telegram. It includes:
 
 import hashlib
 import html
+import json
 import logging
 import os
 import sys
@@ -22,7 +23,7 @@ from typing import Optional
 
 import requests
 from zoneinfo import ZoneInfo
-from utils import load_project_dotenv, sanitize_error
+from utils import get_state_root, load_project_dotenv, sanitize_error
 
 _TEST_MODE = os.getenv('STATE_ZERO_TEST_MODE') == '1'
 
@@ -260,8 +261,10 @@ class Notifier:
         Returns:
             bool: True if notification sent successfully
         """
-        # Warnings are not deduplicated (they're important for debugging)
         if not self.notify_errors:
+            return False
+        dedupe_key = None if step.startswith('Manual') else self._make_dedupe_key(f'{run_date}:{step}', 'warning', message)
+        if dedupe_key and not self._should_send(dedupe_key):
             return False
         
         timestamp = datetime.now(self.timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
@@ -279,7 +282,65 @@ class Notifier:
 
         text += f"\n<i>{self._escape_html(timestamp)}</i>"
 
-        return self._send_message(text, parse_mode='HTML')
+        sent = self._send_message(text, parse_mode='HTML')
+        if not sent and dedupe_key:
+            with self._notification_lock:
+                self._last_notification.pop(dedupe_key, None)
+        return sent
+
+    @staticmethod
+    def _post_summary(run_date: str, output_dir: Path, fallback_version: str | None = None) -> str:
+        def read(path):
+            try:
+                value = json.loads(path.read_text())
+                return value if isinstance(value, dict) else {}
+            except (OSError, ValueError):
+                return {}
+
+        state = read(get_state_root() / 'daily_runs' / f'{run_date}.json')
+        try:
+            seconds = int((datetime.fromisoformat(state['posted_at']) -
+                           datetime.fromisoformat(state['claimed_at'])).total_seconds())
+            if seconds < 0:
+                raise ValueError('Post predates claim')
+            duration = f'{seconds // 60}m{seconds % 60:02d}s since claim'
+        except (KeyError, TypeError, ValueError):
+            duration = 'duration unavailable'
+        providers, recovered, replacements, paid = [], [], 0, []
+        for stage in ('image', 'video'):
+            path = output_dir / f'flow_{stage}_diagnostics.json'
+            saved = read(path)
+            api = read(output_dir / f'google_{stage}_diagnostics.json')
+            provider = saved.get('provider') or ('google_api' if api.get('selected_sha256') else None)
+            providers.append({'flow': 'Flow', 'google_api': 'Google MEDIA API'}.get(provider, 'unavailable'))
+            if provider == 'google_api':
+                paid.append(f'{stage} used')
+            elif saved.get('api_reserved') or api.get('logical_attempt'):
+                paid.append(f'{stage} requested; acceptance/charge unconfirmed')
+            if saved:
+                try:
+                    from flow_media_client import FlowMediaClient
+                    attempts = FlowMediaClient._daily_attempts(stage, path)
+                    if replacements is not None:
+                        replacements += max(0, sum(a['submission'] not in {
+                            'not_attempted', 'blocked_before_submission'} for a in attempts) - 1)
+                except Exception:
+                    replacements = None
+                if any('_RECOVERED_' in event for event in saved.get('notification_events', {})):
+                    recovered.append(f'exact {stage} recovered')
+                elif any(a.get('invocations') for a in (saved.get('recovery_workers') or {}).get('attempts', {}).values()):
+                    recovered.append(f'{stage} recovery workers used')
+        if any(read(path).get('state') == 'recovered' for path in output_dir.glob('flow_*_attempt_*.upload.json')):
+            recovered.append('exact upload recovered')
+        provider = (f'Emergency/404 {fallback_version}' if fallback_version else
+                    'Manual' if read(output_dir / 'instagram_publish_diagnostics.json').get('publish_context', {}).get('asset_source') == 'manual_telegram' else
+                    providers[0] if len(set(providers)) == 1 else f'image {providers[0]} / video {providers[1]}')
+        parts = [provider, duration, ', '.join(recovered) or 'no recovery recorded',
+                 f'replacements {replacements if replacements is not None else "unavailable"}',
+                 'MEDIA API: ' + (', '.join(paid) if paid else 'none recorded')]
+        if fallback_version:
+            parts.append('trigger: ' + str(state.get('fallback_trigger_stage') or 'unavailable'))
+        return ' · '.join(parts)
     
     def notify_status(
         self,
@@ -399,6 +460,11 @@ class Notifier:
         text += f"<b>Date:</b> {run_date_escaped}\n"
         if version_label:
             text += f"<b>Version:</b> {self._escape_html(version_label)}\n"
+        try:
+            summary = self._post_summary(run_date, Path(final_mp4_path).parent, version_label)
+        except Exception:
+            summary = 'Provider/duration/recovery summary unavailable; diagnostics retained privately.'
+        text += self._escape_html(summary) + '\n'
         if permalink.startswith(("http://", "https://")):
             href = self._escape_html(permalink)
             text += f"<b>Link:</b> <a href=\"{href}\">{href}</a>\n"
@@ -410,47 +476,11 @@ class Notifier:
         return doc_sent and msg_sent
     
     def notify_dry_run_complete(self, run_date: str, mode: str = 'automatic', output_dir: Path = None) -> bool:
-        """
-        Send notification that dry run completed (no actual post).
-        
-        Args:
-            run_date: The pipeline run date
-            mode: The pipeline mode (automatic or telegram)
-            output_dir: Path to output directory with local artifacts
-        
-        Returns:
-            bool: True if notification sent successfully
-        """
-        if not self.notify_success:
-            return False
-        
-        timestamp = datetime.now(self.timezone).strftime('%Y-%m-%d %H:%M:%S %Z')
-        run_date_escaped = self._escape_html(run_date)
-        mode_escaped = self._escape_html(mode)
-        
-        text = f"ℹ️ <b>DRY RUN COMPLETE</b> | {run_date_escaped}\n"
-        text += f"Mode: {mode_escaped}\n"
-        text += "No Instagram post was made (dry-run mode).\n"
-        
-        if output_dir:
-            output_path = Path(output_dir)
-            if output_path.exists():
-                # List local output files
-                png_file = output_path / 'card_final.png'
-                mp4_file = output_path / 'card_final.mp4'
-                
-                text += "\n*Local outputs:*\n"
-                if png_file.exists():
-                    text += f"- card_final.png\n"
-                if mp4_file.exists():
-                    text += f"- card_final.mp4\n"
-        
-        text += f"\n<i>{self._escape_html(timestamp)}</i>"
-        
-        return self._send_message(text, parse_mode='HTML')
+        LOCAL_LOG.info("Dry run complete: %s (%s); no Instagram post was made. Outputs: %s",
+                       run_date, mode, output_dir)
+        return False
 
 
-# Global singleton accessor
 def get_notifier() -> Notifier:
     """Get the global notifier instance."""
     return Notifier()

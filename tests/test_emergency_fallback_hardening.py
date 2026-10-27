@@ -43,6 +43,11 @@ class _TrackingDailyRun(_FakeDailyRun):
         self.retryable_calls = []
         self.fatal_calls = []
         self.release_calls = 0
+        self.alerts = set()
+
+    def notify_once(self, transition, notify):
+        if transition not in self.alerts and notify():
+            self.alerts.add(transition)
 
     def is_owner(self):
         return True
@@ -576,7 +581,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 0)
         self.assertEqual(pipeline.daily_run.release_calls, 1)
         self.assertEqual(pipeline.daily_run.retryable_calls[0]["failure_classification"], "generation")
-        self.assertIn("Next retry ~", notifications[0]["message"])
+        self.assertEqual(notifications, [])
 
     def test_validation_fallback_unavailable_fails_fatally_before_cutoff(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
@@ -622,7 +627,7 @@ class EmergencyFallbackHardeningTests(unittest.TestCase):
 
         self.assertTrue(success)
         self.assertEqual(len(pipeline.daily_run.retryable_calls), 0)
-        self.assertEqual(notifier_calls[0]["step"], "Image Generation")
+        self.assertEqual(notifier_calls, [])  # Activation is sent inside the real emergency path.
 
     def test_caption_build_failure_is_fallback_eligible(self):
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
