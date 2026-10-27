@@ -357,6 +357,29 @@ class WHOOPTokenRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sleep_calls, [])
             self.assertGreater(manager.token_expires_at, datetime.now() + timedelta(minutes=50))
 
+    async def test_rotated_token_save_failure_is_shared_fatal_without_retry_or_success(self):
+        from whoop_token_manager import WhoopTokenPersistenceError
+        for failure in ('write', 'rename'):
+            with tempfile.TemporaryDirectory() as tmpdir, self.subTest(failure=failure):
+                manager = self._build_manager(tmpdir)
+                fake = _BlockingFakeHTTPClient([_FakeResponse(200, json_payload={
+                    'access_token':'rotated-access','refresh_token':'rotated-refresh','expires_in':3600})])
+                operation = 'whoop_token_manager.json.dump' if failure == 'write' else 'whoop_token_manager.os.replace'
+                with patch('whoop_token_manager.httpx.AsyncClient',return_value=fake), \
+                        patch(operation,side_effect=OSError('storage failed')), \
+                        patch.dict(os.environ,{'WHOOP_ACCESS_TOKEN':'stale-access','WHOOP_REFRESH_TOKEN':'good-refresh'}):
+                    first=asyncio.create_task(manager._refresh_token())
+                    await fake.started.wait()
+                    second=asyncio.create_task(manager._refresh_token())
+                    await asyncio.sleep(0)
+                    fake.release.set()
+                    results=await asyncio.gather(first,second,return_exceptions=True)
+                    self.assertTrue(all(isinstance(result,WhoopTokenPersistenceError) for result in results))
+                    self.assertEqual(len(fake.calls),1)
+                    self.assertEqual(manager.access_token,'stale-access')
+                    self.assertEqual(os.environ['WHOOP_ACCESS_TOKEN'],'stale-access')
+                    self.assertNotIn('success', manager.last_refresh_attempt_result or '')
+
 
 async def _noop_async_sleep(_seconds):
     return None

@@ -20,6 +20,10 @@ class WhoopReauthRequired(Exception):
     pass
 
 
+class WhoopTokenPersistenceError(RuntimeError):
+    """Rotated credentials could not be saved; stop before further external work."""
+
+
 class _RefreshAttempt:
     """Outcome shared by callers that overlap the same refresh attempt."""
 
@@ -123,6 +127,8 @@ class WHOOPTokenManager:
             # leader is awaiting HTTP, so wait in the default worker pool.
             await asyncio.to_thread(attempt.done.wait)
             if attempt.error_type is not None:
+                if issubclass(attempt.error_type, WhoopTokenPersistenceError):
+                    raise WhoopTokenPersistenceError(attempt.error_message)
                 if issubclass(attempt.error_type, WhoopReauthRequired):
                     raise WhoopReauthRequired(attempt.error_message)
                 if issubclass(attempt.error_type, RuntimeError):
@@ -234,17 +240,25 @@ class WHOOPTokenManager:
                     if expires_in <= 0:
                         raise ValueError("WHOOP token response has invalid expires_in")
 
-                    # Apply the rotated credentials only after the complete response
-                    # has passed validation, so a malformed 200 cannot corrupt state.
-                    self.access_token = access_token.strip()
-                    self.refresh_token = refresh_token.strip()
-                    self.token_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                    now = datetime.now()
+                    expires_at = now + timedelta(seconds=expires_in)
+                    self._save_token_state({
+                        'access_token': access_token.strip(), 'refresh_token': refresh_token.strip(),
+                        'access_token_prefix': access_token.strip()[:20] + '...',
+                        'refresh_token_prefix': refresh_token.strip()[:20] + '...',
+                        'token_expires_at': expires_at.isoformat(),
+                        'last_refresh_at': now.isoformat(), 'last_refresh_attempt_at': now.isoformat(),
+                        'last_refresh_attempt_result': f'success: expires_in={expires_in}',
+                    })
+                    self.access_token, self.refresh_token = access_token.strip(), refresh_token.strip()
+                    self.token_expires_at = expires_at
+                    self.last_refresh_at = self.last_refresh_attempt_at = now
+                    self.last_refresh_attempt_result = f'success: expires_in={expires_in}'
                     os.environ["WHOOP_ACCESS_TOKEN"] = self.access_token
                     os.environ["WHOOP_REFRESH_TOKEN"] = self.refresh_token
-                    self._record_refresh_attempt(True, f"expires_in={expires_in}")
                     logger.info(f"✅ Token refreshed, expires {self.token_expires_at}")
                     return True
-                except WhoopReauthRequired:
+                except (WhoopReauthRequired, WhoopTokenPersistenceError):
                     raise
                 except Exception as e:
                     last_failure_note = f"WHOOP token refresh error: {e}"
@@ -256,7 +270,7 @@ class WHOOPTokenManager:
         except WhoopReauthRequired:
             raise
 
-    def _save_token_state(self):
+    def _save_token_state(self, rotated_state=None):
         """Save token state to JSON file in private runtime storage."""
         tmp_path = None
         try:
@@ -270,6 +284,8 @@ class WHOOPTokenManager:
                 'last_refresh_attempt_at': self.last_refresh_attempt_at.isoformat() if self.last_refresh_attempt_at else None,
                 'last_refresh_attempt_result': self.last_refresh_attempt_result,
             }
+            if rotated_state is not None:
+                state = rotated_state
             self.state_file.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(
                 'w',
@@ -277,16 +293,16 @@ class WHOOPTokenManager:
                 dir=self.state_file.parent,
                 delete=False,
             ) as f:
+                tmp_path = f.name
                 os.chmod(f.name, 0o600)
                 json.dump(state, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-                tmp_path = f.name
             os.replace(tmp_path, self.state_file)
             os.chmod(self.state_file, 0o600)
             logger.info(f"WHOOP token state saved to {self.state_file}")
         except Exception as e:
-            logger.error(f"Failed to save WHOOP token state: {e}")
+            raise WhoopTokenPersistenceError("WHOOP token state could not be saved; human reconciliation required.") from e
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:

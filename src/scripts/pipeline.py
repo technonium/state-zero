@@ -40,6 +40,7 @@ from portfolio_metadata import build_metadata, publish_metadata, media_revision
 from environment_utils import split_environment_output
 from notifier import get_notifier, safe_send_telegram_message, safe_notify_status
 from daily_run_state import DailyRunStateManager, OwnershipLostError
+from whoop_token_manager import WhoopTokenPersistenceError
 from caption_builder import HASHTAGS, build_caption, build_hashtags
 
 load_project_dotenv()
@@ -1300,6 +1301,8 @@ class WHOOPPipeline:
 
         try:
             fresh_snapshot = self._fetch_fresh_whoop_snapshot()
+        except WhoopTokenPersistenceError as e:
+            raise PipelineFatalError(stage='WHOOP Token Persistence', message=str(e)) from e
         except Exception as e:
             payload = {
                 "checkpoint": checkpoint,
@@ -2446,6 +2449,9 @@ class WHOOPPipeline:
         elif result.returncode == 3:
             details_tail = self._build_subprocess_details_tail(result)
             self._handle_retryable_lookup_external_failure(details_tail)
+        elif result.returncode == 5:
+            raise PipelineFatalError(stage="WHOOP Token Persistence",
+                message="Rotated WHOOP token could not be saved; human reconciliation required.")
         elif result.returncode == 4:
             print(f"{Fore.RED}Script Error STDOUT:\n{result.stdout}{Style.RESET_ALL}")
             print(f"{Fore.RED}Script Error STDERR:\n{result.stderr}{Style.RESET_ALL}")

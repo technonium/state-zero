@@ -6,6 +6,8 @@ from pathlib import Path
 import argparse
 import sys
 import asyncio
+import math
+from whoop_token_manager import WhoopTokenPersistenceError
 import logging
 import tempfile
 import httpx
@@ -55,6 +57,7 @@ class RetryableLookupFailure(Exception):
 LOOKUP_EXIT_WHOOP_NOT_READY = 2
 LOOKUP_EXIT_RETRYABLE_EXTERNAL_FAILURE = 3
 LOOKUP_EXIT_TERMINAL_FAILURE = 4
+LOOKUP_EXIT_TOKEN_PERSISTENCE_FAILURE = 5
 
 
 def _write_json_atomic(path: Path, payload: dict):
@@ -531,6 +534,14 @@ def get_whoop_data(target_date: date = None):
         print(f"❌ [WHOOP] Unexpected error: {e}")
         raise
 
+def _scored_percentage(payload: dict, field: str):
+    score = payload.get('score')
+    value = score.get(field) if isinstance(score, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 100:
+        raise WhoopDailyDataNotReady(f'WHOOP {field} is not ready.', reason='score_unavailable')
+    return value
+
+
 async def _fetch_whoop_data(target_date: date = None):
     """Async function to fetch WHOOP data."""
     client = WHOOPClient()
@@ -540,7 +551,7 @@ async def _fetch_whoop_data(target_date: date = None):
 
     # Fetch last night's sleep
     sleep_data = await client.get_last_sleep(target_dt)
-    sleep_score = sleep_data.get("score", {}).get("sleep_performance_percentage", 0)
+    sleep_score = _scored_percentage(sleep_data, 'sleep_performance_percentage')
     sleep_hours = derive_sleep_hours(sleep_data)
 
     # Fetch the completed waking-day cycle immediately before that sleep starts.
@@ -549,7 +560,7 @@ async def _fetch_whoop_data(target_date: date = None):
 
     # Fetch today's recovery
     recovery_data = await client.get_today_recovery(target_dt, sleep_data=sleep_data)
-    recovery_score = recovery_data.get("score", {}).get("recovery_score", 0)
+    recovery_score = _scored_percentage(recovery_data, 'recovery_score')
     public_values = _public_whoop_values(strain, recovery_score, sleep_score, sleep_hours)
     snapshot = build_whoop_snapshot(
         target_date=resolved_date,
@@ -586,6 +597,8 @@ def main():
     print(f"▶ Fetching WHOOP data for {target_date}...")
     try:
         whoop_data = get_whoop_data(target_date)
+    except WhoopTokenPersistenceError:
+        sys.exit(LOOKUP_EXIT_TOKEN_PERSISTENCE_FAILURE)
     except WhoopDailyDataNotReady:
         sys.exit(LOOKUP_EXIT_WHOOP_NOT_READY)
     except RetryableLookupFailure:
