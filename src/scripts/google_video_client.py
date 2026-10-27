@@ -7,6 +7,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse, urljoin
 
 # Add src/scripts to path to import utils
 sys.path.insert(0, str(Path(__file__).parent))
@@ -76,12 +77,25 @@ class GoogleVideoClient:
 
     def _download_video(self, uri: str, api_key: str, output_path: Path):
         headers = {"x-goog-api-key": api_key}
-        resp = requests.get(uri, headers=headers, timeout=self._request_timeout(180))
-        if resp.status_code >= 400:
-            raise GoogleAPIError(resp.status_code, f"Video download failed: {resp.text[:500]}")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, "wb") as f:
-            f.write(resp.content)
+        for hop in range(6):
+            destination = urlparse(uri)
+            if (destination.scheme != 'https' or not (destination.hostname or '').endswith('.googleapis.com')
+                    or destination.username or destination.password or destination.port not in (None, 443)):
+                raise GoogleAPIError(400, 'Rejected video download destination')
+            resp = requests.get(uri, headers=headers, timeout=self._request_timeout(180), allow_redirects=False)
+            try:
+                if resp.status_code in (301, 302, 303, 307, 308):
+                    if hop == 5:
+                        raise GoogleAPIError(400, 'Video download redirect limit exceeded')
+                    uri = urljoin(uri, resp.headers.get('Location', ''))
+                    continue
+                if resp.status_code >= 400:
+                    raise GoogleAPIError(resp.status_code, 'Video download failed')
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(resp.content)
+                return
+            finally:
+                resp.close()
 
     @staticmethod
     def _to_letterboxed_png_bytes(image_path: Path, target_width: int = 1080, target_height: int = 1920) -> tuple[bytes, tuple[int, int]]:
