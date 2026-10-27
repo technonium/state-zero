@@ -18,6 +18,7 @@ database/
 
 # Local Instagram/Figma exports
 IG/
+tmp/
 
 # Python
 __pycache__/

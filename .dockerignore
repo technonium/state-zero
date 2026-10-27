@@ -49,3 +49,4 @@ docs/STATE_ZERO_ORACLE_MIGRATION_PRIVATE.md
 
 # Other-agent handoffs and local scratch evidence are not runtime sources
 tmp/
+IG/

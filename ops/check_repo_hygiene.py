@@ -18,6 +18,7 @@ DISALLOWED_EXACT = {
 }
 
 DISALLOWED_PREFIXES = (
+    "tmp/",
     ".superpowers/",
     "docs/private/",
     ".claude/",
