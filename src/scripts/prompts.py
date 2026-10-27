@@ -1060,9 +1060,11 @@ class PromptOrchestrator:
                 raise
         
         # Fallback to direct Google API (legacy behavior)
+        started = time.monotonic()
+        outcome = "error"
         try:
             print("🔄 Using direct Google Gemini 2.5 Pro")
-            return call_google_gemini_generate_content(
+            result = call_google_gemini_generate_content(
                 prompt=prompt,
                 api_key=self.google_api_key,
                 model=GEMINI_MODEL,
@@ -1071,9 +1073,16 @@ class PromptOrchestrator:
                 thinking_budget=8000,
                 timeout=min(GEMINI_TIMEOUT_SECONDS, self._prompt_seconds_remaining()),
             )
+            outcome = "success"
+            return result
         except LLMProviderError as e:
             print(f"❌ Gemini API Error: {e}")
             raise
+
+        finally:
+            duration = time.monotonic() - started
+            print(f'LLM_CALL total_seconds={duration:.3f} primary_seconds=0.000 '
+                  f'gemini_seconds={duration:.3f} provider=gemini fallback=false outcome={outcome}')
 
     def save_output(self, filename: str, content: str):
         output = self.output_dir / filename

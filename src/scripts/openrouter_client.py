@@ -184,45 +184,64 @@ class OpenRouterClient:
             OpenRouterError: If API call fails
             LLMProviderError: If both primary and fallback fail
         """
-        deadline = int(os.getenv("OPENROUTER_CALL_DEADLINE_SECONDS", "0"))
-        if deadline and threading.current_thread() is not threading.main_thread():
-            raise ValueError("OpenRouter call deadline requires the main thread")
-        def on_deadline(_signum, _frame):
-            raise TimeoutError()
+        started = time.monotonic()
+        fallback_started = None
+        primary_seconds = 0.0
+        provider, outcome = 'none', 'error'
         try:
-            for attempt in range(2 if deadline else 1):
-                if deadline:
-                    call_timeout = self._remaining_timeout(deadline)
-                    previous_handler = signal.getsignal(signal.SIGALRM)
-                    signal.signal(signal.SIGALRM, on_deadline)
-                    signal.setitimer(signal.ITIMER_REAL, call_timeout)
-                try:
-                    try:
-                        return self._call_openrouter(prompt, system_prompt)
-                    except TimeoutError as exc:
-                        raise OpenRouterTimeoutError(f"Call exceeded {deadline} seconds") from exc
-                except OpenRouterTimeoutError:
-                    if not deadline or attempt:
-                        raise
-                    print("⏳ OpenRouter timed out; retrying once...")
-                finally:
+            deadline = int(os.getenv("OPENROUTER_CALL_DEADLINE_SECONDS", "0"))
+            if deadline and threading.current_thread() is not threading.main_thread():
+                raise ValueError("OpenRouter call deadline requires the main thread")
+            def on_deadline(_signum, _frame):
+                raise TimeoutError()
+            try:
+                for attempt in range(2 if deadline else 1):
                     if deadline:
-                        signal.setitimer(signal.ITIMER_REAL, 0)
-                        signal.signal(signal.SIGALRM, previous_handler)
-        except OpenRouterError as e:
-            print(f"⚠️  OpenRouter failed: {e}")
-            if self.fallback_api_key:
-                print("🔄 Attempting fallback to Google Gemini 2.5 Pro...")
-                try:
-                    return self._call_google_gemini(prompt, self.fallback_api_key)
-                except Exception as fallback_error:
-                    print(f"❌ Fallback also failed: {fallback_error}")
-                    raise LLMProviderError(
-                        f"Both OpenRouter and Google Gemini failed. "
-                        f"OpenRouter: {e}, Fallback: {fallback_error}"
-                    ) from fallback_error
-            raise
-    
+                        call_timeout = self._remaining_timeout(deadline)
+                        previous_handler = signal.getsignal(signal.SIGALRM)
+                        signal.signal(signal.SIGALRM, on_deadline)
+                        signal.setitimer(signal.ITIMER_REAL, call_timeout)
+                    try:
+                        try:
+                            result = self._call_openrouter(prompt, system_prompt)
+                            provider, outcome = "openrouter", "success"
+                            return result
+                        except TimeoutError as exc:
+                            raise OpenRouterTimeoutError(f"Call exceeded {deadline} seconds") from exc
+                    except OpenRouterTimeoutError:
+                        if not deadline or attempt:
+                            raise
+                        print("⏳ OpenRouter timed out; retrying once...")
+                    finally:
+                        if deadline:
+                            signal.setitimer(signal.ITIMER_REAL, 0)
+                            signal.signal(signal.SIGALRM, previous_handler)
+            except OpenRouterError as e:
+                print(f"⚠️  OpenRouter failed: {e}")
+                if self.fallback_api_key:
+                    primary_seconds = time.monotonic() - started
+                    fallback_started = time.monotonic()
+                    print("🔄 Attempting fallback to Google Gemini 2.5 Pro...")
+                    try:
+                        result = self._call_google_gemini(prompt, self.fallback_api_key)
+                        provider, outcome = "gemini", "success"
+                        return result
+                    except Exception as fallback_error:
+                        print(f"❌ Fallback also failed: {fallback_error}")
+                        raise LLMProviderError(
+                            f"Both OpenRouter and Google Gemini failed. "
+                            f"OpenRouter: {e}, Fallback: {fallback_error}"
+                        ) from fallback_error
+                raise
+        finally:
+            total = time.monotonic() - started
+            gemini_seconds = time.monotonic() - fallback_started if fallback_started is not None else 0.0
+            if fallback_started is None:
+                primary_seconds = total
+            print(f'LLM_CALL total_seconds={total:.3f} primary_seconds={primary_seconds:.3f} '
+                  f'gemini_seconds={gemini_seconds:.3f} provider={provider} '
+                  f'fallback={str(fallback_started is not None).lower()} outcome={outcome}')
+
     def _call_openrouter(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
         Call OpenRouter API with Minimax.
