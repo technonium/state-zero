@@ -357,6 +357,22 @@ class WHOOPTokenRefreshTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(sleep_calls, [])
             self.assertGreater(manager.token_expires_at, datetime.now() + timedelta(minutes=50))
 
+    async def test_failed_refresh_note_save_is_best_effort_without_reconciliation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manager = self._build_manager(tmpdir)
+            fake = self._patch_http(manager, [_FakeResponse(503), _FakeResponse(502)])
+            with patch("whoop_token_manager.httpx.AsyncClient", return_value=fake), \
+                    patch("whoop_token_manager.asyncio.sleep", new=_noop_async_sleep), \
+                    patch("whoop_token_manager.os.replace", side_effect=OSError("storage failed")), \
+                    self.assertLogs("whoop_token_manager", level="WARNING") as logs:
+                self.assertFalse(await manager._refresh_token())
+            self.assertEqual(len(fake.calls), 2)
+            self.assertEqual(manager.access_token, "stale-access")
+            self.assertEqual(manager.refresh_token, "good-refresh")
+            self.assertIn("Failed to save WHOOP refresh-attempt note", " ".join(logs.output))
+            self.assertNotIn("reconciliation", " ".join(logs.output))
+            self.assertIn("WHOOP token refresh failed: 502", manager._last_warning)
+
     async def test_rotated_token_save_failure_is_shared_fatal_without_retry_or_success(self):
         from whoop_token_manager import WhoopTokenPersistenceError
         for failure in ('write', 'rename'):

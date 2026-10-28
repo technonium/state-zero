@@ -302,7 +302,9 @@ class WHOOPTokenManager:
             os.chmod(self.state_file, 0o600)
             logger.info(f"WHOOP token state saved to {self.state_file}")
         except Exception as e:
-            raise WhoopTokenPersistenceError("WHOOP token state could not be saved; human reconciliation required.") from e
+            if rotated_state is not None:
+                raise WhoopTokenPersistenceError("WHOOP token state could not be saved; human reconciliation required.") from e
+            logger.warning("Failed to save WHOOP refresh-attempt note: %s", type(e).__name__)
         finally:
             if tmp_path and os.path.exists(tmp_path):
                 try:
