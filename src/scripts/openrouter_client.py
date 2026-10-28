@@ -2,7 +2,7 @@
 OpenRouter LLM Client for prompt generation.
 
 This module provides a client for calling OpenRouter's API with Minimax.
-It includes fallback support to Google Gemini 2.5 Pro.
+It includes fallback support to Google Gemini 3.8 Flash.
 
 Configuration:
 - Model: minimax/minimax-m2.5
@@ -18,7 +18,7 @@ import time
 import requests
 from typing import Optional
 
-GEMINI_MODEL = "gemini-2.5-pro"
+from state_zero_models import GEMINI_MODEL
 GEMINI_TIMEOUT_SECONDS = 90
 
 
@@ -122,7 +122,7 @@ class OpenRouterClient:
     Client for OpenRouter API with Minimax.
     
     Supports thinking mode for enhanced reasoning capabilities.
-    Falls back to Google Gemini 2.5 Pro on failure.
+    Falls back to Google Gemini 3.8 Flash on failure.
     """
     
     BASE_URL = "https://openrouter.ai/api/v1"
@@ -221,7 +221,7 @@ class OpenRouterClient:
                 if self.fallback_api_key:
                     primary_seconds = time.monotonic() - started
                     fallback_started = time.monotonic()
-                    print("🔄 Attempting fallback to Google Gemini 2.5 Pro...")
+                    print("🔄 Attempting fallback to Google Gemini 3.8 Flash...")
                     try:
                         result = self._call_google_gemini(prompt, self.fallback_api_key)
                         provider, outcome = "gemini", "success"
@@ -383,7 +383,7 @@ class OpenRouterClient:
     
     def _call_google_gemini(self, prompt: str, api_key: str) -> str:
         """
-        Fallback to Google Gemini 2.5 Pro.
+        Fallback to Google Gemini 3.8 Flash.
         
         Args:
             prompt: The user prompt
@@ -392,7 +392,7 @@ class OpenRouterClient:
         Returns:
             Generated text response
         """
-        print("🔄 Using Google Gemini 2.5 Pro as fallback")
+        print("🔄 Using Google Gemini 3.8 Flash as fallback")
 
         result = call_google_gemini_generate_content(
             prompt=prompt,
@@ -441,7 +441,7 @@ def create_llm_client(
     
     print(f"🤖 Creating LLM Client")
     print(f"   Primary: OpenRouter ({model or 'minimax/minimax-m2.5'})")
-    print(f"   Fallback: {'Google Gemini 2.5 Pro' if google_key else 'None'}")
+    print(f"   Fallback: {'Google Gemini 3.8 Flash' if google_key else 'None'}")
     
     return OpenRouterClient(
         api_key=openrouter_key,

@@ -228,4 +228,3 @@ class OmniBackupTests(unittest.TestCase):
                 patch.object(parent,'_probe_video',return_value=(1080,1920,8,True)):
             parent.generate_api_stage('video','prompt',self.output,self.art)
         create.assert_called_once();post.assert_not_called();self.assertTrue(self.saved()['selected_sha256'])
-
