@@ -18,7 +18,7 @@ from PIL import Image
 
 from google_image_client import GoogleImageClient
 from google_video_client import GoogleVideoClient
-from utils import run_bounded, sanitize_error, OwnedProcessCleanupError, process_cleanup_verified
+from utils import video_1080_command, probe_video, run_bounded, sanitize_error, OwnedProcessCleanupError, process_cleanup_verified
 
 
 # Exact decoded enums, including the pinned CLI's PUBLIC_ERROR_* safety reasons.
@@ -218,13 +218,14 @@ class FlowMediaClient:
                 raise FlowCommandError(stage, 'original_asset_changed')
             timeout = 180 if stage == 'image' else int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480
             following_video = int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480 if stage == 'image' else 0
-            if self._generation_seconds() < timeout + following_video:
+            if (self._generation_seconds() < timeout + following_video
+                    and not (stage == 'video' and saved.get('logical_attempt'))):
                 raise FlowCommandError(stage, 'generation_window_exhausted')
             client = GoogleImageClient() if stage == 'image' else GoogleVideoClient()
             client.router.retry_ambiguous_calls = False
             client.generation_deadline = time.time() + max(0, self._generation_seconds())
             if saved.get('logical_attempt'):
-                if stage != 'video' or not saved.get('operation_name'):
+                if stage != 'video' or not (saved.get('interaction_id') or saved.get('operation_name')):
                     raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted')
                 client.resume_operation(candidate)
             else:
@@ -1119,15 +1120,7 @@ class FlowMediaClient:
 
     @staticmethod
     def _probe_video(path: Path, timeout: float = 30) -> tuple[int, int, float, bool]:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries",
-             "stream=codec_type,width,height:format=duration", "-of", "json", str(path)],
-            capture_output=True, text=True, timeout=timeout, check=True,
-        )
-        payload = json.loads(result.stdout)
-        stream = next(item for item in payload["streams"] if item["codec_type"] == "video")
-        return (int(stream["width"]), int(stream["height"]), float(payload["format"]["duration"]),
-                any(item["codec_type"] == "audio" for item in payload["streams"]))
+        return probe_video(path, timeout)
 
     def _generate_video(self, prompt_text: str, image_path: Path, output_path: Path, recovered: dict | None = None) -> Path:
         started_at = datetime.now(timezone.utc).isoformat()
@@ -1201,10 +1194,7 @@ class FlowMediaClient:
             staged = output_path.with_name(".generated_video.staged.mp4")
             if selected == source and (width, height) == (720, 1280):
                 result = run_bounded(
-                    ["ffmpeg", "-nostdin", "-y", "-i", str(source), "-vf",
-                     "scale=1080:1920:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
-                     "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags",
-                     "+faststart", str(staged)],
+                    video_1080_command(source, staged),
                     timeout=min(600, max(.001,float(os.getenv("STATE_ZERO_LOCAL_ONLY_DEADLINE", str(time.time()+600)))-time.time())),
                 )
                 result.check_returncode()

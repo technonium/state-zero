@@ -30,6 +30,27 @@ LOCAL_PATH_PREFIXES = (
 )
 
 
+def video_1080_command(source: Path, target: Path) -> list[str]:
+    return ["ffmpeg", "-nostdin", "-y", "-i", str(source), "-vf",
+            "scale=1080:1920:flags=lanczos", "-c:v", "libx264", "-preset", "medium",
+            "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "copy", "-movflags",
+            "+faststart", str(target)]
+
+
+def probe_video(path: Path, timeout: float = 30) -> tuple[int, int, float, bool]:
+    import json
+    import subprocess
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries",
+         "stream=codec_type,width,height:format=duration", "-of", "json", str(path)],
+        capture_output=True, text=True, timeout=timeout, check=True,
+    )
+    payload = json.loads(result.stdout)
+    stream = next(item for item in payload["streams"] if item["codec_type"] == "video")
+    return (int(stream["width"]), int(stream["height"]), float(payload["format"]["duration"]),
+            any(item["codec_type"] == "audio" for item in payload["streams"]))
+
+
 def instagram_graph_api_version() -> str:
     return (os.getenv('INSTAGRAM_GRAPH_API_VERSION') or 'v25.0').strip() or 'v25.0'
 

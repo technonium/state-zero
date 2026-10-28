@@ -177,23 +177,28 @@ class ReleaseOneBoundaryTests(unittest.TestCase):
             Mock(status_code=302,headers={'Location':'https://storage.googleapis.com/clip'}),Mock(status_code=200,content=b'video')])
         self.assertEqual(get.call_count,2)
 
-    def test_download_off_domain_redirect_rejected(self):
-        with self.assertRaises(GoogleAPIError):
-            self.download('https://generativelanguage.googleapis.com/start',[Mock(status_code=302,headers={'Location':'https://evil.example/clip'})])
+    def test_download_off_domain_redirect_uses_no_key(self):
+        get=self.download('https://generativelanguage.googleapis.com/start',[
+            Mock(status_code=302,headers={'Location':'https://signed.example/clip?signature=fixture'}),
+            Mock(status_code=200,content=b'video')])
+        self.assertEqual(get.call_args_list[1].kwargs['headers'],{})
 
-    def test_download_lookalike_host_rejected(self):
-        with self.assertRaises(GoogleAPIError): self.download('https://googleapis.com.evil.example/clip',[])
+    def test_download_lookalike_host_gets_no_key(self):
+        get=self.download('https://googleapis.com.evil.example/clip',[Mock(status_code=200,content=b'video')])
+        self.assertEqual(get.call_args.kwargs['headers'],{})
 
     def test_download_http_downgrade_rejected(self):
         with self.assertRaises(GoogleAPIError):
             self.download('https://generativelanguage.googleapis.com/start',[Mock(status_code=302,headers={'Location':'http://storage.googleapis.com/clip'})])
 
-    def test_download_key_never_sent_to_rejected_host(self):
-        with patch('google_video_client.requests.get',return_value=Mock(status_code=302,headers={'Location':'https://evil.example'})) as get:
-            with self.assertRaises(GoogleAPIError):
-                object.__new__(GoogleVideoClient)._download_video('https://storage.googleapis.com/start','synthetic-key',self.root/'clip')
-        self.assertEqual(get.call_count,1)
-        self.assertEqual(get.call_args.args[0],'https://storage.googleapis.com/start')
+    def test_download_key_never_sent_to_off_domain_host(self):
+        with patch('google_video_client.requests.get',side_effect=[
+                Mock(status_code=302,headers={'Location':'https://signed.example'}),
+                Mock(status_code=200,content=b'video')]) as get:
+            object.__new__(GoogleVideoClient)._download_video('https://storage.googleapis.com/start','synthetic-key',self.root/'clip')
+        self.assertEqual(get.call_count,2)
+        self.assertEqual(get.call_args_list[0].kwargs['headers'],{'x-goog-api-key':'synthetic-key'})
+        self.assertEqual(get.call_args_list[1].kwargs['headers'],{})
 
     def test_instagram_logs_hide_tokens_and_raw_refresh_responses(self):
         manager=InstagramTokenManager(); manager.access_token='synthetic-old-token-prefix-value'
@@ -235,7 +240,7 @@ class ReleaseOneBoundaryTests(unittest.TestCase):
                          ('Nano Banana 2.1','nano2','NARWHAL','BELUGA'))
         self.assertEqual((models.FLOW_VIDEO_LABEL,models.FLOW_VIDEO_ALIAS,models.FLOW_VIDEO_RESULT,models.FLOW_VIDEO_WIRE),
                          ('Veo 3.1 - Fast','veo-fast','veo_3_1_fast','veo_3_1_i2v_s_fast_portrait'))
-        self.assertEqual(models.GOOGLE_VIDEO_MODEL,'veo-3.1-fast-generate-preview')
+        self.assertEqual(models.GOOGLE_VIDEO_MODEL,'gemini-omni-1.1-flash')
         self.assertEqual(models.GOOGLE_IMAGE_MODEL,'gemini-nano-banana-2.1')
         client=FlowMediaClient()
         self.assertIn('nano2',client.image_command({},self.root/'art.png'))

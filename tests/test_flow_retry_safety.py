@@ -464,7 +464,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             client = GoogleVideoClient()
             client.router.retry_ambiguous_calls = False
             accepted = Mock(status_code=200)
-            accepted.json.return_value = {'name': 'operations/accepted'}
+            accepted.json.return_value = {'id': 'accepted', 'status': 'in_progress'}
             denied = Mock(status_code=403, text='Poll authorization failed')
             with patch('google_video_client.requests.post', return_value=accepted) as submit, \
                     patch('google_video_client.requests.get', return_value=denied):
@@ -472,7 +472,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                     client.generate_from_image('move', art, root / 'video.mp4')
                 self.assertEqual(submit.call_count, 1)
 
-    def test_api_key_fallback_remains_available_before_video_acceptance(self):
+    def test_omni_start_failure_never_retries_with_another_key(self):
         from google_video_client import GoogleVideoClient
         from google_key_router import GoogleAPIError
         from unittest.mock import Mock
@@ -486,12 +486,12 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             client.router.retry_ambiguous_calls = False
             denied = Mock(status_code=401, text='Invalid key')
             accepted = Mock(status_code=200)
-            accepted.json.return_value = {'name': 'operations/accepted'}
+            accepted.json.return_value = {'id': 'accepted', 'status': 'in_progress'}
             with patch('google_video_client.requests.post', side_effect=[denied, accepted]) as submit, \
                     patch('google_video_client.requests.get', return_value=denied):
                 with self.assertRaises(GoogleAPIError):
                     client.generate_from_image('move', art, root / 'video.mp4')
-                self.assertEqual(submit.call_count, 2)
+                self.assertEqual(submit.call_count, 1)
 
     def test_verified_reuse_refreshes_timestamp_for_existing_pipeline_checks(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {'FLOW_IMAGE_UPSCALE_2K': 'false'}):

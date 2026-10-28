@@ -337,21 +337,17 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.assertEqual(error.operation_id, 'original')
         self.assertIn('SAFETY', error.detail)
 
-    def test_accepted_api_operation_resumes_without_starting_a_video(self):
+    def test_legacy_api_operation_cannot_authorize_an_omni_creation(self):
         from google_video_client import GoogleVideoClient
+        from google_key_router import GoogleAPIError
         target = self.root / 'video.mp4'
         (self.root / 'google_video_diagnostics.json').write_text(json.dumps({'record_version':2,
-            'operation_name': 'models/veo-3.1-fast-generate-preview/operations/existing', 'key_label': 'primary'}))
-        with patch.dict(os.environ, {'GOOGLE_API_KEY_PRIMARY': 'mock-key'}):
-            client = GoogleVideoClient()
-        done = Mock(status_code=200)
-        done.json.return_value = {'done': True, 'response': {'generateVideoResponse': {
-            'generatedSamples': [{'video': {'uri': 'https://example.invalid/video'}}]}}}
-        with patch('google_video_client.requests.get', return_value=done), \
-                patch('google_video_client.requests.post') as create, \
-                patch.object(client, '_download_video', side_effect=lambda uri, key, path: path.write_bytes(b'video')):
-            self.assertEqual(client.resume_operation(target), target)
-        create.assert_not_called()
+            'operation_name':'models/veo-3.1-fast-generate-preview/operations/existing','key_label':'primary'}))
+        with patch.dict(os.environ,{'GOOGLE_API_KEY_PRIMARY':'mock-key'}):
+            client=GoogleVideoClient()
+        with patch('google_video_client.requests.post') as create,patch('google_video_client.requests.get') as get:
+            with self.assertRaises(GoogleAPIError):client.resume_operation(target)
+        create.assert_not_called();get.assert_not_called()
 
     def test_real_image_adapter_uses_distinct_markers_and_preserves_first_failure(self):
         self.freeze()
