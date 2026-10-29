@@ -109,7 +109,7 @@ TODAY'S DATE
     → Image generates from that concept
     → Video generates from the image · 8 seconds · one take
     → Card composites over the video · date, rings, title, scene description
-    → Telegram handles approvals, status updates, token warnings, and failure alerts
+    → Telegram sends status updates, token warnings, and failure alerts · or takes your own image/video in manual mode
     → Posts to Instagram every day
 ```
 
@@ -122,6 +122,8 @@ There are two ways to run it:
 **Manual-first:** get the prompts on Telegram, make the image/video wherever you want, send the files back, and let the pipeline finish the card and post.
 
 **Now supports free, automatic image and video generation with Google Flow.** Powered by [gflow CLI](https://github.com/ffroliva/gflow-cli), using a free Google account's included credits—no paid media APIs or manual uploads needed. Paid plans also offer video upscaling. See the [Flow setup guide](docs/FLOW_SHADOW_EXPERIMENT.md).
+
+Copy `.env.example` to `.env` and fill in your keys (WHOOP, OpenRouter, Google, Instagram, Telegram).
 
 The only non-obvious setup is astrology. The generator builds the required files from your birth data:
 

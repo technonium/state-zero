@@ -25,8 +25,9 @@ Xvfb, the pinned gflow patches and a persistent authenticated profile. See the
 rejects publishing credentials and must not be used as the production entrypoint.
 
 Google API images use `gemini-nano-banana-2.1` by default, with 3:4 and 2K request
-settings. API video defaults to `veo-3.1-fast-generate-preview`. Models can be
-configured through `GOOGLE_IMAGE_MODEL` and `GOOGLE_VIDEO_MODEL`.
+settings. API video defaults to `gemini-omni-1.1-flash` (8 seconds, 720p, scaled
+locally to 1080p). Models can be configured through `GOOGLE_IMAGE_MODEL` and
+`GOOGLE_VIDEO_MODEL`. The Gemini prompt fallback uses `gemini-3.8-flash`.
 
 Flow explicitly selects Nano Banana 2.1, 3:4 and one image. Its original image
 is retained; image upscaling is off by default. Flow video uses one portrait
@@ -142,7 +143,7 @@ regular pipeline's publishing lifecycle.
   generation receive one setup retry. Explicit safety/account/CAPTCHA restrictions
   and model mismatches block replacement; corrupt identities require reconciliation.
 - API media has one logical generation per stage/date across invocations. Accepted
-  video operations resume; ambiguous creation responses never create replacements.
+  video requests resume by their saved ID; ambiguous creation responses never create replacements.
 - Stop new generation by 13:30 IST, retaining thirty minutes for finalization. The
   14:00 rescue command `python3 ops/run_rescue.py` waits up to ten minutes for the
   shared execution lock, alerts if still busy, and never interrupts a publisher.

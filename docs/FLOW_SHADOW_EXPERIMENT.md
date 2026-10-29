@@ -349,13 +349,13 @@ xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual --validation-id v082
 Files, pipeline state, and the archive use `runtime/validation/<id>/`. The validation shares the daily runner's execution lock, canonical WHOOP token, and Chrome profile. An ID can submit only once across all dates. Existing daily files and claims remain intact. Reports distinguish validation from scheduled runs and record installed versions. A supervised validation does not prove unattended scheduling; verify a subsequent timer-triggered run separately.
 
 Existing submissions are never blindly regenerated on later invocations. Production
-uses frozen inputs, exact media receipts/catalog identities, two Flow submissions
+uses frozen inputs, exact media receipts, two Flow submissions
 per stage/date, and a five-minute recovery budget per unresolved submission shared
 across restarts. Supported original-image downloads and exact-ID video recovery
 never generate or upscale. Missing identities cannot be guessed from project tiles.
 After recovery, technical failures may use remaining Flow allowance and eligible
-API fallback. An ambiguous API generation POST cannot create another operation;
-accepted video operations resume polling/download. The isolated shadow runner's
+API fallback. An ambiguous API generation POST cannot create another request;
+accepted video requests resume by their saved ID. The isolated shadow runner's
 claim policy remains separate from production's daily retry policy.
 
 ### Bounded completion and operator reconciliation
