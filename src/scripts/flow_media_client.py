@@ -642,6 +642,11 @@ class FlowMediaClient:
                         raise FlowCommandError(stage,'request_identity_unverified') from None
                     if not re.fullmatch('[0-9a-f]{64}',str(result.get('sha256',''))):
                         raise FlowCommandError(stage,'request_identity_unverified')
+                    if stage=='video':
+                        from flow_readback import receipt_path
+                        receipt=receipt_path(context_file)
+                        if not receipt.exists():
+                            self._write_diagnostics(receipt,identity)
                     if not self._local_result(stage,result,output,result['sha256']):
                         raise FlowCommandError(stage,'validation_failed')
                     retrieval.pop('reply')

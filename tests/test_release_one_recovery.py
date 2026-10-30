@@ -59,6 +59,54 @@ class ReleaseOneRecoveryTests(unittest.TestCase):
         return self.result | {'sha256':hashlib.sha256(asset.read_bytes()).hexdigest(),
             'images':[self.result['images'][0] | {'local_path':str(asset)}]}
 
+    def recovered_video_without_receipt(self):
+        from flow_fixture import freeze, video_receipt
+        os.environ['FLOW_PREFLIGHT_PROJECT_ID']=''
+        Image.new('RGB',(768,1024)).save(self.root/'input_art.png')
+        freeze(self.root)
+        video_receipt(self.root,'a'*64,MEDIA)
+        context=self.root/'flow_video_attempt_1.context.json'
+        receipt=self.root/'flow_video_attempt_1.result.json'
+        identity=json.loads(receipt.read_text());receipt.unlink()
+        diagnostic=self.root/'flow_video_diagnostics.json'
+        diagnostic.write_text(json.dumps({'record_version':2,'request_hash':'a'*64,
+            'attempts':[{'number':1,'failure':{'category':'post_submit_error'}}]}))
+        asset=self.root/'flow_recovered'/(context.stem+'.mp4')
+        asset.parent.mkdir();asset.write_bytes(b'validated-video')
+        candidate={'kind':'video','context_sha256':hashlib.sha256(context.read_bytes()).hexdigest(),
+            'result':identity}
+        reply=identity|{'local_path':str(asset),'sha256':hashlib.sha256(asset.read_bytes()).hexdigest()}
+        return context,receipt,diagnostic,candidate,reply
+
+    def test_oct30_retrieved_video_without_submit_receipt_is_accepted(self):
+        context,receipt,diagnostic,candidate,reply=self.recovered_video_without_receipt()
+        marker=context.with_name('flow_video_attempt_1.submit')
+        before=(context.read_bytes(),marker.read_bytes())
+        self.assertFalse(receipt.exists())
+        cleanup={'worker':{'processes':{'cleanup_verified':True}}}
+        with patch.object(FlowMediaClient,'_probe_video',return_value=(720,1280,8,True)), \
+                patch.object(FlowMediaClient,'_recovery_command',side_effect=[
+                    (0,{'candidate':candidate}|cleanup),(0,{'result':reply}|cleanup)]) as worker:
+            result=FlowMediaClient()._readback_media(context,'a'*64,self.root/'generated_video.mp4',400,stage='video')
+        self.assertEqual(result,reply)
+        self.assertEqual(json.loads(receipt.read_text()),candidate['result'])
+        self.assertEqual(FlowMediaClient()._video_receipt(diagnostic,{'number':1}),candidate['result'])
+        self.assertEqual(before,(context.read_bytes(),marker.read_bytes()))
+        self.assertEqual([c.args[0][c.args[0].index('--mode')+1] for c in worker.call_args_list],['search','retrieve'])
+        saved=json.loads(diagnostic.read_text())
+        self.assertEqual(len(saved['attempts']),1)
+        self.assertEqual(saved['retrieval']['attempts'],1)
+
+    def test_oct30_mismatched_retrieved_video_does_not_create_receipt(self):
+        context,receipt,_,candidate,reply=self.recovered_video_without_receipt()
+        wrong=reply|{'workflow_id':'55555555-5555-4555-8555-555555555555'}
+        with patch.object(FlowMediaClient,'_recovery_command',side_effect=[
+                (0,{'candidate':candidate}),(0,{'result':wrong})]):
+            with self.assertRaises(FlowCommandError) as error:
+                FlowMediaClient()._readback_media(context,'a'*64,self.root/'generated_video.mp4',400,stage='video')
+        self.assertEqual(error.exception.category,'request_identity_unverified')
+        self.assertFalse(receipt.exists())
+
     def test_oct23_candidate_near_search_expiry_has_three_persisted_retrieval_tries(self):
         calls=[]
         def worker(command, timeout):
