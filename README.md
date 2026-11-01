@@ -125,7 +125,15 @@ There are two ways to run it:
 
 Copy `.env.example` to `.env` and fill in your keys (WHOOP, OpenRouter, Google, Instagram, Telegram).
 
-The only non-obvious setup is astrology. The generator builds the required files from your birth data:
+Two setup steps aren't obvious:
+
+**WHOOP:** set your WHOOP developer app's redirect URI to `http://localhost:8888/callback`, then authorize once:
+
+```bash
+python3 ops/auth_whoop.py
+```
+
+**Astrology:** the generator builds the required files from your birth data:
 
 ```bash
 python3 astrology_generator/generate_astrology_yaml.py
