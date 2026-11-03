@@ -23,3 +23,12 @@ class GeminiFallbackModelTests(unittest.TestCase):
                 OpenRouterClient(api_key='fixture')._post_openrouter_request('https://openrouter.ai/api/v1/chat/completions',{}, {})
             self.assertEqual(post.call_args.kwargs['timeout'],expected)
         self.assertEqual(OpenRouterClient.DEFAULT_MODEL,'minimax/minimax-m2.5')
+
+    def test_minimax_prefers_fast_providers_with_fallback_and_unchanged_settings(self):
+        reply=Mock();reply.json.return_value={'choices':[{'message':{'content':'ok'}}]}
+        for model,provider in ((None,{'order':['streamlake','digitalocean','atlas-cloud'],'allow_fallbacks':True}),('other/model',None)):
+            with patch.object(OpenRouterClient,'_post_openrouter_request',return_value=reply) as post:
+                self.assertEqual(OpenRouterClient(api_key='fixture',model=model)._call_openrouter('p'),'ok')
+            payload=post.call_args.args[2]
+            self.assertEqual(payload.get('provider'),provider)
+            self.assertEqual((payload['temperature'],payload['max_tokens'],payload['thinking']),(1.0,12000,{'type':'enabled','budget_tokens':8000}))

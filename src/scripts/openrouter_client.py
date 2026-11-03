@@ -133,7 +133,11 @@ class OpenRouterClient:
     DEFAULT_MAX_TOKENS = 12000
     DEFAULT_THINKING_BUDGET = 8000
     EMPTY_CONTENT_RETRY_DELAYS = (2, 5)
-    
+    # Preferred hosts by measured throughput/latency; OpenRouter falls back to others if all fail
+    PROVIDER_ORDER = {
+        "minimax/minimax-m2.5": ["streamlake", "digitalocean", "atlas-cloud"],
+    }
+
     def __init__(
         self,
         api_key: str,
@@ -282,7 +286,9 @@ class OpenRouterClient:
                 "budget_tokens": self.thinking_budget
             }
         }
-        
+        if self.model in self.PROVIDER_ORDER:
+            payload["provider"] = {"order": self.PROVIDER_ORDER[self.model], "allow_fallbacks": True}
+
         print(f"🧠 Calling OpenRouter with {self.model}")
         print(f"   Temperature: {self.temperature}")
         print(f"   Max tokens: {self.max_tokens}")
