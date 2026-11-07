@@ -9,7 +9,7 @@
 -tile-based approach cannot reach an older clip at all, and every text label it would
 -need is locale-dependent.
 +The shadow patch uses the exact per-clip editor's Original 720p menu for
-+browser-native downloads. Migrated accounts can expose a Flow-origin blob instead
++in-page original-blob reads. Migrated accounts can expose a Flow-origin blob instead
 +of a CDN URL. The resulting MP4 must still match the exact clip record's byte count.
 +
  """
@@ -38,7 +38,7 @@
      try:
          log.info("migrated.recover_navigate", project_id=project_id, media_id=media_id)
          await page.goto(
-@@ -99,10 +108,23 @@
+@@ -99,10 +108,22 @@
          )
          loop = asyncio.get_running_loop()
          deadline = loop.time() + wait_s
@@ -51,8 +51,7 @@
 +            if found and urlsplit(str(found["url"])).hostname == "flow-content.google" and urlsplit(str(found["url"])).path == f"/video/{workflow_id}":
 +                break
 +            if found:
-+                # The exact clip record is sufficient for native download.
-+                # Attach expect_download before clicking the original option.
++                # The exact clip record is sufficient for a verified original blob read.
 +                break
              await page.wait_for_timeout(500)
 +        else:
@@ -63,48 +62,86 @@
  
      if not found:
          # #877: the class-default remediation on WireFormatError is written for
-@@ -188,6 +210,40 @@
+@@ -188,6 +209,78 @@
      return body
  
  
-+def _is_original_download_url(url: str) -> bool:
-+    parts = urlsplit(url)
-+    if parts.scheme == "blob":
-+        origin = urlsplit(parts.path)
-+        return origin.scheme == "https" and origin.hostname == "flow.google.com"
-+    from gflow_cli.api.transports.ui_automation import _is_allowed_download_host
-+    return _is_allowed_download_host(url)
-+
-+
 +async def _download_original_verified(page: Page, *, expected: int | None, media_id: str) -> bytes:
-+    """Capture the original transfer from the exact clip editor and verify it."""
++    """Read the exact original blob without Chrome's crashing native download path."""
++    import base64
++    import contextlib
 +    import re
-+    import tempfile
 +
-+    if not isinstance(expected, int) or expected <= 0:
++    if type(expected) is not int or not 0 < expected <= 100 * 1024 * 1024:
 +        raise WireFormatError(detail="Original clip byte count is missing; refusing unverified download", route=_ROUTE)
-+    await page.get_by_role("button", name="Download media", exact=True).click(timeout=10000)
-+    option = page.get_by_role("menuitem", name=re.compile(r"720p", re.I))
-+    if await option.count() != 1:
-+        raise WireFormatError(detail="Original 720p download option is ambiguous or missing", route=_ROUTE)
-+    async with page.expect_download(timeout=120000) as event:
++    address = urlsplit(page.url)
++    if (address.scheme != "https" or address.hostname != "flow.google.com"
++            or address.port not in (None, 443) or address.username or address.password
++            or not address.path.endswith("/edit/" + media_id)):
++        raise WireFormatError(detail="Original download editor identity differs", route=_ROUTE)
++    await page.evaluate("""({expected}) => {
++        if (window.__stateZeroOriginalDownload) throw Error('Original download already active');
++        const create = URL.createObjectURL, click = HTMLAnchorElement.prototype.click;
++        const blobs = new Map();
++        let finish;
++        const promise = new Promise(resolve => { finish = resolve; });
++        window.__stateZeroOriginalDownload = {create, click, promise, finish};
++        URL.createObjectURL = function(blob) {
++            const url = create.call(URL, blob);
++            if (blob instanceof Blob && blob.type === 'video/mp4' && blob.size === expected) blobs.set(url, blob);
++            return url;
++        };
++        HTMLAnchorElement.prototype.click = function() {
++            if (!this.download) return click.call(this);
++            const blob = blobs.get(this.href);
++            // Never fall back to the native download, including on untrusted/mismatched data.
++            if (!this.href.startsWith('blob:' + location.origin + '/') || !blob) {
++                finish({error: 'Original download blob identity or byte count differs'});
++                return;
++            }
++            const reader = new FileReader();
++            reader.onload = () => finish({base64: String(reader.result).split(',')[1]});
++            reader.onerror = () => finish({readFailed: true});
++            reader.readAsDataURL(blob);
++        };
++    }""", {"expected": expected})
++    try:
++        await page.get_by_role("button", name="Download media", exact=True).click(timeout=10000)
++        option = page.get_by_role("menuitem", name=re.compile(r"720p", re.I))
++        if await option.count() != 1:
++            raise WireFormatError(detail="Original 720p download option is ambiguous or missing", route=_ROUTE)
++        await page.evaluate("""() => {
++            const capture = window.__stateZeroOriginalDownload;
++            capture.timer = setTimeout(() => capture.finish({timedOut: true}), 120000);
++        }""")
 +        await option.click(timeout=5000)
-+    download = await event.value
-+    if not _is_original_download_url(download.url):
-+        await download.cancel()
-+        raise WireFormatError(detail="Original download is not on an allowed Google host", route=_ROUTE)
-+    with tempfile.TemporaryDirectory() as directory:
-+        path = Path(directory) / "original.mp4"
-+        await download.save_as(path)
-+        body = path.read_bytes()
-+    _verify(body, expected=expected, media_id=media_id)
-+    return body
++        result = await page.evaluate("() => window.__stateZeroOriginalDownload.promise")
++        if result.get("timedOut"):
++            raise TimeoutError("Original blob download timed out")
++        if result.get("readFailed"):
++            raise OSError("Original blob read failed")
++        if result.get("error"):
++            raise WireFormatError(detail=result["error"], route=_ROUTE)
++        body = base64.b64decode(result["base64"], validate=True)
++        _verify(body, expected=expected, media_id=media_id)
++        return body
++    finally:
++        with contextlib.suppress(Exception):
++            await page.evaluate("""() => {
++                const saved = window.__stateZeroOriginalDownload;
++                if (saved) {
++                    URL.createObjectURL = saved.create;
++                    HTMLAnchorElement.prototype.click = saved.click;
++                    clearTimeout(saved.timer);
++                    delete window.__stateZeroOriginalDownload;
++                }
++            }""")
 +
 +
  async def recover_clip(
      page: Page,
      *,
-@@ -205,8 +261,10 @@
+@@ -205,8 +298,10 @@
      found = await _await_signed_record(
          page, media_id=media_id, project_id=project_id, wait_s=wait_s
      )

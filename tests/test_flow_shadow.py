@@ -145,12 +145,13 @@ class FlowProviderTests(FrozenFlowCalls, unittest.TestCase):
                 calls.append(marker)
                 raise FlowCommandError("video", "generation_failed", media_id=f"media-{len(calls)}", retryable=True)
 
-            with patch.object(FlowMediaClient, "_run_json", side_effect=fail), \
-                    patch(
-                "flow_media_client.time.sleep"
-            ):
-                with self.assertRaises(FlowCommandError):
-                    self.frozen_video(FlowMediaClient(), "move", art, root / "generated_video.mp4")
+            from datetime import datetime
+            with patch.object(FlowMediaClient, "_run_json", side_effect=fail):
+                for hour, minute, expected_calls in ((10, 0, 1), (10, 30, 2), (11, 0, 2)):
+                    with patch('utils.get_pipeline_now', return_value=datetime(2026, 10, 27, hour, minute)):
+                        with self.assertRaises(FlowCommandError):
+                            self.frozen_video(FlowMediaClient(), "move", art, root / "generated_video.mp4")
+                    self.assertEqual(len(calls), expected_calls)
             self.assertEqual(len(calls), 2)
             report = json.loads((root / "flow_video_diagnostics.json").read_text())
             self.assertEqual(len(report["attempts"]), 2)
@@ -168,7 +169,7 @@ class FlowProviderTests(FrozenFlowCalls, unittest.TestCase):
             prompt.write_text("Move slowly")
             freeze(root, image={"scene": "cloud"}, video="Move slowly")
             env = {"MEDIA_GENERATION_PROVIDER": "flow", "FLOW_API_FALLBACK_ENABLED": "true", "GOOGLE_API_KEY_PRIMARY": "test"}
-            with patch.dict(os.environ, env, clear=True), patch('utils.get_pipeline_now', return_value=__import__('datetime').datetime(2026,10,27,12)):
+            with patch.dict(os.environ, env, clear=True), patch('utils.get_pipeline_now', return_value=__import__('datetime').datetime(2026,10,27,13)):
                 with patch("flow_media_client.FlowMediaClient._generate_image", side_effect=FlowCommandError("image", "auth_required", submission_state="not_attempted")):
                     with patch("google_image_client.GoogleImageClient.generate_from_json", side_effect=lambda _prompt, path: Image.new("RGB", (768, 1024), "white").save(path)):
                         ImageGenerator().generate({"scene": "cloud"}, str(art))

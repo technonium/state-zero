@@ -328,7 +328,8 @@ class ExecutionHardeningTests(unittest.TestCase):
             p._check_publication_before_claim()
         self.assertFalse(p.daily_run.claim_path.exists())
 
-    def test_api_video_resumes_accepted_operation_without_creation(self):
+    @patch.object(FlowMediaClient, '_omni_final_slot', return_value=True)
+    def test_api_video_resumes_accepted_operation_without_creation(self, _final_slot):
         self.freeze()
         image = self.root / 'generated_art.png'; Image.new('RGB', (768, 1024)).save(image)
         output = self.root / 'generated_video.mp4'
@@ -362,7 +363,7 @@ class ExecutionHardeningTests(unittest.TestCase):
                 patch.object(GoogleVideoClient, 'generate_from_image', side_effect=video) as api, \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080, 1920, 8, True)), \
                 patch.object(FlowMediaClient, '_notify_transition'):
-            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,10)):
+            with patch('utils.get_pipeline_now',return_value=__import__('datetime').datetime(2026,10,27,13)):
                 FlowMediaClient().generate_video('original', art, output)
                 FlowMediaClient().generate_video('original', art, output)
         self.assertEqual(flow.call_count, 2); self.assertEqual(api.call_count, 1)

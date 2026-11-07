@@ -49,6 +49,11 @@ class FlowMediaClient:
     def __init__(self, profile: str | None = None):
         self.profile = profile or os.getenv("GFLOW_PROFILE", "shadow")
 
+    def _omni_final_slot(self) -> bool:
+        from utils import get_pipeline_now
+        return (get_pipeline_now().hour >= 13
+                and os.getenv('PIPELINE_TERMINAL_RESCUE_RUN', '').lower() != 'true')
+
     @staticmethod
     def _input_settings() -> dict:
         return {name: os.getenv(name, default) for name, default in (
@@ -229,6 +234,8 @@ class FlowMediaClient:
                     raise FlowCommandError(stage, 'submission_uncertain', submission_state='api_attempted')
                 client.resume_operation(candidate)
             else:
+                if stage == 'video' and not self._omni_final_slot():
+                    raise FlowCommandError(stage, 'awaiting_final_slot', retryable=True)
                 self._write_diagnostics(diagnostics, {'request_hash': fingerprint, 'logical_attempt': 'reserved'})
                 if stage == 'image':
                     client.generate_from_json(request, candidate)
@@ -382,8 +389,10 @@ class FlowMediaClient:
         diagnostics = output.with_name(f'flow_{stage}_diagnostics.json')
         flow_timeout = 600 if stage == 'image' else 1500
         api_timeout = 180 if stage == 'image' else int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480
+        fallback_enabled = os.getenv('FLOW_API_FALLBACK_ENABLED', 'false').lower() == 'true'
         following_video = (min(1500, int(os.getenv('GOOGLE_VIDEO_TIMEOUT_SECONDS', '900')) + 480)
-                           if os.getenv('FLOW_API_FALLBACK_ENABLED', 'false').lower() == 'true' else 1500) if stage == 'image' else 0
+                           if fallback_enabled else 1500) if stage == 'image' else 0
+        flow_reserve = api_timeout if stage == 'video' and fallback_enabled else following_video
         while True:
             saved = FlowMediaClient._read_diagnostics(diagnostics)
             attempts = self._daily_attempts(stage, diagnostics)
@@ -450,11 +459,11 @@ class FlowMediaClient:
             confirmed_failure = last_sent_failure.get('category') == 'generation_failed' and last_sent_failure.get('retryable') is True
             unresolved=bool(used and not identified and not confirmed_failure)
             from utils import get_pipeline_now
-            if unresolved and get_pipeline_now().hour < 12:
+            if stage == 'image' and unresolved and get_pipeline_now().hour < 12:
                 raise FlowCommandError(stage,'request_identity_unverified',
                     detail='Submitted result remains unresolved; retry read-only search next slot. Paid API is eligible from 12:00 IST.')
             skip_flow = identified or unresolved or pre_submit >= 2 or error and error.category == 'credits_exhausted'
-            if used < 2 and not skip_flow and self._generation_seconds() >= flow_timeout + following_video:
+            if used < 2 and not skip_flow and self._generation_seconds() >= flow_timeout + flow_reserve:
                 number = max([a['number'] for a in attempts], default=0) + 1
                 attempt = {'number': number, 'reserved_at': time.time()}
                 self._write_diagnostics(diagnostics, {'pending_attempt': attempt, 'result': None,
@@ -474,17 +483,23 @@ class FlowMediaClient:
                     self._write_diagnostics(diagnostics, {'failure': failure})
                     if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                         raise
+                    if stage == 'video' and exc.category == 'generation_failed' and not self._omni_final_slot():
+                        raise
                     continue
                 except Exception as exc:
                     failure = {'category': 'validation_failed', 'error_class': type(exc).__name__}
                     self._save_attempt(diagnostics, attempt | {'failure': failure})
                     self._write_diagnostics(diagnostics, {'failure': failure})
                     raise FlowCommandError(stage, **failure) from exc
-            if os.getenv('FLOW_API_FALLBACK_ENABLED', 'false').lower() != 'true' or self._generation_seconds() < api_timeout + following_video:
+            if stage == 'video' and not self._omni_final_slot():
+                raise FlowCommandError(stage, 'awaiting_final_slot', retryable=True,
+                                       detail='Video not ready; Omni creation is eligible from 13:00 IST.')
+            if not fallback_enabled or self._generation_seconds() < api_timeout + following_video:
                 raise FlowCommandError(stage, 'generation_window_exhausted' if self._generation_seconds() < api_timeout else 'attempts_exhausted',
                                        detail='Fresh generation budget exhausted; existing emergency rescue remains available.')
             self._write_diagnostics(diagnostics, {'api_reserved': True,
-                'fallback_reason': 'unresolved_at_noon' if unresolved else error.category if error else 'generation_window'})
+                'fallback_reason': ('unresolved_at_final_slot' if stage == 'video' else 'unresolved_at_noon')
+                if unresolved else error.category if error else 'generation_window'})
             self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_API_FALLBACK',
                                     f'Paid Google MEDIA API {stage} request reserved; dispatch follows. Provider acceptance/charge is not yet confirmed.')
             client = GoogleImageClient() if stage == 'image' else GoogleVideoClient()
@@ -656,10 +671,16 @@ class FlowMediaClient:
                     self._notify_transition(diagnostic,f'FLOW_{stage.upper()}_IDENTIFIED_NOT_RETRIEVED',
                         f'Flow {stage}: identified but not retrieved; no Flow replacement will be submitted.')
                     return None
+                if stage == 'video' and not self._omni_final_slot():
+                    # Leave one of the three attempts available for the final slot.
+                    if retrieval.get('last_slot') == slot or retrieval['attempts'] >= 2:
+                        return None
                 mode='retrieve'
                 timeout=min(90,min(cutoff,retrieval['deadline'])-time.time())
                 self._check_browser_ownership(diagnostic,stage)
                 retrieval['attempts']=retrieval.get('attempts',0)+1
+                if stage == 'video':
+                    retrieval['last_slot'] = slot
                 self._write_diagnostics(diagnostic,{'retrieval':retrieval})
             else:
                 if count.get('search_launches',0)>=2 or min(count['search_deadline'],cutoff)<=time.time():
@@ -704,8 +725,12 @@ class FlowMediaClient:
                             raise ValueError('Candidate identity differs')
                     except (KeyError,TypeError,ValueError):
                         raise FlowCommandError(stage,'request_identity_unverified') from None
+                    deadline_limit = observed + 270
+                    if stage == 'video':
+                        from utils import get_pipeline_now
+                        deadline_limit = get_pipeline_now().replace(hour=13, minute=30, second=0, microsecond=0).timestamp()
                     retrieval={'version':1,'context_file':context_file.name,'candidate':candidate,
-                               'deadline':min(observed+270,cutoff),'attempts':0}
+                               'deadline':min(deadline_limit,cutoff),'attempts':0}
                     self._write_diagnostics(diagnostic,{'retrieval':retrieval})
                     continue
                 if not retrieval.get('reply'):

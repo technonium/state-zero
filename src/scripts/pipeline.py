@@ -997,6 +997,16 @@ class WHOOPPipeline:
 
     def _handle_runtime_stage_error(self, exc: PipelineStageError) -> bool:
         os.environ.pop('STATE_ZERO_LOCAL_ONLY_DEADLINE', None)
+        if exc.failure_classification == 'omni_cut':
+            self._stop_heartbeat_thread()
+            try:
+                self.daily_run.mark_retryable_failure(step=exc.stage, message=exc.message,
+                    failure_classification='omni_cut')
+                self.daily_run.notify_once('OMNI_VIDEO_CUT', lambda: safe_notify_status(
+                    self.run_date, 'OMNI_VIDEO_CUT', exc.message), marker_key='omni_cut_notice')
+            finally:
+                self.daily_run.release_claim()
+            return True
         if exc.failure_classification == 'instagram_publication_uncertain':
             self._stop_heartbeat_thread()
             try:
@@ -1464,7 +1474,8 @@ class WHOOPPipeline:
                 manual_assets = {}
                 if self._is_terminal_rescue_run():
                     from flow_media_client import FlowMediaClient
-                    manual_assets = self._manual_local_assets() if self.mode=='telegram' else {}
+                    if self.mode == 'telegram' or (self.daily_run.load_state() or {}).get('omni_cut_notice') == 'OMNI_VIDEO_CUT':
+                        manual_assets = self._manual_local_assets()
                     local_rescue = FlowMediaClient().local_pair_available(self.output_dir,manual_assets=manual_assets)
                     if not local_rescue:
                         raise PipelineStageError(stage='Local rescue',message='No eligible completed local normal artwork.',fallback_eligible=True)
@@ -2536,16 +2547,17 @@ class WHOOPPipeline:
         print(f"{Fore.CYAN}▶ Running Video Generation...{Style.RESET_ALL}")
         generation_status = self._current_generation_status()
         self._set_heartbeat_context(status=generation_status, note='Generating video asset.', pulse=True)
+        from flow_media_client import FlowMediaClient
+        from google_video_client import OmniCutError
         try:
             provider = os.getenv('MEDIA_GENERATION_PROVIDER', 'google_api').strip().lower()
             prompt_text = Path(video_prompt_path).read_text(encoding='utf-8').strip()
             out_path = self.output_dir / 'generated_video.mp4'
+            client = FlowMediaClient()
             if provider == 'flow':
-                from flow_media_client import FlowMediaClient
-                FlowMediaClient().generate_video(prompt_text, art_path, out_path)
+                client.generate_video(prompt_text, art_path, out_path)
             else:
-                from flow_media_client import FlowMediaClient
-                FlowMediaClient().generate_api_stage('video', prompt_text, out_path, art_path)
+                client.generate_api_stage('video', prompt_text, out_path, art_path)
             if not out_path.exists():
                 raise FileNotFoundError(f'Expected output missing: {out_path}')
             if out_path.stat().st_mtime < art_path.stat().st_mtime:
@@ -2556,6 +2568,13 @@ class WHOOPPipeline:
             print(f"{Fore.GREEN}✅ Video Generation completed{Style.RESET_ALL}")
             self._set_heartbeat_context(status=generation_status, note='Video generation completed.', pulse=True)
             return out_path
+        except OmniCutError as e:
+            replacement = self._wait_for_omni_cut_replacement(art_path, out_path, str(e))
+            if replacement is not None:
+                return replacement
+            raise PipelineStageError(stage='Video Generation', message=str(e),
+                fallback_eligible=False, emergency_fallback_allowed=False,
+                failure_classification='omni_cut') from e
         except Exception as e:
             raise PipelineStageError(
                 stage='Video Generation',
@@ -2563,6 +2582,63 @@ class WHOOPPipeline:
                 details=str(e),
                 fallback_eligible=True,
             ) from e
+
+    def _wait_for_omni_cut_replacement(self, art: Path, output: Path, message: str) -> Path | None:
+        # Only a reply to this cut alert can replace the video. Reuse the exact selected art.
+        if not self.bot_token or not self.chat_id or self._is_terminal_rescue_run():
+            return None
+        import time
+        deadline = min(self.deadline_dt, self._now().replace(hour=14, minute=0, second=0, microsecond=0))
+        if self._now() >= deadline:
+            return None
+        session = None
+        if self.session_file.is_file():
+            saved = json.loads(self.session_file.read_text())
+            if saved.get('run_date') == self.run_date and saved.get('omni_cut_message') == message:
+                if saved.get('status') == 'COMPLETED' and self._manual_local_assets().get('video') == output:
+                    self.asset_source = 'manual_telegram'
+                    return output
+                session = saved | {'run_token': self.run_token}
+        if session is None:
+            session = {'run_date': self.run_date, 'run_token': self.run_token, 'status': 'WAITING_MANUAL',
+                       'omni_cut_message': message, 'deadline_local': deadline.isoformat(),
+                       'telegram': {'last_update_id': self._get_latest_update_id()}}
+        tg = session['telegram']
+
+        def request_video():
+            tg['prompt_message_id'] = self._send_telegram_message(message)
+            self._save_manual_session(session)
+            return bool(tg['prompt_message_id'])
+
+        self.daily_run.notify_once('OMNI_VIDEO_CUT', request_video, marker_key='omni_cut_notice')
+        if not tg.get('prompt_message_id'):
+            return None
+        raw = output.with_name('_telegram_video_raw.mp4')
+        try:
+            while self._now() < deadline:
+                self._set_heartbeat_context(status='WAITING_MANUAL', note='Waiting for Omni cut replacement.', pulse=True)
+                try:
+                    updates = self._fetch_telegram_updates(session)
+                    replies = [update for update in updates if
+                        (update.get('message', {}).get('reply_to_message') or {}).get('message_id') == tg['prompt_message_id']]
+                    self._extract_manual_assets_from_updates(session, replies)
+                    if tg.get('video_file_id'):
+                        self._download_telegram_file(tg['video_file_id'], raw)
+                        self._validate_video_file(raw)
+                        if self._now() >= deadline:
+                            return None
+                        raw.replace(output)
+                        self._remember_manual_assets(session, {'image': art, 'video': output})
+                        self._mark_session(session, 'COMPLETED', 'Completed with a manual replacement video.')
+                        self.asset_source = 'manual_telegram'
+                        return output
+                except Exception as exc:
+                    print(f'Omni replacement intake failed: {sanitize_error(str(exc))}')
+                    self._clear_manual_asset(session, 'video')
+                time.sleep(min(max(5, self.telegram_poll_seconds), max(0, (deadline - self._now()).total_seconds())))
+        finally:
+            raw.unlink(missing_ok=True)
+        return None
 
     def step_10a_render_image(self, art_path: Path, daily_data: dict, metadata: dict) -> Path:
         print(f"{Fore.CYAN}▶ Rendering Static Card...{Style.RESET_ALL}")

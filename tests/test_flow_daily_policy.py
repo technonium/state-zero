@@ -792,7 +792,8 @@ class DailyFlowPolicyTests(unittest.TestCase):
         flow.assert_called_once()
         api.assert_not_called()
 
-    def test_video_budget_and_start_frame_identity_survive_later_invocation(self):
+    @patch.object(FlowMediaClient, '_omni_final_slot', return_value=True)
+    def test_video_budget_and_start_frame_identity_survive_later_invocation(self, _final_slot):
         self.freeze()
         art = self.save_image({}, self.root / 'generated_art.png')
         target = self.root / 'generated_video.mp4'

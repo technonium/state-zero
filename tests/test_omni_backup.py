@@ -54,7 +54,7 @@ class OmniBackupTests(unittest.TestCase):
             self.assertEqual(body['response_format'],{'type':'video','aspect_ratio':'9:16','resolution':'720p','duration':'8s','delivery':'inline'})
             self.assertEqual(body['generation_config'],{'video_config':{'task':'image_to_video'}})
             self.assertTrue(body['background']);self.assertTrue(body['store'])
-            self.assertEqual(body['input'][1],{'type':'text','text':'unchanged prompt'})
+            self.assertEqual(body['input'][1],{'type':'text','text':'unchanged prompt\nSingle continuous shot from the provided first frame. No cuts, no scene changes.'})
             frame,_=self.client._to_letterboxed_png_bytes(self.art)
             self.assertEqual(base64.b64decode(body['input'][0]['data']),frame)
             return self.response(self.reply(part={'type':'video','mime_type':'video/mp4',
@@ -194,7 +194,8 @@ class OmniBackupTests(unittest.TestCase):
         self.assertEqual(command,['ffmpeg','-nostdin','-y','-i',str(original),'-vf','scale=1080:1920:flags=lanczos',
             '-c:v','libx264','-preset','medium','-crf','18','-pix_fmt','yuv420p','-c:a','copy','-movflags','+faststart',str(self.output)])
 
-    def test_api_default_local_original_reprocesses_after_remote_cutoff(self):
+    @patch.object(FlowMediaClient, '_omni_final_slot', return_value=True)
+    def test_api_default_local_original_reprocesses_after_remote_cutoff(self, _final_slot):
         freeze(self.root,video='prompt')
         parent=FlowMediaClient()
         with patch.object(parent,'_generation_seconds',return_value=7200), \
@@ -211,7 +212,8 @@ class OmniBackupTests(unittest.TestCase):
         create.assert_called_once();post.assert_not_called();get.assert_not_called()
         self.assertTrue(self.saved()['selected_sha256'])
 
-    def test_api_default_parent_reservation_precedes_single_post_and_resumes_id(self):
+    @patch.object(FlowMediaClient, '_omni_final_slot', return_value=True)
+    def test_api_default_parent_reservation_precedes_single_post_and_resumes_id(self, _final_slot):
         freeze(self.root,video='prompt')
         def post(*args,**kwargs):
             self.assertEqual(self.saved()['logical_attempt'],'reserved')

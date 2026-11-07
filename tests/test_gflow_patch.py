@@ -142,11 +142,17 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recover.call_args.kwargs["media_id"], "media")
         self.assertEqual(recover.call_args.kwargs["project_id"], "project")
 
-    async def test_original_download_allows_only_flow_blob_origin(self):
-        from gflow_cli.api.transports.migrated_recover import _is_original_download_url
-        self.assertTrue(_is_original_download_url("blob:https://flow.google.com/123"))
-        self.assertFalse(_is_original_download_url("blob:https://evil.example/123"))
-        self.assertFalse(_is_original_download_url("blob:https://flow.google.com.evil.example/123"))
+    async def test_original_download_allows_only_exact_flow_editor(self):
+        from gflow_cli.api.transports.migrated_recover import _download_original_verified
+        from gflow_cli.errors import WireFormatError
+        for address in ('https://evil.example/project/p/edit/media',
+                        'https://flow.google.com.evil.example/project/p/edit/media',
+                        'http://flow.google.com/project/p/edit/media',
+                        'https://flow.google.com/project/p/edit/other'):
+            page=MagicMock(url=address)
+            with self.assertRaises(WireFormatError):
+                await _download_original_verified(page,expected=16,media_id='media')
+            page.get_by_role.assert_not_called()
 
     async def test_original_download_refuses_missing_record_size(self):
         from gflow_cli.api.transports.migrated_recover import _download_original_verified

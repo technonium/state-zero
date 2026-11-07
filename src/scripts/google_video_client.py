@@ -22,6 +22,23 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=get_project_root() / '.env')
 
 
+class OmniCutError(GoogleAPIError):
+    def __init__(self, seconds: float):
+        super().__init__(None, f'Omni clip had a cut at {seconds:.2f} s; send a video in manual mode.')
+
+
+def first_video_cut(original: Path) -> float | None:
+    """Inspect the untouched original; never trim or generate another clip."""
+    deadline = float(os.getenv('STATE_ZERO_LOCAL_ONLY_DEADLINE', str(time.time() + 60)))
+    result = run_bounded(['ffmpeg', '-nostdin', '-hide_banner', '-nostats', '-loglevel', 'info',
+        '-xerror', '-i', str(original), '-an',
+        '-vf', "select='gt(scene,0.25)',showinfo", '-fps_mode', 'vfr', '-f', 'null', '-'],
+        timeout=max(.001, min(60, deadline - time.time())))
+    result.check_returncode()
+    frames = re.findall(r'\[Parsed_showinfo[^\]]*\].*?pts_time:\s*(\S+)', result.stderr or '')
+    return float(frames[0]) if frames else None
+
+
 class GoogleVideoClient:
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 
@@ -99,7 +116,7 @@ class GoogleVideoClient:
         payload = {
             'model': self.default_model, 'background': True, 'store': True,
             'input': [{'type': 'image', 'mime_type': 'image/png', 'data': base64.b64encode(frame).decode()},
-                      {'type': 'text', 'text': prompt_text}],
+                      {'type': 'text', 'text': prompt_text + '\nSingle continuous shot from the provided first frame. No cuts, no scene changes.'}],
             'generation_config': {'video_config': {'task': 'image_to_video'}},
             'response_format': {'type': 'video', 'aspect_ratio': '9:16', 'resolution': '720p',
                                 'duration': '8s', 'delivery': 'inline'},
@@ -242,6 +259,10 @@ class GoogleVideoClient:
         width, height, duration, audio = probe_video(original)
         if (width, height) != (720, 1280) or not 7.5 <= duration <= 8.5 or not audio:
             raise GoogleAPIError(None, 'Omni original must be portrait 720p, 7.5–8.5 seconds, with audio')
+        cut = first_video_cut(original)
+        if cut is not None:
+            self._write_diagnostics(output_path, {'cut_at_seconds': cut})
+            raise OmniCutError(cut)
         staged = output_path.with_suffix('.scaled.mp4')
         result = run_bounded(video_1080_command(original, staged), timeout=min(600,
             max(.001, float(os.getenv('STATE_ZERO_LOCAL_ONLY_DEADLINE', str(time.time()+600))) - time.time())))
