@@ -234,7 +234,7 @@ def get_recovery_zone(recovery_pct: int) -> str:
 
 def get_sleep_score_zone(sleep_score_pct: int) -> str:
     """Sleep Score % → Sleep Zone (dual role: depth + behavioral)"""
-    if sleep_score_pct >= 84:
+    if sleep_score_pct >= 83:
         return "SURFACE"
     elif sleep_score_pct >= 78:
         return "MID-DEPTH"

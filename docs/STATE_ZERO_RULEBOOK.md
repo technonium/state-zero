@@ -311,7 +311,7 @@ Critical: Pick based on theme, not creature
 | Metric | Zones |
 |--------|-------|
 | Recovery | HIGH (76%+) · MID (55-76%) · LOW (0-55%) |
-| Sleep Score | SURFACE (84%+) · MID-DEPTH (78-83%) · DEEP (72-77%) · ABYSS (<72%) |
+| Sleep Score | SURFACE (83%+) · MID-DEPTH (78–<83%) · DEEP (72-77%) · ABYSS (<72%) |
 
 ### 12-State Behavioral Matrix
 
@@ -363,8 +363,8 @@ Critical: Pick based on theme, not creature
 
 | Sleep Score % | Level | Keywords | Visibility |
 |--------------|-------|----------|------------|
-| 84%+ | **SURFACE** | Celestial, Elevated, Bright, Open | 70-100% visible |
-| 78-83% | **MID-DEPTH** | Beneath, Overhang, Partial-sky, One-direction-light | 50-70% visible |
+| 83%+ | **SURFACE** | Celestial, Elevated, Bright, Open | 70-100% visible |
+| 78–<83% | **MID-DEPTH** | Beneath, Overhang, Partial-sky, One-direction-light | 50-70% visible |
 | 72-77% | **DEEP** | Chamber, Ceiling-visible, Shaft-light, Distant-opening | 40-50% visible |
 | <72% | **ABYSS** | Sealed, Compression-fractures, Interior-pressure, No-above | 40% minimum |
 

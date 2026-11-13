@@ -65,14 +65,31 @@ class ZoneAwareRevalidationTests(unittest.TestCase):
         self.assertEqual(zone_mismatches[0]["fresh"], "MID")
 
     def test_sleep_score_zone_cross_is_mismatch(self):
-        """Sleep score 84 (SURFACE) -> 83 (MID-DEPTH)."""
-        original = _snapshot(public_values_override={"sleep_score_pct": 84.0})
-        fresh = _snapshot(public_values_override={"sleep_score_pct": 83.0})
+        """Sleep score 83 (SURFACE) -> 82 (MID-DEPTH)."""
+        original = _snapshot(public_values_override={"sleep_score_pct": 83.0})
+        fresh = _snapshot(public_values_override={"sleep_score_pct": 82.0})
         mismatches, _drift = self.pipeline._compare_whoop_snapshots(original, fresh)
         zone_mismatches = [m for m in mismatches if m["field"] == "sleep_score_zone"]
         self.assertEqual(len(zone_mismatches), 1)
         self.assertEqual(zone_mismatches[0]["original"], "SURFACE")
         self.assertEqual(zone_mismatches[0]["fresh"], "MID-DEPTH")
+
+    def test_sleep_surface_cutoff_is_83(self):
+        for score, expected in [(71, 'ABYSS'), (72, 'DEEP'), (77, 'DEEP'),
+                                (78, 'MID-DEPTH'), (82, 'MID-DEPTH'),
+                                (82.9, 'MID-DEPTH'), (83, 'SURFACE'),
+                                (84, 'SURFACE'), (100, 'SURFACE')]:
+            with self.subTest(score=score):
+                zones = _snapshot(public_values_override={'sleep_score_pct': score})['zones']
+                self.assertEqual(zones['sleep_score_zone'], expected)
+
+    def test_84_to_83_sleep_drift_stays_surface(self):
+        original = _snapshot(public_values_override={'sleep_score_pct': 84.0})
+        fresh = _snapshot(public_values_override={'sleep_score_pct': 83.0})
+        mismatches, drift = self.pipeline._compare_whoop_snapshots(original, fresh)
+        self.assertEqual(mismatches, [])
+        self.assertEqual(fresh['zones']['sleep_score_zone'], 'SURFACE')
+        self.assertTrue(any(d['field'] == 'sleep_score_pct' for d in drift))
 
     def test_moon_count_cross_is_mismatch(self):
         """Sleep hours 7.5 (Moon 3) -> 7.4 (Moon 2)."""
