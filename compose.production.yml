@@ -1,5 +1,6 @@
 services:
   pipeline:
+    hostname: state-zero-pipeline
     build:
       context: .
       dockerfile: Dockerfile.flow-shadow
