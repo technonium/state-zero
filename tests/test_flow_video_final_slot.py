@@ -34,7 +34,7 @@ class FinalSlotTests(unittest.TestCase):
             diagnostic = root / 'flow_video_diagnostics.json'
             context = root / 'flow_video_attempt_1.context.json'
             identity = {'request': {'prompt': 'original', 'start_frame_sha256': hashlib.sha256(art.read_bytes()).hexdigest()},
-                        'profile': 'shadow', 'project': '', 'settings': 'veo-fast/i2v/9:16/x1/8s'}
+                        'profile': 'shadow', 'project': '', 'settings': 'omni-1.2-flash/i2v/9:16/x1/8s/720p'}
             request_hash = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
             video_receipt(root, request_hash, '22222222-2222-4222-8222-222222222222')
             receipt_path = context.with_name('flow_video_attempt_1.result.json')

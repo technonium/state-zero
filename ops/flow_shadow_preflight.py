@@ -92,7 +92,7 @@ async def inspect_editor(project_id: str, profile: str) -> tuple[str, str | None
                 ("video_settings", lambda page: MigratedComposer().apply_video_settings(
                     page, GenerateVideoRequest(prompt="preflight only", mode=Mode.I2V,
                                                aspect=VideoAspect.PORTRAIT,
-                                               model=getattr(VideoModel, FLOW_VIDEO_ENUM), count=1,
+                                               model=getattr(VideoModel, FLOW_VIDEO_ENUM), count=1, duration=8, resolution="720p",
                                                start_image=Path("/preflight/no-upload.png")))),
             )
             for check_name, check in checks:

@@ -37,11 +37,12 @@ class FlowProviderTests(FrozenFlowCalls, unittest.TestCase):
         command = client.video_command("move slowly", Path("/shadow/start.png"), Path("/shadow/raw.mp4"))
         self.assertEqual(command[:3], ["gflow", "video", "i2v"])
         self.assertEqual(command[command.index("--initial-frame") + 1], "/shadow/start.png")
-        self.assertEqual(command[command.index("--model") + 1], "veo-fast")
+        self.assertEqual(command[command.index("--model") + 1], "omni-1.2-flash")
         self.assertEqual(command[command.index("--aspect") + 1], "9:16")
         self.assertEqual(command[command.index("--count") + 1], "1")
         self.assertEqual(command[command.index("--out-dir") + 1], "/shadow")
-        self.assertNotIn("--duration", command)
+        self.assertEqual(command[command.index("--duration") + 1], "8")
+        self.assertEqual(command[command.index("--resolution") + 1], "720p")
         self.assertNotIn("t2v", command)
 
     def test_flow_validation_does_not_require_google_api_key(self):

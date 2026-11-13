@@ -237,7 +237,7 @@ class PanelRecoveryTest(unittest.IsolatedAsyncioTestCase):
 
 @unittest.skipIf(MigratedComposer is None, "Requires the shadow image's pinned gflow")
 class VideoRecordTest(unittest.TestCase):
-    def record(self, model="veo_3_1_i2v_s_fast_portrait", marker=None):
+    def record(self, model="macaron_cookie_i2v_8s_portrait", marker=None):
         ids = ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222", "33333333-3333-4333-8333-333333333333"]
         details = [None] * 14
         details[6] = [None, [[model, 2, [1], None, 1, 1]]]
@@ -416,7 +416,7 @@ class NanoBanana21ReadbackTests(unittest.IsolatedAsyncioTestCase):
         from gflow_cli.exceptions import ConfigurationError
         for method, model, offered in (
                 ('_select_image_model', Model.NARWHAL, ['Nano Banana 2', 'Nano Banana 2 Lite']),
-                ('_select_model', VideoModel.VEO_3_1_FAST, ['Veo 3.1 - Lite'])):
+                ('_select_model', VideoModel.OMNI_1_2_FLASH, ['Veo 3.1 - Lite'])):
             with self.subTest(method=method):
                 button = MagicMock(wait_for=AsyncMock(), text_content=AsyncMock(return_value='Other'), click=AsyncMock())
                 pane = MagicMock(); pane.locator.return_value.filter.return_value.first = button

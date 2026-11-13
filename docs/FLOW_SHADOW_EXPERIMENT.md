@@ -20,14 +20,13 @@ guarantee either. Do not use additional accounts to bypass restrictions or quota
 ## Flow credits and costs
 
 Google currently provides **50 daily Flow credits**, including for free accounts.
-This setup requests one image and one 8-second Veo Fast video. For non-Ultra
-accounts, the video costs **20 credits**. When Flow quotes the image at **0 credits**,
-one successful run uses **20 credits total**: `50 - 20 = 30` remaining. Two such
-runs fit within 50 credits, leaving 10; State Zero normally runs once per day.
-
-Additional chargeable generations consume more credits. Plus, Pro and Ultra plans
-currently offer 1080p video upscaling at **0 additional credits**; free accounts
-do not have that export, so State Zero can scale the original locally instead.
+This setup requests one Nano Banana 2.1 image and one 8-second Omni 1.2 Flash
+video at 720p: **3 credits/second, 24 credits per video**. When Flow quotes the
+image at **0 credits**, one successful run uses **24 credits total**:
+`50 - 24 = 26` remaining. Two video attempts cost **48 credits**, leaving 2;
+State Zero normally runs once per day and allows at most one replacement.
+Additional chargeable generations consume more credits. Provider upscaling is
+off; the 720p original is scaled locally to 1080p without spending Flow credits.
 Unused daily credits do not roll over. Free-account access can be limited during
 peak hours. Check the selected settings in Flow and Google's
 [current credit rates](https://support.google.com/flow/answer/16526234?hl=en)
@@ -232,16 +231,23 @@ xvfb-run -a python3 -u /app/ops/flow_shadow_run.py --manual
 
 `--manual` bypasses only the schedule clock gate. WHOOP readiness, editor
 preflight, isolation checks, and the one-attempt-per-date claim remain enforced.
-The image request is Nano Banana 2.1, 3:4, one output. The video request is Veo Fast,
-9:16, one output, using a local 1080×1920 black-padded start frame.
+The image request is Nano Banana 2.1, 3:4, one output. The Flow video request is
+**Omni 1.2 Flash**, start-frame only, **8 seconds / 720p / 9:16 / x1**, using a
+local 1080×1920 black-padded start frame. The duration slider and resolution are
+explicitly selected and read back. `FLOW_VIDEO_EXPLICIT_DURATION` is no longer
+used. `FLOW_VIDEO_UPSCALE_1080P=false`: no provider upscale is requested; validated
+720p originals are scaled locally to 1080×1920. Local scaling adds no source detail.
 
-The default `FLOW_VIDEO_EXPLICIT_DURATION=false` omits a duration control that
-may be unavailable; the downloaded clip must still measure 7.5–8.5 seconds.
-`FLOW_VIDEO_UPSCALE_1080P=true` attempts Download → 1080p on the existing clip.
-Upgrade-only options are skipped. The file is accepted only after validating
-1080×1920 dimensions, duration, and audio against the original. Otherwise the
-720p original is scaled locally to 1080×1920; scaling adds no source detail.
-No 4K download is requested.
+Before forwarding, the guard checks the UI settings and the actual request key:
+`macaron_cookie_` family, i2v only, no interpolation (`i2v_fl`), r2v, t2v, extend,
+non-720p resolution, or non-8s duration token. The plain start-frame wire key is
+unmeasured; it is checked as observed, never inferred from the interpolation key.
+Mismatches are blocked unsent and recorded privately. Originals with a scene cut
+above 0.25 fail the attempt and cannot be re-adopted by recovery.
+
+Veo 3.1 Fast retires on 5 December 2026. The separate API fallback remains
+`gemini-omni-1.1-flash`; Google auto-routes it to 1.2 from 3 December. This Flow
+migration does not change that API setting.
 
 `FLOW_IMAGE_UPSCALE_2K` defaults to `false`; enable it only after verifying the
 account offers a usable export. Preserve the original and inspect its actual
@@ -318,7 +324,7 @@ dates; generation continues on day eight and afterward.
 | Sign-in required or standard controls unavailable | Stop before generation and send an actionable alert. |
 | Transient failure proven to precede submission | Retry once with a fresh browser. |
 | Submitted media is pending or download failed | Recover the recorded media ID; never regenerate to solve a download error. |
-| Veo explicitly failed without a policy/quota rejection | Permit one replacement; at most two video submissions per date. |
+| Video explicitly failed or its original has a scene cut, without a policy/quota rejection | Permit one replacement; at most two video submissions per date. Never recover the rejected cut clip. |
 | Unknown submission state, rejection, quota, or second failure | Preserve evidence, alert, and stop; no blind resubmission or API media fallback. |
 
 The image applies the patches in `ops/gflow-*.patch` for Agent-panel recovery,
@@ -379,3 +385,26 @@ reset it or associate a different post by title or recency.
 Retain the verified release image: the pinned Chrome package may become
 unavailable for a future rebuild, and Flow UI/model changes require reviewing
 the pinned patches and repeating acceptance before an upgrade.
+
+## One isolated Omni Flow probe
+
+After the Phase C approval, run **once** in the deployed Flow container:
+
+```sh
+xvfb-run -a python3 -u /app/ops/flow_omni_probe.py \
+  --probe-id omni12-approved-unique-id \
+  --frame /path/to/recent/generated_art.png \
+  --prompt-file /path/to/recent/video_prompt.txt
+```
+
+The probe refuses 09:30–14:30 IST and a busy canonical pipeline lock. It holds
+that lock, uses the real video adapter once, and consumes its ID even if the
+attempt fails unsent. No replacement, API media fallback, LLM, Instagram or
+Telegram is used. Files and `report.json` stay under
+`<private root>/runtime/probe/<probe-id>/`, apart from the existing canonical lock
+and authenticated browser profile. Daily state and `cards.db` are untouched.
+The validation-ID override is not used because it targets `runtime/validation/`.
+If the frame's directory contains `daily_data.json` and `card_metadata.json`,
+read-only copies are used for an isolated card render; otherwise carding is
+explicitly skipped. Inspect the actual key, pre-send readback, receipt, original,
+scene result and scaled video before considering a production cutover.

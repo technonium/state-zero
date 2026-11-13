@@ -365,7 +365,7 @@ def process_image_card(art_path: Path, data: dict, output_path: Path):
 def process_video_card(video_path: Path, data: dict, output_path: Path):
     """
     Format B: 16:9 Video Layout
-    VEO3 vertical video is mapped to exactly CARD_W x CARD_H at
+    The validated portrait video is mapped to exactly CARD_W x CARD_H at
     VIDEO_ART_OFFSET_Y using FFmpeg.
     """
     check_ffmpeg()

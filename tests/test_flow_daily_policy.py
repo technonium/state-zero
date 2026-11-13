@@ -18,6 +18,8 @@ from flow_media_client import FlowCommandError, FlowMediaClient
 
 class DailyFlowPolicyTests(unittest.TestCase):
     def setUp(self):
+        scene = patch('google_video_client.first_video_cut', return_value=None)  # Synthetic video bytes.
+        scene.start(); self.addCleanup(scene.stop)
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
@@ -98,14 +100,14 @@ class DailyFlowPolicyTests(unittest.TestCase):
             raw = Path(command[command.index('--output') + 1])
             raw.write_bytes(b'corrupt')
             return {'succeeded': True, 'media_id': 'exact-video', 'local_path': str(raw),
-                    'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
+                    'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}
         def probe(path):
             if path.read_bytes() == b'corrupt':
                 raise subprocess.CalledProcessError(1, 'ffprobe')
             return 1080, 1920, 8, True
         with patch.object(client, '_run_json', side_effect=submit) as submit_mock, \
                 patch.object(client, '_probe_video', side_effect=probe), \
-                patch.object(client, '_readback_media', return_value={'succeeded': True, 'media_id': 'exact-video', 'local_path': str(recovered), 'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}) as recover, \
+                patch.object(client, '_readback_media', return_value={'succeeded': True, 'media_id': 'exact-video', 'local_path': str(recovered), 'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}) as recover, \
                 patch('flow_media_client.run_bounded') as upscale, \
                 patch('flow_media_client.GoogleVideoClient.generate_from_image') as api:
             client.generate_video('original', art, self.root / 'generated_video.mp4')
@@ -121,7 +123,7 @@ class DailyFlowPolicyTests(unittest.TestCase):
         art = self.save_image({}, self.root / 'generated_art.png')
         recovered = self.root / 'recovered.mp4'; recovered.write_bytes(b'original video')
         result = {'succeeded': True, 'media_id': 'exact-video',
-                  'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
+                  'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}
         def submit(command, timeout, marker):
             marker.write_text('submit_attempted\n')
             marker.with_suffix('.context.json').write_text('{}')
@@ -454,13 +456,13 @@ class DailyFlowPolicyTests(unittest.TestCase):
         request = {} if stage == 'image' else {
             'prompt': 'original', 'start_frame_sha256': hashlib.sha256(image.read_bytes()).hexdigest()}
         identity = {'request': request, 'profile': 'shadow', 'project': '',
-                    'settings': 'Nano Banana 2.1/3:4/x1' if stage == 'image' else 'veo-fast/i2v/9:16/x1/8s'}
+                    'settings': 'Nano Banana 2.1/3:4/x1' if stage == 'image' else 'omni-1.2-flash/i2v/9:16/x1/8s/720p'}
         request_hash = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         result = ({'count': 1, 'model': 'NARWHAL', 'images': [{'media_name': 'exact',
                    'local_path': str(asset), 'model_name_type': 'BELUGA',
                    'aspect_ratio': 'IMAGE_ASPECT_RATIO_PORTRAIT_THREE_FOUR'}]}
                   if stage == 'image' else {'succeeded': True, 'media_id': '22222222-2222-4222-8222-222222222222', 'local_path': str(asset),
-                   'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}})
+                   'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}})
         attempt = {'number': 1, 'failure': {'category': 'post_submit_error'}, 'recovery_deadline': 1}
         diagnostic = root / f'flow_{stage}_diagnostics.json'
         diagnostic.write_text(json.dumps({'record_version':2, 'request_hash': request_hash, 'daily_policy': True,

@@ -639,7 +639,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         "run_origin": "validation" if args.validation_id else "recovery" if recovery else "manual" if args.manual else "scheduled",
         "validation_id": args.validation_id,
         "versions": _runtime_versions(private_root),
-        "credits_estimate_basis": "20 per Veo Fast submit marker; upper bound, failed generations may be uncharged",
+        "credits_estimate_basis": "24 per Omni 1.2 submit marker; upper bound, failed generations may be uncharged",
         "stages": {"preflight": "pending", "pipeline": "pending", "artifacts": "pending", "archive": "pending"},
         "stage_times": {},
         "artifacts": {},
@@ -732,7 +732,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
                 except (OSError, ValueError):
                     pass
         report["flow_credits_after"] = _flow_credits()
-        report["credits_estimated_video"] = 20 * len(list(output.glob("flow_video_attempt_*.submit")))
+        report["credits_estimated_video"] = 24 * len(list(output.glob("flow_video_attempt_*.submit")))
         if report["flow_credits_before"] is not None and report["flow_credits_after"] is not None:
             report["flow_credits_observed_change"] = report["flow_credits_before"] - report["flow_credits_after"]
         report["memory"] = memory.stop()
@@ -764,7 +764,7 @@ def _run_locked(args, private_root: Path, run_date: str, current: date, start: d
         print(f"Shadow date {run_date} failed; inspect private log and report before manual retry")
         return 1
     report["flow_credits_after"] = _flow_credits()
-    report["credits_estimated_video"] = 20 * len(list(output.glob("flow_video_attempt_*.submit")))
+    report["credits_estimated_video"] = 24 * len(list(output.glob("flow_video_attempt_*.submit")))
     if report["flow_credits_before"] is not None and report["flow_credits_after"] is not None:
         report["flow_credits_observed_change"] = report["flow_credits_before"] - report["flow_credits_after"]
     report["memory"] = memory.stop()

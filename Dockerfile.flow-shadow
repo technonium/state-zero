@@ -37,6 +37,7 @@ RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-s
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-video-record.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-original-download.patch
 RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-image-submit.patch
+RUN cd /usr/local/lib/python3.11/site-packages && git apply -p2 /app/ops/gflow-omni12.patch
 RUN useradd --create-home --uid 10001 --gid shadow --shell /bin/sh shadow \
  && mkdir -p /opt/state-zero-flow-shadow /opt/state-zero-flow-profile \
  && chown -R shadow:shadow /opt/state-zero-flow-shadow /opt/state-zero-flow-profile /app
@@ -55,9 +56,8 @@ ENV PYTHONUNBUFFERED=1 \
     PORTFOLIO_MEDIA_ENABLED=true \
     MEDIA_GENERATION_PROVIDER=flow \
     FLOW_API_FALLBACK_ENABLED=false \
-    FLOW_VIDEO_EXPLICIT_DURATION=false \
     FLOW_IMAGE_UPSCALE_2K=false \
-    FLOW_VIDEO_UPSCALE_1080P=true \
+    FLOW_VIDEO_UPSCALE_1080P=false \
     GOOGLE_API_FALLBACK_ENABLED=false \
     PIPELINE_TIMEZONE=Asia/Kolkata
 

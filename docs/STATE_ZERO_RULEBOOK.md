@@ -571,7 +571,8 @@ refraction, structured geometric expansion theme woven throughout.
 
 ## VIDEO PROMPT / CAMERA MOVEMENT
 
-**Purpose:** Generates the video animation prompt that drives VEO image-to-video generation.
+**Purpose:** Generates the video animation prompt that drives Omni 1.2 Flash image-to-video generation.
+Flow appends the single-continuous-shot constraint at dispatch; templates are unchanged.
 
 ### Cinematic DNA (NEVER CHANGE)
 - Camera behaves as **disembodied consciousness** settling on the scene — not a physical camera rig

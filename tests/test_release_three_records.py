@@ -24,7 +24,7 @@ class ReleaseThreeRecordTests(unittest.TestCase):
         self.root = Path(directory.name)
         self.output = self.root / 'generated_art.png'
         self.record = self.root / 'flow_image_diagnostics.json'
-        for guard in (patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'true'}, clear=True),
+        for guard in (patch('google_video_client.first_video_cut', return_value=None), patch.dict(os.environ, {'FLOW_API_FALLBACK_ENABLED': 'true'}, clear=True),
                       patch.object(FlowMediaClient, '_generation_seconds', return_value=7200),
                       patch('utils.get_pipeline_now', return_value=datetime(2026, 10, 27, 10)),
                       patch.object(FlowMediaClient, '_notify_transition')):
@@ -124,7 +124,7 @@ class ReleaseThreeRecordTests(unittest.TestCase):
             video_receipt(self.root, json.loads(diagnostic.read_text())['request_hash'], media, attempt=2)
             raw = Path(command[command.index('--output')+1]); raw.write_bytes(b'validated-video')
             return dict(succeeded=True, media_id=media, local_path=str(raw),
-                request=dict(count=1,model='veo_3_1_fast',mode='i2v',aspect='portrait'))
+                request=dict(count=1,model='omni_1_2_flash',mode='i2v',aspect='portrait'))
         with patch.object(FlowMediaClient, '_run_json', side_effect=upload_then_sent) as cli, \
                 patch.object(FlowMediaClient, '_probe_video', return_value=(1080,1920,8,True)), \
                 patch.object(FlowMediaClient, '_recover_pending') as recovery, \
@@ -207,7 +207,7 @@ class ReleaseThreeRecordTests(unittest.TestCase):
             video_receipt(self.root, request_hash, media)
             raw = Path(command[command.index('--output')+1]); raw.write_bytes(b'validated-video')
             return dict(succeeded=True, media_id=media, local_path=str(raw),
-                request=dict(count=1,model='veo_3_1_fast',mode='i2v',aspect='portrait'))
+                request=dict(count=1,model='omni_1_2_flash',mode='i2v',aspect='portrait'))
         def crash(source, destination):
             if Path(destination).name == 'flow_raw_video.mp4': raise OSError('processing crash')
             return copyfile(source, destination)

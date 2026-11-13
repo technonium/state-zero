@@ -216,13 +216,13 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 marker.with_suffix('.context.json').write_text('{}')
                 marker.write_text('submit_attempted\n')
                 return {'succeeded': True, 'media_id': 'exact-id', 'local_path': str(raw),
-                        'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
+                        'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}
             recovered = root / 'recovered.mp4'
             recovered.write_bytes(b'original')
             client = FlowMediaClient()
             with patch.object(client, '_run_json', side_effect=generated) as generate, \
                     patch.object(client, '_probe_video', return_value=(1080, 1920, 8, True)), \
-                    patch.object(client, '_readback_media', return_value={'succeeded': True, 'media_id': 'exact-id', 'local_path': str(recovered), 'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}) as recover:
+                    patch.object(client, '_readback_media', return_value={'succeeded': True, 'media_id': 'exact-id', 'local_path': str(recovered), 'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}) as recover:
                 self.frozen_video(client, 'move', art, video)
                 video.unlink()
                 raw.unlink()
@@ -314,7 +314,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
                 (root / 'flow_raw_video.mp4').write_bytes(b'original')
                 marker.write_text('submit_attempted\n')
                 return {'succeeded': True, 'media_id': 'id', 'local_path': str(root / 'flow_raw_video.mp4'),
-                        'request': {'count': 1, 'model': 'veo_3_1_fast', 'mode': 'i2v', 'aspect': 'portrait'}}
+                        'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}
             def command(cmd, **kwargs):
                 if 'flow_video_upscale.py' in str(cmd):
                     Path(cmd[4]).write_bytes(b'corrupt')

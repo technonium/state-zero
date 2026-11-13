@@ -27,7 +27,7 @@ def video_receipt(directory, request_hash, media_id, *, attempt=1):
     frame, _ = GoogleVideoClient._to_letterboxed_png_bytes(directory/'input_art.png')
     (directory/'flow_start_frame.png').write_bytes(frame)
     data = dict(version=1, request_hash=request_hash, profile='shadow', project_id='',
-        baseline=[], seed=None, prompt_hash='b'*64, model='veo_3_1_i2v_s_fast_portrait',
+        baseline=[], seed=None, prompt_hash='b'*64, model='macaron_cookie_i2v_8s_portrait',
         aspect='portrait', count=1, attempt=attempt,
         frozen_inputs_sha256=hashlib.sha256((directory/'flow_inputs.json').read_bytes()).hexdigest(),
         kind='video', source_hash=hashlib.sha256(frame).hexdigest(), frame_id='33333333-3333-4333-8333-333333333333',
@@ -37,8 +37,8 @@ def video_receipt(directory, request_hash, media_id, *, attempt=1):
         actual_model=data['model'], readback_hash=identity_hash(data))))
     (directory/f'flow_video_attempt_{attempt}.result.json').write_text(json.dumps(dict(
         request_hash=request_hash, profile='shadow', project_id='', media_id=media_id,
-        workflow_id='44444444-4444-4444-8444-444444444444', succeeded=True,
-        request=dict(count=1,model='veo_3_1_fast',mode='i2v',aspect='portrait'))))
+        workflow_id='44444444-4444-4444-8444-444444444444', succeeded=True, actual_model=data['model'],
+        request=dict(count=1,model='omni_1_2_flash',mode='i2v',aspect='portrait'))))
 
 
 class FrozenFlowCalls:
@@ -46,7 +46,7 @@ class FrozenFlowCalls:
         from datetime import datetime
         from unittest.mock import patch
         from flow_media_client import FlowMediaClient
-        for clock in (patch.object(FlowMediaClient, '_generation_seconds', return_value=7200),
+        for clock in (patch('google_video_client.first_video_cut', return_value=None), patch.object(FlowMediaClient, '_generation_seconds', return_value=7200),
                       patch('utils.get_pipeline_now', return_value=datetime(2026, 10, 25, 10)),
                       patch('notifier.Notifier.notify_status', return_value=False)):
             clock.start()

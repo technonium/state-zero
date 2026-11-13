@@ -1,0 +1,196 @@
+--- a/src/gflow_cli/api/video.py
++++ b/src/gflow_cli/api/video.py
+@@ -24,6 +24,17 @@
+ # Type alias used with cast() in response parsers — avoids repeating the
+ # string-form annotation "dict[str, Any]" on every call (SonarCloud S1192).
+ _StrAnyDict = dict[str, Any]
++
++
++def is_omni12_i2v_model(model: object) -> bool:
++    """Accept only the approved 720p, eight-second start-frame wire family."""
++    if not isinstance(model, str) or not re.fullmatch(r"macaron_cookie_[a-z0-9_]+", model):
++        return False
++    tokens = model.split("_")
++    return (tokens.count("i2v") == 1 and "i2v_fl" not in model
++            and not any(value in model for value in ("r2v", "t2v", "extend"))
++            and all(not re.fullmatch(r"\d+(?:p|k)", token) or token == "720p" for token in tokens)
++            and all(not re.fullmatch(r"\d+s", token) or token == "8s" for token in tokens))
+ 
+ 
+ class Mode(StrEnum):
+@@ -60,6 +71,7 @@
+     """
+ 
+     OMNI_FLASH = "omni_flash"
++    OMNI_1_2_FLASH = "omni_1_2_flash"
+     VEO_3_1_LITE = "veo_3_1_lite"
+     VEO_3_1_FAST = "veo_3_1_fast"
+     VEO_3_1_QUALITY = "veo_3_1_quality"
+@@ -97,6 +109,9 @@
+ # `gflow models` can enumerate the aliases without duplicating them.
+ _VIDEO_MODEL_FROM_CLI: dict[str, VideoModel] = {
+     "omni_flash": VideoModel.OMNI_FLASH,
++    "omni_1.2_flash": VideoModel.OMNI_1_2_FLASH,
++    "omni_1_2_flash": VideoModel.OMNI_1_2_FLASH,
++    "omni_1.2": VideoModel.OMNI_1_2_FLASH,
+     "omni": VideoModel.OMNI_FLASH,
+     "flash": VideoModel.OMNI_FLASH,
+     "veo_3_1_lite": VideoModel.VEO_3_1_LITE,
+--- a/src/gflow_cli/api/transports/migrated_composer.py
++++ b/src/gflow_cli/api/transports/migrated_composer.py
+@@ -382,6 +382,7 @@
+ #: moved* account may be routed to the new host for — see :func:`migrated_can_serve`.
+ VIDEO_MODEL_MENU_LABELS: dict[VideoModel, str] = {
+     VideoModel.OMNI_FLASH: "Omni 1.1 Flash",
++    VideoModel.OMNI_1_2_FLASH: "Omni 1.2 Flash",
+     VideoModel.VEO_3_1_LITE: "Veo 3.1 - Lite",
+     VideoModel.VEO_3_1_FAST: "Veo 3.1 - Fast",
+     VideoModel.VEO_3_1_QUALITY: "Veo 3.1 - Quality",
+@@ -1568,7 +1569,10 @@
+                             "GFLOW_CLI_FLOW_HOST=labs.google."
+                         ),
+                     )
+-                await self._select(page, pane, axis="duration", text=f"{request.duration}s")
++                if model is VideoModel.OMNI_1_2_FLASH:
++                    await self._select_omni12_duration(page, pane, request.duration)
++                else:
++                    await self._select(page, pane, axis="duration", text=f"{request.duration}s")
+             elif request.mode is Mode.R2V:
+                 await self._pin_r2v_duration(page, pane)
+             if request.resolution is not None:
+@@ -1771,6 +1775,64 @@
+             error=f"{remaining} visible overlay(s)",
+         )
+         raise UiSelectorDriftError(detail=detail)
++
++    async def _select_omni12_duration(self, page: Page, pane: Any, seconds: int) -> None:
++        """Measured Omni 1.2 slider: index 0..12 maps to 3..15 seconds.
++
++        Free accounts expose 0..7 (3..10 seconds). Never clamp a subscriber-only
++        duration or reinterpret a changed slider: validate the structure and read
++        both its index and displayed seconds back before leaving settings.
++        """
++        component = pane.locator("flow-duration-slider")
++        slider = component.locator('input[type="range"]')
++        try:
++            await page.locator(MENU_ITEM).first.wait_for(state="hidden", timeout=4000)
++            await slider.first.wait_for(state="visible", timeout=4000)
++        except Exception as exc:
++            raise UiSelectorDriftError(
++                detail="Omni 1.2 duration slider missing (model menu open or slider unmounted)"
++            ) from exc
++        if await slider.count() != 1:
++            raise UiSelectorDriftError(detail="Omni 1.2 duration slider ambiguous")
++        minimum = await slider.get_attribute("min")
++        maximum = await slider.get_attribute("max")
++        step = await slider.get_attribute("step")
++        if minimum != "0" or maximum not in ("7", "12") or step != "1":
++            raise UiSelectorDriftError(detail="Omni 1.2 duration slider range changed")
++        index = seconds - 3
++        if not 0 <= index <= int(maximum) or not await slider.is_enabled():
++            raise ConfigurationError(
++                detail=f"Omni 1.2 duration {seconds}s is not offered by this account",
++                remediation_hint="Choose an offered duration; 11–15s requires a Google AI plan.",
++            )
++        await slider.press("Home")
++        for _ in range(index):
++            await slider.press("ArrowRight")
++        await asyncio.sleep(0.2)
++        label = await component.locator(".duration-slider-value").inner_text()
++        actual_index = await slider.input_value()
++        if actual_index != str(index) or not re.fullmatch(rf"\s*{seconds}\s*(?:s|sec)\s*", label):
++            raise UiSelectorDriftError(
++                detail=(
++                    f"Omni 1.2 duration slider did not bind {seconds}s: "
++                    f"index={actual_index}, label={label!r}"
++                )
++            )
++
++    async def _omni12_readback(self, page: Page) -> dict:
++        pane = await self._open_pane(page)
++        try:
++            model = await pane.get_by_role("button", name="Select model family", exact=True).inner_text()
++            selected = [" ".join(value.split()) for value in await pane.locator('[role="radio"][aria-checked="true"]').all_text_contents()]
++            slider = pane.locator('flow-duration-slider input[type="range"]')
++            seconds = await pane.locator('flow-duration-slider .duration-slider-value').inner_text()
++            return {"model": " ".join(model.replace("arrow_drop_down", "").split()),
++                    "duration": 8 if await slider.input_value() == "5" and re.fullmatch(r"\s*8\s*(?:s|sec)\s*", seconds) else None,
++                    "resolution": "720p" if selected.count("720p") == 1 else None,
++                    "aspect": "9:16" if any(re.search(r"(?:^|\s)9:16$", v.strip()) for v in selected) else None,
++                    "count": 1 if selected.count("x1") == 1 else None}
++        finally:
++            await self._close_pane(page, strict=True)
+ 
+     async def _pin_r2v_duration(self, page: Page, pane: Any) -> None:
+         """Bind the base duration for a references run, when this pane offers durations.
+@@ -2758,12 +2820,15 @@
+         from gflow_cli.api.transports.batchexecute import _generation_records
+         data = getattr(self,"_shadow_video_context",None)
+         forwarded = set()
++        structure_evidence = []
+         async def guard(route,request):
+             from flow_readback import guard_video,video_submit_rpc
+             rpc = video_submit_rpc(request)
+-            if rpc not in SUBMIT_RPCS:
++            if rpc is None:
+                 await route.continue_()
+                 return
++            from flow_readback import video_structure
++            structure_evidence.append(video_structure(data or {}, "request", rpc, request.post_data))
+             forwarded.add(request)
+             problem = await guard_video(route,request,data,rpc)
+             if problem:
+@@ -2858,7 +2923,7 @@
+             # its id from the frame itself (measured 2026-09-17).
+             if rpcid is not None and rpcid not in SUBMIT_RPCS and rpcid not in STATUS_RPCS:
+                 return
+-            correlated = (response.request in forwarded if data is not None and rpcid in SUBMIT_RPCS else
++            correlated = (response.request in forwarded if data is not None and (rpcid in SUBMIT_RPCS or response.request in forwarded) else
+                 bool(workflow and any(value in _post_data(response.request) for value in workflow.values())))
+             if data is not None and rpcid in SUBMIT_RPCS and not correlated:
+                 return
+@@ -2866,6 +2931,9 @@
+             try:
+                 text = await response.text()
+             except Exception as exc:
++                if data is not None and (response.request in forwarded or rpcid in STATUS_RPCS):
++                    structure_evidence.append({"phase": "reply", "rpc_ids": [rpcid] if rpcid else [],
++                                               "body_unavailable": True, "error_class": type(exc).__name__})
+                 if correlated and data is not None:
+                     from flow_readback import note_video_response
+                     note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response,exc=exc,read_started=read_started,event_received=event_received)
+@@ -2875,6 +2943,9 @@
+                     if not workflow and not submitted.done():
+                         submitted.set_exception(error)
+                 return
++            if data is not None and (response.request in forwarded or rpcid in STATUS_RPCS):
++                from flow_readback import video_structure
++                structure_evidence.append(video_structure(data, "reply", rpcid, text))
+             if correlated and data is not None:
+                 from flow_readback import note_video_response
+                 note_video_response(data,phase="submit" if not workflow else "poll",rpc=rpcid,response=response,read_started=read_started,event_received=event_received)
+@@ -3051,6 +3122,13 @@
+             if terminal.done() and not terminal.cancelled():
+                 terminal.exception()
+             if data is not None:
++                if data.get("wire_verified"):
++                    from flow_readback import receipt_path, context_path, dump_video_structure
++                    if not receipt_path(context_path(os.environ["GFLOW_SHADOW_SUBMIT_MARKER"])).exists():
++                        try:
++                            dump_video_structure(structure_evidence)
++                        except (OSError, ValueError):
++                            log.warning("migrated.structure_evidence_unavailable")
+                 for emitter,event,callback in listeners:
+                     emitter.remove_listener(event,callback)
+                 try:
+@@ -3549,6 +3627,10 @@
+     if os.getenv("GFLOW_SHADOW_SUBMIT_MARKER") and os.getenv("GFLOW_SHADOW_REQUEST_HASH"):
+         from flow_readback import prepare_video
+         composer._shadow_video_context = await prepare_video(page,pid,request.prompt,request.start_image,media_id)
++        try:
++            composer._shadow_video_context["ui_readback"] = await composer._omni12_readback(page)
++        except Exception as exc:
++            composer._shadow_video_context["ui_readback"] = {"error_class": type(exc).__name__}
+     record = await composer.submit_and_observe(
+         page,
+         poll_timeout_s=poll_timeout_s,

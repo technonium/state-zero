@@ -23,13 +23,13 @@ OTHER = '55555555-5555-4555-8555-555555555555'
 
 def video_row(media=MEDIA, workflow=WORKFLOW, frame=FRAME, prompt='synthetic', seed=123, status=3):
     info = [[None, 1, frame, [None, None, None, None]]]
-    settings = [['veo_3_1_i2v_s_fast_portrait', 2, [1], None, 1, 1], info]
+    settings = [['macaron_cookie_i2v_8s_portrait', 2, [1], None, 1, 1], info]
     detail = [[1792557770, 0], prompt, None, None, None,
               'https://example.invalid/poster', [None, settings, [], None, 1],
               None, [status], 1, 'https://example.invalid/poster', None, None, 2048]
     result = [None, seed, None, None, None, None, None, prompt,
               'https://flow-content.google/video/' + workflow + '?signed=private',
-              None, None, None, 'veo_3_1_i2v_s_fast_portrait', '', None, False, 1]
+              None, None, None, 'macaron_cookie_i2v_8s_portrait', '', None, False, 1]
     return [workflow, PROJECT, media, None, None, detail, None,
             [result, [None, None, [8]], [workflow], None, None, []]]
 
@@ -40,8 +40,8 @@ def listing(*rows):
 
 def context():
     return dict(version=1, kind='video', project_id=PROJECT, profile='shadow', baseline=[],
-                model='veo_3_1_i2v_s_fast_portrait', aspect='portrait', count=1, duration=8,
-                wire_verified=True, seed=123, prompt_hash=hashlib.sha256(b'synthetic').hexdigest(), frame_id=FRAME)
+                model='macaron_cookie_i2v_8s_portrait', aspect='portrait', count=1, duration=8,
+                wire_verified=True, ui_readback={'model':'Omni 1.2 Flash','duration':8,'resolution':'720p','aspect':'9:16','count':1}, seed=123, prompt_hash=hashlib.sha256(b'synthetic').hexdigest(), frame_id=FRAME)
 
 
 class VideoSelectionTests(unittest.TestCase):
@@ -134,7 +134,7 @@ class VideoSubmissionTests(unittest.IsolatedAsyncioTestCase):
             data=context() | {'attempt':1,'request_hash':'a'*64,'frozen_inputs_sha256':'b'*64,
                               'source_hash':'c'*64,'baseline':[],'wire_verified':False}
             readback.save(marker.with_suffix('.context.json'),data)
-            payload=[[[[None,None,[[['synthetic']]]],'veo_3_1_i2v_s_fast_portrait',1,None,[None,FRAME,None,None,None,[None,None,1,1]],[None]*6]], [None,None,None,None,None,PROJECT], [None,2]]
+            payload=[[[[None,None,[[['synthetic']]]],'macaron_cookie_i2v_8s_portrait',1,None,[None,FRAME,None,None,None,[None,None,1,1]],[None]*6]], [None,None,None,None,None,PROJECT], [None,2]]
             body='f.req='+json.dumps([[['eb1hJf',json.dumps(payload),None,'generic']]])
             request=Mock(post_data=body)
             async def forwarded():

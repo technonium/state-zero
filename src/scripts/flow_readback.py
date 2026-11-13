@@ -7,7 +7,7 @@ import re
 import sys
 import time
 from pathlib import Path
-from state_zero_models import FLOW_IMAGE_ENUM, FLOW_IMAGE_LABEL, FLOW_IMAGE_WIRE, FLOW_VIDEO_RESULT, FLOW_VIDEO_WIRE
+from state_zero_models import FLOW_IMAGE_ENUM, FLOW_IMAGE_LABEL, FLOW_IMAGE_WIRE, FLOW_VIDEO_RESULT, FLOW_VIDEO_LABEL, flow_video_model_matches
 from urllib.parse import parse_qs, unquote_plus, urljoin, urlsplit, urlunsplit
 
 
@@ -367,7 +367,7 @@ async def recover_candidate(client, context_file, data, deadline, output, mode, 
                 clip=select_video(listing,data,media_id=known.get('media_id') or media_id,
                                   workflow_id=known.get('workflow_id') or workflow_id)
                 result=dict(request_hash=data['request_hash'],profile=data['profile'],project_id=data['project_id'],
-                    succeeded=True,media_id=clip['media_id'],workflow_id=clip['workflow_id'],
+                    succeeded=True,media_id=clip['media_id'],workflow_id=clip['workflow_id'],actual_model=clip['actual_model'],
                     request={'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'})
                 selected={'bytes':clip['bytes']}
             else:
@@ -443,8 +443,8 @@ def select_video(listing, data, *, media_id=None, workflow_id=None):
     """Select one completed original using recorded identities, never list order."""
     from gflow_cli.api.transports.batchexecute import generation_record
     from gflow_cli.errors import WireFormatError
-    model = FLOW_VIDEO_WIRE
-    if (data.get('model') != model or data.get('aspect') != 'portrait'
+    model = data.get('model')
+    if (not (flow_video_model_matches(model) or model == FLOW_VIDEO_RESULT and not data.get('wire_verified')) or data.get('aspect') != 'portrait'
             or data.get('count') != 1 or data.get('duration') != 8):
         raise ReadbackIdentityError('Saved video settings differ')
     if not media_id and (data.get('baseline') is None or not data.get('frame_id')
@@ -472,7 +472,9 @@ def select_video(listing, data, *, media_id=None, workflow_id=None):
             frames = settings[1]
             seed = row[7][0][1]
             duration = row[7][1][2][0]
-            valid_settings = settings[0][0] == model and settings[0][2] == [1] and duration == 8
+            actual_model = settings[0][0]
+            valid_settings = (flow_video_model_matches(actual_model) and (not data.get('wire_verified') or actual_model == model)
+                              and settings[0][2] == [1] and duration == 8)
             bound_frame = len(frames) == 1 and frames[0][1] == 1 and frames[0][2] == data.get('frame_id')
             same_prompt = fingerprint(row[5][1]) == data.get('prompt_hash')
         except (IndexError, TypeError, KeyError):
@@ -490,7 +492,7 @@ def select_video(listing, data, *, media_id=None, workflow_id=None):
             continue
         matches.append((record, {'media_id':record.media_id, 'workflow_id':record.workflow_id,
                         'project_id':record.project_id, 'bytes':record.size_bytes,
-                        'video_url':record.video_url}))
+                        'video_url':record.video_url, 'actual_model':actual_model}))
     if len(matches) != 1:
         raise ReadbackUnavailable('Exact video absent or ambiguous')
     record, clip = matches[0]
@@ -568,7 +570,7 @@ async def prepare_video(page, project, prompt, source, frame_id):
                  project_id=project, profile=os.getenv('GFLOW_PROFILE', 'shadow'),
                  frozen_inputs_sha256=hashlib.sha256(path.with_name('flow_inputs.json').read_bytes()).hexdigest(),
                  source_hash=hashlib.sha256(source.read_bytes()).hexdigest(), frame_id=frame_id,
-                 prompt_hash=fingerprint(prompt), model=FLOW_VIDEO_WIRE,
+                 prompt_hash=fingerprint(prompt), model=FLOW_VIDEO_RESULT,
                  aspect='portrait', count=1, duration=8)
     if path.exists():
         previous = json.loads(path.read_text())
@@ -592,12 +594,77 @@ def _video_request_rows(body):
     return [row for group in outer for row in group]
 
 
+def _looks_video_model(value):
+    return (isinstance(value, str) and bool(re.fullmatch(r'[a-z0-9_]{1,256}', value))
+            and (value.startswith(('macaron_cookie_', 'veo_')) or any(v in value for v in ('t2v', 'i2v', 'r2v'))))
+
+
+def video_structure(data, phase, rpc, body):
+    """Retain structure and identity locations, never private string contents."""
+    result = {'phase': phase, 'rpc_ids': [], 'model_keys': [], 'identity_paths': []}
+    budget = [10000]
+    def walk(value, path='$', depth=0):
+        budget[0] -= 1
+        node = {'type': type(value).__name__}
+        if isinstance(value, (str, list, dict)):
+            node['length'] = len(value)
+        if depth > 40 or budget[0] <= 0:
+            return node | {'truncated': True}
+        if isinstance(value, str):
+            roles = [role for role in ('frame_id', 'project_id', 'media_id', 'workflow_id')
+                     if data.get(role) and value == data[role]]
+            if data.get('prompt_hash') == fingerprint(value):
+                roles.append('prompt')
+            if re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', value):
+                roles.append('uuid')
+            for role in roles:
+                result['identity_paths'].append({'path': path, 'role': role})
+            if 'prompt' not in roles and _looks_video_model(value) and value.startswith(('macaron_cookie_', 'veo_')):
+                result['model_keys'].append({'path': path, 'value': value})
+            if not roles and value.lstrip().startswith(('[', '{')):
+                try:
+                    node['json'] = walk(json.loads(value), path+'[json]', depth+1)
+                except (ValueError, TypeError, RecursionError):
+                    pass
+        elif isinstance(value, (list, dict)):
+            values = value.values() if isinstance(value, dict) else value
+            node['children'] = [walk(v, f'{path}[{i}]', depth+1) for i, v in enumerate(values)]
+        return node
+    try:
+        if phase == 'request':
+            rows = _video_request_rows(body or '')
+        else:
+            from gflow_cli.api.transports.batchexecute import parse_frames
+            rows = list(parse_frames(body or ''))
+        for row in rows:
+            if isinstance(row[0], str) and re.fullmatch(r'[A-Za-z0-9]{1,32}', row[0]):
+                result['rpc_ids'].append(row[0])
+        result['structure'] = walk(rows)
+    except (ValueError, TypeError, IndexError, KeyError):
+        result['structure'] = {'type': 'unparsed', 'length': len(body or '')}
+    if isinstance(rpc, str) and re.fullmatch(r'[A-Za-z0-9]{1,32}', rpc) and rpc not in result['rpc_ids']:
+        result['rpc_ids'].append(rpc)
+    return result
+
+
+def dump_video_structure(events):
+    path = Path(os.environ['GFLOW_SHADOW_SUBMIT_MARKER']).with_suffix('.structure.json')
+    previous = json.loads(path.read_text()).get('events', []) if path.exists() else []
+    save(path, {'events': previous + events})
+
+
 def video_submit_rpc(request):
     from gflow_cli.api.transports.migrated_composer import SUBMIT_RPCS
     try:
         for row in _video_request_rows(request.post_data or ''):
             if row[0] in SUBMIT_RPCS:
                 return row[0]
+            # A new RPC with the video row shape still needs an unsent refusal.
+            try:
+                if _looks_video_model(json.loads(row[1])[0][0][1]):
+                    return row[0]
+            except (ValueError, TypeError, IndexError, KeyError):
+                continue
     except (ValueError,TypeError,IndexError,KeyError):
         pass
     for rpc in parse_qs(urlsplit(request.url).query).get('rpcids', [''])[0].split(','):
@@ -610,6 +677,7 @@ async def guard_video(route, request, data, rpc):
     """One forwarding transition, with durable identity before any paid request."""
     marker = Path(os.environ['GFLOW_SHADOW_SUBMIT_MARKER'])
     problem = None
+    actual_model = None
     try:
         if marker.read_text() != 'submit_attempted\n':
             raise ReadbackIdentityError('Existing video submission requires reconciliation')
@@ -626,25 +694,34 @@ async def guard_video(route, request, data, rpc):
             if not recognized:
                 problem = 'Video actual request structure is unverified'
             if recognized:
-                if (rpc != 'eb1hJf' or row[1] != data['model'] or row[2] != 1
+                actual_model = row[1]
+                if (rpc != 'eb1hJf' or not flow_video_model_matches(actual_model) or row[2] != 1
                         or row[4][1] != data['frame_id'] or payload[1][5] != data['project_id']
                         or fingerprint(row[0][2][0][0][0]) != data['prompt_hash']
                         or row[3] is not None and (type(row[3]) is not int or not 0 <= row[3] < 2**32)):
                     problem = 'Video actual request inputs or settings differ'
                 else:
-                    data.update(wire_verified=True, seed=row[3])
+                    data.update(seed=row[3])
         except (ValueError,TypeError,IndexError,KeyError):
             data['wire_verified'] = False
             problem = 'Video actual request structure is unverified'
+        readback = data.get('ui_readback')
+        if readback != {'model':FLOW_VIDEO_LABEL, 'duration':8, 'resolution':'720p', 'aspect':'9:16', 'count':1}:
+            problem = 'Video UI readback differs'
+        data.update(model=actual_model, wire_verified=not bool(problem))
         save(context_path(marker),data)
         evidence = {'version':1, 'state':'blocked_before_submission' if problem else 'forwarded',
-                    'readback_hash':identity_hash(data), 'actual_model':data['model']}
+                    'readback_hash':identity_hash(data), 'actual_model':actual_model, 'ui_readback':readback}
         if problem:
             evidence['reason'] = 'video_request_settings_mismatch'
         save(marker,evidence)
     except (OSError,ValueError,KeyError) as exc:
         problem = 'Video evidence unavailable; reconciliation required: '+type(exc).__name__
     if problem:
+        try:
+            dump_video_structure([video_structure(data or {}, 'request', rpc, request.post_data)])
+        except (OSError, ValueError):
+            pass  # Evidence failure never permits the blocked request to be forwarded.
         await route.abort()
     else:
         await route.continue_()
@@ -657,7 +734,7 @@ def video_receipt(data, record, context_file):
         raise ReadbackIdentityError('Video result project differs')
     result = {'request_hash':data['request_hash'], 'profile':data['profile'],
               'project_id':data['project_id'], 'media_id':record.media_id, 'workflow_id':record.workflow_id,
-              'succeeded':True, 'request':{'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'}}
+              'succeeded':True, 'actual_model':data['model'], 'request':{'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'}}
     path = receipt_path(context_file)
     if path.exists():
         previous=json.loads(path.read_text())

@@ -238,22 +238,22 @@ class ReleaseOneBoundaryTests(unittest.TestCase):
     def test_model_golden_contract_and_application_commands(self):
         self.assertEqual((models.FLOW_IMAGE_LABEL,models.FLOW_IMAGE_ALIAS,models.FLOW_IMAGE_ENUM,models.FLOW_IMAGE_WIRE),
                          ('Nano Banana 2.1','nano2','NARWHAL','BELUGA'))
-        self.assertEqual((models.FLOW_VIDEO_LABEL,models.FLOW_VIDEO_ALIAS,models.FLOW_VIDEO_RESULT,models.FLOW_VIDEO_WIRE),
-                         ('Veo 3.1 - Fast','veo-fast','veo_3_1_fast','veo_3_1_i2v_s_fast_portrait'))
+        self.assertEqual((models.FLOW_VIDEO_LABEL,models.FLOW_VIDEO_ALIAS,models.FLOW_VIDEO_RESULT,models.FLOW_VIDEO_ENUM),
+                         ('Omni 1.2 Flash','omni-1.2-flash','omni_1_2_flash','OMNI_1_2_FLASH'))
         self.assertEqual(models.GOOGLE_VIDEO_MODEL,'gemini-omni-1.1-flash')
         self.assertEqual(models.GOOGLE_IMAGE_MODEL,'gemini-nano-banana-2.1')
         client=FlowMediaClient()
         self.assertIn('nano2',client.image_command({},self.root/'art.png'))
-        self.assertIn('veo-fast',client.video_command('prompt',self.root/'art.png',self.root/'clip.mp4'))
+        self.assertIn('omni-1.2-flash',client.video_command('prompt',self.root/'art.png',self.root/'clip.mp4'))
 
     def test_patch_and_installed_model_literals_equal_constants_without_app_import(self):
         from gflow_cli.api.transports import migrated_composer as m
         from gflow_cli.api.image import Model
         from gflow_cli.api.video import VideoModel
         self.assertEqual(m.IMAGE_MODEL_MENU_MATCHERS[Model.NARWHAL].contains,models.FLOW_IMAGE_LABEL)
-        self.assertEqual(m.VIDEO_MODEL_MENU_LABELS[VideoModel.VEO_3_1_FAST],models.FLOW_VIDEO_LABEL)
+        self.assertEqual(m.VIDEO_MODEL_MENU_LABELS[VideoModel.OMNI_1_2_FLASH],models.FLOW_VIDEO_LABEL)
         self.assertEqual(Model.NARWHAL.value,models.FLOW_IMAGE_ENUM)
-        self.assertEqual(VideoModel.VEO_3_1_FAST.value,models.FLOW_VIDEO_RESULT)
+        self.assertEqual(VideoModel.OMNI_1_2_FLASH.value,models.FLOW_VIDEO_RESULT)
         patches='\n'.join(p.read_text() for p in (ROOT/'ops').glob('*.patch'))
         import re
         additions='\n'.join(line[1:] for line in patches.splitlines() if line.startswith('+') and not line.startswith('+++'))

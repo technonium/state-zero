@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from state_zero_models import FLOW_VIDEO_LABEL, FLOW_IMAGE_ALIAS, FLOW_IMAGE_ENUM, FLOW_IMAGE_LABEL, FLOW_IMAGE_WIRE, FLOW_VIDEO_ALIAS, FLOW_VIDEO_RESULT, FLOW_VIDEO_WIRE, GOOGLE_IMAGE_MODEL, GOOGLE_VIDEO_MODEL
+from state_zero_models import FLOW_VIDEO_LABEL, FLOW_IMAGE_ALIAS, FLOW_IMAGE_ENUM, FLOW_IMAGE_LABEL, FLOW_IMAGE_WIRE, FLOW_VIDEO_ALIAS, FLOW_VIDEO_RESULT, flow_video_model_matches, GOOGLE_IMAGE_MODEL, GOOGLE_VIDEO_MODEL
 
 from PIL import Image
 
@@ -58,7 +58,7 @@ class FlowMediaClient:
     def _input_settings() -> dict:
         return {name: os.getenv(name, default) for name, default in (
             ('GFLOW_PROFILE', 'shadow'), ('FLOW_PREFLIGHT_PROJECT_ID', ''),
-            ('FLOW_IMAGE_UPSCALE_2K', 'false'), ('FLOW_VIDEO_UPSCALE_1080P', 'true'),
+            ('FLOW_IMAGE_UPSCALE_2K', 'false'), ('FLOW_VIDEO_UPSCALE_1080P', 'false'),
             ('GOOGLE_IMAGE_MODEL', GOOGLE_IMAGE_MODEL),
             ('GOOGLE_VIDEO_MODEL', GOOGLE_VIDEO_MODEL))}
 
@@ -255,7 +255,7 @@ class FlowMediaClient:
         diagnostics = output.with_name(f"flow_{stage}_diagnostics.json")
         identity = {"request": request, "profile": self.profile,
                     "project": os.getenv("FLOW_PREFLIGHT_PROJECT_ID", ""),
-                    "settings": f"{FLOW_IMAGE_LABEL}/3:4/x1" if stage == "image" else f"{FLOW_VIDEO_ALIAS}/i2v/9:16/x1/8s"}
+                    "settings": f"{FLOW_IMAGE_LABEL}/3:4/x1" if stage == "image" else f"{FLOW_VIDEO_ALIAS}/i2v/9:16/x1/8s/720p"}
         fingerprint = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
         with output.with_name(".flow-generation.lock").open("a") as lock:
             os.chmod(lock.name, 0o600)
@@ -333,8 +333,9 @@ class FlowMediaClient:
                 if stage == 'video' and raw != 'submit_attempted\n':
                     from flow_readback import identity_hash
                     context=json.loads(marker.with_suffix('.context.json').read_text())
-                    if (evidence.get('actual_model') != FLOW_VIDEO_WIRE
-                            or evidence.get('readback_hash') != identity_hash(context)):
+                    if (evidence.get('readback_hash') != identity_hash(context) or not blocked and
+                            (not flow_video_model_matches(evidence.get('actual_model'))
+                             or evidence.get('actual_model') != context.get('model'))):
                         raise invalid
             except (OSError, ValueError, AttributeError, KeyError, TypeError):
                 raise invalid from None
@@ -450,6 +451,12 @@ class FlowMediaClient:
                     except FlowCommandError as exc:
                         if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                             raise
+                        error = exc
+                        attempt['failure'] = {k: getattr(exc, k) for k in ('category', 'error_class',
+                            'media_id', 'retryable', 'detail', 'operation_id')}
+                        self._save_attempt(diagnostics, attempt)
+                        if exc.error_class == 'FlowVideoCut':
+                            self._write_diagnostics(diagnostics, {'retrieval': {}, 'result': None, 'original_sha256': None})
             submitted = [a for a in attempts if a['submission'] not in {'not_attempted', 'blocked_before_submission'}]
             used = len(submitted)
             pre_submit = sum(a['submission'] == 'not_attempted' for a in attempts)
@@ -483,6 +490,8 @@ class FlowMediaClient:
                     self._write_diagnostics(diagnostics, {'failure': failure})
                     if self._stops_replacement(exc) or exc.category == 'local_processing_failed':
                         raise
+                    if exc.error_class == 'FlowVideoCut':
+                        self._write_diagnostics(diagnostics, {'retrieval': {}, 'result': None, 'original_sha256': None})
                     if stage == 'video' and exc.category == 'generation_failed' and not self._omni_final_slot():
                         raise
                     continue
@@ -568,6 +577,8 @@ class FlowMediaClient:
         saved = FlowMediaClient._read_diagnostics(diagnostics)
         # A local file can disappear during handoff; never give its downloader a fresh budget.
         now = time.time()
+        if (attempt.get('failure') or {}).get('error_class') == 'FlowVideoCut':
+            return None
         image_receipt = self._image_receipt(diagnostics, attempt) if stage == 'image' else self._video_receipt(diagnostics, attempt)
         exact_result = saved.get('result') or image_receipt
         if image_receipt and saved.get('result'):
@@ -828,6 +839,9 @@ class FlowMediaClient:
                     or not re.fullmatch(r'[0-9a-f-]{36}',result['media_id']) or not re.fullmatch(r'[0-9a-f-]{36}',result['workflow_id'])
                     or result.get('succeeded') is not True
                     or result['request'] != {'count':1,'model':FLOW_VIDEO_RESULT,'mode':'i2v','aspect':'portrait'}
+                    or not flow_video_model_matches(result.get('actual_model'))
+                    or result['actual_model'] != context['model']
+                    or marker.get('actual_model') != result['actual_model']
                     or marker['state'] != 'forwarded' or marker['readback_hash'] != identity_hash(context)):
                 raise ValueError('Video receipt identity differs')
             return result
@@ -864,13 +878,13 @@ class FlowMediaClient:
 
     def video_command(self, prompt: str, start_frame: Path, raw_path: Path) -> list[str]:
         command = [
-            "gflow", "video", "i2v", "--initial-frame", str(start_frame), prompt,
+            "gflow", "video", "i2v", "--initial-frame", str(start_frame),
+            prompt + "\nSingle continuous shot from the provided first frame. No cuts, no scene changes.",
             "--model", FLOW_VIDEO_ALIAS, "--aspect", "9:16", "--count", "1",
+            "--duration", "8", "--resolution", "720p",
         ]
         if project_id := os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip():
             command.extend(("--project", project_id))
-        if os.getenv("FLOW_VIDEO_EXPLICIT_DURATION", "false").lower() == "true":
-            command.extend(("--duration", "8"))
         # The CLI renames its download to --output; keep both on the same volume.
         command.extend(("--out-dir", str(raw_path.parent), "--output", str(raw_path),
                         "--profile", self.profile, "--json"))
@@ -1186,6 +1200,16 @@ class FlowMediaClient:
                 request.get("aspect") != "portrait"):
             raise FlowCommandError('video', 'provider_rejected', detail='Flow video MODEL or SETTINGS differ')
         width, height, duration, has_audio = self._validate_original('video', source, saved.get('original_sha256'))
+        from google_video_client import first_video_cut
+        rejected = any((a.get('failure') or {}).get('error_class') == 'FlowVideoCut'
+                       and a['failure'].get('media_id') == payload.get('media_id') for a in saved.get('attempts', []))
+        cut = first_video_cut(source) if not rejected else None
+        self._write_diagnostics(diagnostics, {'cut_checked': not rejected, 'cut_at_seconds': cut,
+            'source_width': width, 'source_height': height, 'duration_seconds': duration, 'source_has_audio': has_audio})
+        if rejected or cut is not None:
+            raise FlowCommandError('video', 'generation_failed', error_class='FlowVideoCut',
+                media_id=payload.get('media_id', ''), operation_id=payload.get('workflow_id', ''),
+                retryable=True, submission_state='forwarded', detail='Flow original has a scene cut.')
         source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
         payload = payload | {"local_path": str(source)}
         self._write_diagnostics(diagnostics, {"original_sha256": source_hash, "result": payload})
@@ -1194,7 +1218,7 @@ class FlowMediaClient:
                 shutil.copyfile(source, raw_path)
             selected = source
             upscale_status = "not_needed" if width == 1080 else "disabled"
-            if not recovered and width == 720 and os.getenv("FLOW_VIDEO_UPSCALE_1080P", "true").lower() == "true" and self._generation_seconds() >= 240:
+            if not recovered and width == 720 and os.getenv("FLOW_VIDEO_UPSCALE_1080P", "false").lower() == "true" and self._generation_seconds() >= 240:
                 project_id = os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip()
                 media_id = str(payload.get("media_id") or "")
                 upscale_status = "unavailable"

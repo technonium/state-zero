@@ -31,9 +31,10 @@ locally to 1080p). Models can be configured through `GOOGLE_IMAGE_MODEL` and
 
 Flow explicitly selects Nano Banana 2.1, 3:4 and one image. Its original image
 is retained; image upscaling is off by default. Flow video uses one portrait
-Veo Fast start-frame generation and validates an approximately eight-second clip.
-It attempts the existing clip's 1080p download, then uses local scaling of the
-validated original if the upscale is unavailable or corrupt. Local scaling adds
+Omni 1.2 Flash start-frame generation: explicit 8 s, 720p, 9:16 and x1, with
+UI and wire checks before forwarding. Cut originals fail the attempt and cannot
+be accepted by later recovery. Provider upscale is off; validated originals scale
+locally to 1080p. Local scaling adds
 no source detail. Submission evidence prevents blind regeneration.
 
 ## Data, prompts and outputs
