@@ -24,6 +24,24 @@ class Omni12Tests(unittest.IsolatedAsyncioTestCase):
         option = next(p for p in i2v.params if p.name == 'model')
         self.assertEqual(option.type.convert(FLOW_VIDEO_ALIAS, option, None), FLOW_VIDEO_ALIAS)
 
+    async def test_aspect_readback_uses_rendered_radio_text(self):
+        from gflow_cli.api.transports.migrated_composer import MigratedComposer
+        radios=Mock(all_text_contents=AsyncMock(return_value=['videocamVideo','crop_freeFrames','crop_9_169:16','720p','x1']),
+                    all_inner_texts=AsyncMock(return_value=['videocam\nVideo','crop_free\nFrames','crop_9_16\n9:16','720p','x1']))
+        pane=Mock()
+        pane.get_by_role.return_value.inner_text=AsyncMock(return_value='Omni 1.2 Flash\narrow_drop_down')
+        def locator(selector):
+            if selector=='[role="radio"][aria-checked="true"]':return radios
+            if selector=='flow-duration-slider input[type="range"]':return Mock(input_value=AsyncMock(return_value='5'))
+            if selector=='flow-duration-slider .duration-slider-value':return Mock(inner_text=AsyncMock(return_value='8 sec'))
+            raise AssertionError(selector)
+        pane.locator.side_effect=locator
+        composer=MigratedComposer()
+        with patch.object(composer,'_open_pane',new=AsyncMock(return_value=pane)), \
+                patch.object(composer,'_close_pane',new=AsyncMock()):
+            result=await composer._omni12_readback(Mock())
+        self.assertEqual(result,{'model':'Omni 1.2 Flash','duration':8,'resolution':'720p','aspect':'9:16','count':1})
+
     def test_wire_family_is_narrow_and_duration_resolution_are_explicit(self):
         for key in ('macaron_cookie_i2v_8s', 'macaron_cookie_i2v_8s_portrait'):
             self.assertTrue(flow_video_model_matches(key), key)

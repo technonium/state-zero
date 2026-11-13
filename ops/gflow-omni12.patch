@@ -110,7 +110,7 @@
 +        pane = await self._open_pane(page)
 +        try:
 +            model = await pane.get_by_role("button", name="Select model family", exact=True).inner_text()
-+            selected = [" ".join(value.split()) for value in await pane.locator('[role="radio"][aria-checked="true"]').all_text_contents()]
++            selected = [" ".join(value.split()) for value in await pane.locator('[role="radio"][aria-checked="true"]').all_inner_texts()]
 +            slider = pane.locator('flow-duration-slider input[type="range"]')
 +            seconds = await pane.locator('flow-duration-slider .duration-slider-value').inner_text()
 +            return {"model": " ".join(model.replace("arrow_drop_down", "").split()),
