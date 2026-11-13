@@ -194,3 +194,14 @@
      record = await composer.submit_and_observe(
          page,
          poll_timeout_s=poll_timeout_s,
+--- a/src/gflow_cli/cli_video.py
++++ b/src/gflow_cli/cli_video.py
+@@ -1346,7 +1346,7 @@
+ @click.option(
+     "--model",
+     default=None,
+-    type=click.Choice(["omni-flash", "veo-lite", "veo-fast", "veo-quality", "veo-lite-lp"]),
++    type=click.Choice(["omni-1.2-flash", "omni-flash", "veo-lite", "veo-fast", "veo-quality", "veo-lite-lp"]),
+     help=(
+         "Video model. Defaults to veo-lite (cheapest). omni-flash supports both "
+         "--initial-frame and --end-frame, and unlocks --duration 10."

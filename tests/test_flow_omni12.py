@@ -18,6 +18,12 @@ from utils import execution_lock
 
 
 class Omni12Tests(unittest.IsolatedAsyncioTestCase):
+    def test_installed_i2v_cli_accepts_the_backported_alias(self):
+        from gflow_cli.cli_video import i2v
+        from state_zero_models import FLOW_VIDEO_ALIAS
+        option = next(p for p in i2v.params if p.name == 'model')
+        self.assertEqual(option.type.convert(FLOW_VIDEO_ALIAS, option, None), FLOW_VIDEO_ALIAS)
+
     def test_wire_family_is_narrow_and_duration_resolution_are_explicit(self):
         for key in ('macaron_cookie_i2v_8s', 'macaron_cookie_i2v_8s_portrait'):
             self.assertTrue(flow_video_model_matches(key), key)
