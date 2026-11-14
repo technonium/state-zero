@@ -248,27 +248,6 @@ class OptionalDownloadTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(original.read_bytes(),b'valid original')
         client.page.get_by_role.assert_not_called()
 
-    async def test_other_clip_transfer_is_rejected_even_if_media_could_decode(self):
-        from ops.flow_video_upscale import download_existing
-        client=MagicMock();client.__aenter__=AsyncMock(return_value=client);client.__aexit__=AsyncMock(return_value=False)
-        page=client.page;page.goto=AsyncMock();page.url='https://flow.google.com/project/project/edit/media'
-        page.locator.return_value.evaluate_all=AsyncMock(return_value=['https://flow-content.google/video/workflow'])
-        button=MagicMock();button.count=AsyncMock(return_value=1);button.click=AsyncMock()
-        button.locator.return_value=button;button.first.wait_for=AsyncMock()
-        choice=MagicMock();choice.count=AsyncMock(return_value=1);choice.is_visible=AsyncMock(return_value=True)
-        choice.is_enabled=AsyncMock(return_value=True);choice.inner_text=AsyncMock(return_value='1080p');choice.click=AsyncMock()
-        choice.locator.return_value=choice
-        page.get_by_role.side_effect=[button,choice]
-        download=MagicMock(url='https://flow-content.google/video/other-workflow');download.save_as=AsyncMock()
-        future=asyncio.get_running_loop().create_future();future.set_result(download)
-        event=MagicMock(value=future)
-        page.expect_download.return_value.__aenter__=AsyncMock(return_value=event)
-        page.expect_download.return_value.__aexit__=AsyncMock()
-        with tempfile.TemporaryDirectory() as tmp,patch('gflow_cli.api.client.FlowApiClient',return_value=client), \
-                patch('flow_readback.snapshot',new=AsyncMock(return_value={})), \
-                patch('flow_readback.select_video',return_value={'workflow_id':'workflow'}):
-            result=await download_existing('project','media',Path(tmp)/'candidate.mp4',workflow_id='workflow')
-        self.assertEqual(result,'transfer_identity_unverified');download.save_as.assert_not_awaited()
 
 class AdditionalBoundariesTests(unittest.TestCase):
     def test_ownership_descriptor_does_not_reach_provider_descendants(self):

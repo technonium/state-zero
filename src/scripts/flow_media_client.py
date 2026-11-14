@@ -1215,6 +1215,8 @@ class FlowMediaClient:
                     value = json.loads(line)
                     if isinstance(value, dict):
                         helper_result = value
+                        evidence.update({k:value[k] for k in ('capture_bytes','capture_base64_chars',
+                            'capture_seconds','capture_transfer_seconds') if k in value})
                 except ValueError:
                     pass
             status = helper_result.get('status', 'unavailable')
