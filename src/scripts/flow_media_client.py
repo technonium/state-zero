@@ -1229,7 +1229,15 @@ class FlowMediaClient:
                         self._check_browser_ownership(diagnostics,'video')
                         result = run_bounded([sys.executable, str(script), project_id, media_id, str(candidate),
                             '--workflow', str(payload.get('workflow_id') or ''), '--deadline', str(time.time()+240)], timeout=240)
-                        upscale_status = json.loads(result.stdout).get("status", "unavailable")
+                        helper_result = {}
+                        for line in result.stdout.splitlines():
+                            try:
+                                value = json.loads(line)
+                                if isinstance(value, dict):
+                                    helper_result = value
+                            except ValueError:
+                                pass
+                        upscale_status = helper_result.get("status", "unavailable")
                         if result.returncode == 0 and candidate.is_file():
                             up_width, up_height, up_duration, up_audio = self._probe_video(candidate)
                             if ((up_width, up_height) == (1080, 1920) and abs(up_duration - duration) <= 0.5

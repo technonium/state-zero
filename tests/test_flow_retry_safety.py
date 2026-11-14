@@ -333,6 +333,29 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             self.assertTrue(report['locally_scaled_to_1080p'])
             self.assertEqual(report['upscale_status'], 'invalid_media')
 
+    def test_prefixed_upscale_stdout_records_status_and_keeps_original(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+                'FLOW_VIDEO_UPSCALE_1080P': 'true', 'FLOW_PREFLIGHT_PROJECT_ID': 'project'}, clear=True):
+            root=Path(tmp);art=root/'art.png';Image.new('RGB',(768,1024),'white').save(art)
+            source=root/'original.mp4';source.write_bytes(b'original');output=root/'video.mp4'
+            client=FlowMediaClient();diagnostics=root/'flow_video_diagnostics.json'
+            client._write_diagnostics(diagnostics,{'pending_attempt':{'number':1}})
+            payload={'succeeded':True,'media_id':'media','workflow_id':'workflow','local_path':str(source),
+                     'request':{'count':1,'model':'omni_1_2_flash','mode':'i2v','aspect':'portrait'}}
+            def command(cmd,**kwargs):
+                if 'flow_video_upscale.py' in str(cmd):
+                    return subprocess.CompletedProcess(cmd,3,stdout='info: browser closed\n{"status":"not_offered"}\n\n')
+                Path(cmd[-1]).write_bytes(b'locally scaled')
+                return subprocess.CompletedProcess(cmd,0)
+            with patch.object(client,'_run_json',return_value=payload), \
+                    patch.object(client,'_probe_video',return_value=(720,1280,8,True)), \
+                    patch('flow_media_client.run_bounded',side_effect=command):
+                client._generate_video('move',art,output)
+            report=client._read_diagnostics(diagnostics)
+            self.assertEqual(report['upscale_status'],'not_offered')
+            self.assertTrue(report['locally_scaled_to_1080p'])
+            self.assertEqual(output.read_bytes(),b'locally scaled')
+
     def test_image_upscale_is_off_by_default_and_request_model_is_recorded(self):
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {}, clear=True), \
                 patch.object(FlowMediaClient, '_run_json', side_effect=self.image_response), \
