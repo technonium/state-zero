@@ -20,6 +20,7 @@ import math
 import subprocess
 import sys
 import textwrap
+from fractions import Fraction
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -369,6 +370,13 @@ def process_video_card(video_path: Path, data: dict, output_path: Path):
     VIDEO_ART_OFFSET_Y using FFmpeg.
     """
     check_ffmpeg()
+    frame_rate = subprocess.check_output([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ], text=True, timeout=30).strip()
+    if Fraction(frame_rate) <= 0:
+        raise ValueError("Video frame rate must be positive")
     print(f"🎬 Processing VIDEO layout (FFmpeg compositing at Y={VIDEO_ART_OFFSET_Y})")
 
     # 1. Create the transparent UI overlay
@@ -391,7 +399,7 @@ def process_video_card(video_path: Path, data: dict, output_path: Path):
             # Scale video width to CARD_W, format to standard pixel format.
             f"[0:v]scale={CARD_W}:-1,format=yuv420p[scaled];"
             # Create a CARD_W x CARD_H white background.
-            f"color=c=white:s={CARD_W}x{CARD_H}[bg];"
+            f"color=c=white:s={CARD_W}x{CARD_H}:r={frame_rate}[bg];"
             # Overlay the video at VIDEO_ART_OFFSET_Y and end when the video ends.
             f"[bg][scaled]overlay=0:{VIDEO_ART_OFFSET_Y}:shortest=1[bg_vid];"
             # Overlay the UI PNG on top of the whole canvas (PNG repeats for video duration)

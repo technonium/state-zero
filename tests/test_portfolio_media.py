@@ -32,6 +32,19 @@ from portfolio_media import (
 
 
 class PortfolioMediaTests(unittest.TestCase):
+    def test_full_card_canvas_uses_source_frame_rate(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('composite.check_ffmpeg'), \
+                patch('composite.subprocess.check_output', return_value='24000/1001\n') as probe, \
+                patch('composite.subprocess.run') as encode, \
+                patch('composite.build_ui_overlay'):
+            source = Path(tmp) / 'source.mp4'
+            process_video_card(source, {}, Path(tmp) / 'card.mp4')
+        self.assertEqual(probe.call_args.args[0][-1], str(source))
+        command = encode.call_args.args[0]
+        self.assertIn('color=c=white:s=1080x1920:r=24000/1001[bg]',
+                      command[command.index('-filter_complex') + 1])
+
     def _make_video(self, path: Path):
         subprocess.run(
             [
