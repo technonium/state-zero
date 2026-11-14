@@ -116,8 +116,15 @@ async def download_existing(project_id, media_id, output, *, workflow_id=None, d
                     captured=None
                     while time.time()<capture_deadline:
                         await asyncio.sleep(min(1,max(0,capture_deadline-time.time())))
+                        remaining=capture_deadline-time.time()
+                        if remaining<=0:
+                            break
                         transfer_started=time.monotonic()
-                        captured=await page.evaluate('() => window._gflowCapturedBase64')
+                        try:
+                            captured=await asyncio.wait_for(
+                                page.evaluate('() => window._gflowCapturedBase64'),remaining)
+                        except asyncio.TimeoutError:
+                            return 'timeout'
                         transfer_seconds=time.monotonic()-transfer_started
                         if captured:
                             break
