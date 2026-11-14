@@ -240,7 +240,7 @@ class ReleaseOneBoundaryTests(unittest.TestCase):
                          ('Nano Banana 2.1','nano2','NARWHAL','BELUGA'))
         self.assertEqual((models.FLOW_VIDEO_LABEL,models.FLOW_VIDEO_ALIAS,models.FLOW_VIDEO_RESULT,models.FLOW_VIDEO_ENUM),
                          ('Omni 1.2 Flash','omni-1.2-flash','omni_1_2_flash','OMNI_1_2_FLASH'))
-        self.assertEqual(models.GOOGLE_VIDEO_MODEL,'gemini-omni-1.1-flash')
+        self.assertEqual(models.GOOGLE_VIDEO_MODEL,'gemini-omni-1.2-flash')
         self.assertEqual(models.GOOGLE_IMAGE_MODEL,'gemini-nano-banana-2.1')
         client=FlowMediaClient()
         self.assertIn('nano2',client.image_command({},self.root/'art.png'))

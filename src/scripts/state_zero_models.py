@@ -9,7 +9,7 @@ FLOW_VIDEO_ALIAS = 'omni-1.2-flash'
 FLOW_VIDEO_RESULT = 'omni_1_2_flash'
 FLOW_VIDEO_ENUM = 'OMNI_1_2_FLASH'
 GOOGLE_IMAGE_MODEL = 'gemini-nano-banana-2.1'
-GOOGLE_VIDEO_MODEL = 'gemini-omni-1.1-flash'
+GOOGLE_VIDEO_MODEL = 'gemini-omni-1.2-flash'
 GEMINI_MODEL = 'gemini-3.8-flash'
 
 

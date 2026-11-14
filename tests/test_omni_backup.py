@@ -50,7 +50,7 @@ class OmniBackupTests(unittest.TestCase):
             self.assertTrue(self.client.router.submission_started)
             self.assertEqual(url,'https://generativelanguage.googleapis.com/v1beta/interactions')
             self.assertFalse(kwargs['allow_redirects']);self.assertLessEqual(kwargs['timeout'],120)
-            body=kwargs['json'];self.assertEqual(body['model'],'gemini-omni-1.1-flash')
+            body=kwargs['json'];self.assertEqual(body['model'],'gemini-omni-1.2-flash')
             self.assertEqual(body['response_format'],{'type':'video','aspect_ratio':'9:16','resolution':'720p','duration':'8s','delivery':'inline'})
             self.assertEqual(body['generation_config'],{'video_config':{'task':'image_to_video'}})
             self.assertTrue(body['background']);self.assertTrue(body['store'])
