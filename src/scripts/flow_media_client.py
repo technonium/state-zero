@@ -737,7 +737,7 @@ class FlowMediaClient:
                     except (KeyError,TypeError,ValueError):
                         raise FlowCommandError(stage,'request_identity_unverified') from None
                     deadline_limit = observed + 270
-                    if stage == 'video':
+                    if stage == 'video' and os.getenv('PIPELINE_MANUAL_DEADLINE_MODE', 'run_date').strip().lower() != 'from_now':
                         from utils import get_pipeline_now
                         deadline_limit = get_pipeline_now().replace(hour=13, minute=30, second=0, microsecond=0).timestamp()
                     retrieval={'version':1,'context_file':context_file.name,'candidate':candidate,

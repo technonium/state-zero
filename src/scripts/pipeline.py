@@ -200,6 +200,9 @@ class WHOOPPipeline:
 
         self.session_file = self.output_dir / 'manual_session.json'
         self.deadline_dt, self.deadline_reason = self._build_deadline_dt()
+        if self.manual_deadline_mode == 'from_now':
+            os.environ['PIPELINE_EFFECTIVE_DEADLINE_ISO'] = self.deadline_dt.isoformat()
+            os.environ['PIPELINE_EFFECTIVE_DEADLINE_REASON'] = self.deadline_reason
         # Tracks whether media came from API generation or manual Telegram upload.
         self.asset_source = 'auto_api'
         self.run_token = uuid.uuid4().hex[:12]
