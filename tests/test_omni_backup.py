@@ -54,7 +54,7 @@ class OmniBackupTests(unittest.TestCase):
             self.assertEqual(body['response_format'],{'type':'video','aspect_ratio':'9:16','resolution':'720p','duration':'8s','delivery':'inline'})
             self.assertEqual(body['generation_config'],{'video_config':{'task':'image_to_video'}})
             self.assertTrue(body['background']);self.assertTrue(body['store'])
-            self.assertEqual(body['input'][1],{'type':'text','text':'unchanged prompt\nSingle continuous shot from the provided first frame. No cuts, no scene changes.'})
+            self.assertEqual(body['input'][1],{'type':'text','text':'unchanged prompt\nSingle continuous shot from the provided first frame. No cuts, no scene changes. Keep the main formation from the first frame clearly visible and recognizable in every frame. Motion stays restrained: fine dust and small fragments only, never large objects filling the frame. The sky and any moons stay intact.'})
             frame,_=self.client._to_letterboxed_png_bytes(self.art)
             self.assertEqual(base64.b64decode(body['input'][0]['data']),frame)
             return self.response(self.reply(part={'type':'video','mime_type':'video/mp4',

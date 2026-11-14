@@ -116,7 +116,7 @@ class GoogleVideoClient:
         payload = {
             'model': self.default_model, 'background': True, 'store': True,
             'input': [{'type': 'image', 'mime_type': 'image/png', 'data': base64.b64encode(frame).decode()},
-                      {'type': 'text', 'text': prompt_text + '\nSingle continuous shot from the provided first frame. No cuts, no scene changes.'}],
+                      {'type': 'text', 'text': prompt_text + '\nSingle continuous shot from the provided first frame. No cuts, no scene changes. Keep the main formation from the first frame clearly visible and recognizable in every frame. Motion stays restrained: fine dust and small fragments only, never large objects filling the frame. The sky and any moons stay intact.'}],
             'generation_config': {'video_config': {'task': 'image_to_video'}},
             'response_format': {'type': 'video', 'aspect_ratio': '9:16', 'resolution': '720p',
                                 'duration': '8s', 'delivery': 'inline'},

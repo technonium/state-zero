@@ -879,7 +879,7 @@ class FlowMediaClient:
     def video_command(self, prompt: str, start_frame: Path, raw_path: Path) -> list[str]:
         command = [
             "gflow", "video", "i2v", "--initial-frame", str(start_frame),
-            prompt + "\nSingle continuous shot from the provided first frame. No cuts, no scene changes.",
+            prompt + "\nSingle continuous shot from the provided first frame. No cuts, no scene changes. Keep the main formation from the first frame clearly visible and recognizable in every frame. Motion stays restrained: fine dust and small fragments only, never large objects filling the frame. The sky and any moons stay intact.",
             "--model", FLOW_VIDEO_ALIAS, "--aspect", "9:16", "--count", "1",
             "--duration", "8", "--resolution", "720p",
         ]

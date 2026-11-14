@@ -54,7 +54,7 @@ class Omni12Tests(unittest.IsolatedAsyncioTestCase):
             command = FlowMediaClient().video_command('move', Path('frame.png'), Path('out.mp4'))
         self.assertEqual(command[command.index('--duration') + 1], '8')
         self.assertEqual(command[command.index('--resolution') + 1], '720p')
-        self.assertIn('move\nSingle continuous shot from the provided first frame. No cuts, no scene changes.', command)
+        self.assertIn('move\nSingle continuous shot from the provided first frame. No cuts, no scene changes. Keep the main formation from the first frame clearly visible and recognizable in every frame. Motion stays restrained: fine dust and small fragments only, never large objects filling the frame. The sky and any moons stay intact.', command)
 
     async def test_readback_or_key_mismatch_aborts_before_forwarding_with_evidence(self):
         import flow_readback as rb
