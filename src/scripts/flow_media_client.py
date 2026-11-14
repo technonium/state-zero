@@ -1166,6 +1166,80 @@ class FlowMediaClient:
     def _probe_video(path: Path, timeout: float = 30) -> tuple[int, int, float, bool]:
         return probe_video(path, timeout)
 
+    @staticmethod
+    def _upscale_ssim(original: Path, candidate: Path, deadline: float) -> list[float]:
+        values = []
+        for timestamp in (1, 4, 7):
+            result = run_bounded(['ffmpeg', '-nostdin', '-v', 'info',
+                '-ss', str(timestamp), '-i', str(original), '-ss', str(timestamp), '-i', str(candidate),
+                '-filter_complex_threads', '1', '-lavfi',
+                '[0:v]trim=end_frame=1,scale=720:1280,format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[a];'
+                '[1:v]trim=end_frame=1,scale=720:1280,format=yuv420p,settb=AVTB,setpts=PTS-STARTPTS[b];'
+                '[a][b]ssim', '-frames:v', '1', '-f', 'null', '-'],
+                timeout=max(.001, min(30, deadline-time.time())))
+            result.check_returncode()
+            scores = re.findall(r'All:([0-9.eE+-]+)', result.stderr)
+            if len(scores) != 1 or not math.isfinite(float(scores[0])):
+                raise ValueError('Missing SSIM score')
+            values.append(float(scores[0]))
+        return values
+
+    def _try_flow_video_upscale(self, source: Path, payload: dict, output_path: Path,
+                               diagnostics: Path, *, width: int, duration: float, has_audio: bool):
+        evidence = {}
+        status = 'unavailable'
+        try:
+            if width == 1080:
+                return source, 'not_needed', evidence
+            if width != 720 or os.getenv('FLOW_VIDEO_UPSCALE_1080P', 'false').lower() != 'true':
+                return source, 'disabled', evidence
+            if self._generation_seconds() < 240:
+                return source, 'low_budget', evidence
+            project_id = os.getenv('FLOW_PREFLIGHT_PROJECT_ID', '').strip()
+            media_id, workflow_id = (str(payload.get(k) or '') for k in ('media_id', 'workflow_id'))
+            if not all((project_id, media_id, workflow_id)):
+                return source, 'identity_unavailable', evidence
+            threshold = float(os.getenv('FLOW_UPSCALE_MIN_SSIM', '0.90'))
+            if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+                raise ValueError('Invalid SSIM threshold')
+            evidence['min_ssim'] = threshold
+            candidate = output_path.with_name('flow_1080p_download.mp4')
+            script = Path(__file__).resolve().parents[2] / 'ops' / 'flow_video_upscale.py'
+            self._check_browser_ownership(diagnostics, 'video')
+            deadline = time.time()+240
+            result = run_bounded([sys.executable, str(script), project_id, media_id, str(candidate),
+                '--workflow', workflow_id, '--deadline', str(deadline)], timeout=240)
+            helper_result = {}
+            for line in result.stdout.splitlines():
+                try:
+                    value = json.loads(line)
+                    if isinstance(value, dict):
+                        helper_result = value
+                except ValueError:
+                    pass
+            status = helper_result.get('status', 'unavailable')
+            if result.returncode == 0 and status == 'downloaded' and candidate.is_file():
+                status = 'invalid_media'
+                up_width, up_height, up_duration, up_audio = self._probe_video(
+                    candidate, timeout=max(.001, min(30, deadline-time.time())))
+                if ((up_width, up_height) == (1080, 1920) and 7.5 <= up_duration <= 8.5
+                        and abs(up_duration-duration) <= .5 and has_audio and up_audio):
+                    evidence['ssim'] = self._upscale_ssim(source, candidate, deadline)
+                    status = 'content_mismatch'
+                    if len(evidence['ssim']) == 3 and all(v >= threshold for v in evidence['ssim']):
+                        return candidate, 'validated', evidence
+        except OwnedProcessCleanupError as exc:
+            status = 'ownership_blocked'
+            try:
+                self._write_diagnostics(diagnostics, {'last_generation_process': exc.process_evidence})
+                self._notify_transition(diagnostics, 'FLOW_BROWSER_CLEANUP_BLOCKED',
+                    'Original video retained; the next browser launch requires verified cleanup.')
+            except Exception:
+                pass  # Optional upscale reporting must not prevent local scaling.
+        except Exception as exc:
+            evidence['error_class'] = type(exc).__name__
+        return source, status, evidence
+
     def _generate_video(self, prompt_text: str, image_path: Path, output_path: Path, recovered: dict | None = None) -> Path:
         started_at = datetime.now(timezone.utc).isoformat()
         if not prompt_text.strip():
@@ -1216,43 +1290,8 @@ class FlowMediaClient:
         try:
             if source.resolve() != raw_path.resolve():
                 shutil.copyfile(source, raw_path)
-            selected = source
-            upscale_status = "not_needed" if width == 1080 else "disabled"
-            if not recovered and width == 720 and os.getenv("FLOW_VIDEO_UPSCALE_1080P", "false").lower() == "true" and self._generation_seconds() >= 240:
-                project_id = os.getenv("FLOW_PREFLIGHT_PROJECT_ID", "").strip()
-                media_id = str(payload.get("media_id") or "")
-                upscale_status = "unavailable"
-                if project_id and media_id:
-                    candidate = output_path.with_name("flow_1080p_download.mp4")
-                    script = Path(__file__).resolve().parents[2] / "ops" / "flow_video_upscale.py"
-                    try:
-                        self._check_browser_ownership(diagnostics,'video')
-                        result = run_bounded([sys.executable, str(script), project_id, media_id, str(candidate),
-                            '--workflow', str(payload.get('workflow_id') or ''), '--deadline', str(time.time()+240)], timeout=240)
-                        helper_result = {}
-                        for line in result.stdout.splitlines():
-                            try:
-                                value = json.loads(line)
-                                if isinstance(value, dict):
-                                    helper_result = value
-                            except ValueError:
-                                pass
-                        upscale_status = helper_result.get("status", "unavailable")
-                        if result.returncode == 0 and candidate.is_file():
-                            up_width, up_height, up_duration, up_audio = self._probe_video(candidate)
-                            if ((up_width, up_height) == (1080, 1920) and abs(up_duration - duration) <= 0.5
-                                    and up_audio == has_audio):
-                                selected = candidate
-                                upscale_status = "validated"
-                            else:
-                                upscale_status = "invalid_media"
-                    except OwnedProcessCleanupError as exc:
-                        self._write_diagnostics(diagnostics,{'last_generation_process':exc.process_evidence})
-                        self._notify_transition(diagnostics,'FLOW_BROWSER_CLEANUP_BLOCKED',
-                            'Original video retained; the next browser launch requires verified cleanup.')
-                        upscale_status='ownership_blocked'
-                    except (FlowCommandError, OSError, ValueError, subprocess.SubprocessError, KeyError, IndexError, StopIteration):
-                        upscale_status = "invalid_media" if candidate.exists() else "unavailable"
+            selected, upscale_status, upscale_evidence = self._try_flow_video_upscale(
+                source, payload, output_path, diagnostics, width=width, duration=duration, has_audio=has_audio)
             staged = output_path.with_name(".generated_video.staged.mp4")
             if selected == source and (width, height) == (720, 1280):
                 result = run_bounded(
@@ -1269,7 +1308,7 @@ class FlowMediaClient:
                 "model": FLOW_VIDEO_ALIAS, "aspect": "9:16", "media_id": payload.get("media_id"),
                 "source_width": width, "source_height": height, "duration_seconds": duration,
                 "source_has_audio": has_audio, "locally_scaled_to_1080p": selected == source and width == 720,
-                "upscale_status": upscale_status, "selected_video_file": selected.name,
+                "upscale_status": upscale_status, "upscale_evidence": upscale_evidence, "selected_video_file": selected.name,
                 "start_frame": start_frame.name,
             })
         except (OSError, subprocess.SubprocessError) as exc:

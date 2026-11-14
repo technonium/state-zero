@@ -313,7 +313,7 @@ class FlowRetrySafetyTests(FrozenFlowCalls, unittest.TestCase):
             def generated(command, timeout, marker):
                 (root / 'flow_raw_video.mp4').write_bytes(b'original')
                 marker.write_text('submit_attempted\n')
-                return {'succeeded': True, 'media_id': 'id', 'local_path': str(root / 'flow_raw_video.mp4'),
+                return {'succeeded': True, 'media_id': 'id', 'workflow_id': 'workflow', 'local_path': str(root / 'flow_raw_video.mp4'),
                         'request': {'count': 1, 'model': 'omni_1_2_flash', 'mode': 'i2v', 'aspect': 'portrait'}}
             def command(cmd, **kwargs):
                 if 'flow_video_upscale.py' in str(cmd):

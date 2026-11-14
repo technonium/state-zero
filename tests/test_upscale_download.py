@@ -58,4 +58,3 @@ class UpscaleDownloadTests(unittest.IsolatedAsyncioTestCase):
                         await page.close()
             finally:
                 await browser.close()
-
