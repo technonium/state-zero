@@ -151,6 +151,10 @@ async def download_existing(project_id, media_id, output, *, workflow_id=None, d
                 return 'downloaded'
             finally:
                 staged.unlink(missing_ok=True)
+    except asyncio.CancelledError as cancelled:
+        exc=TimeoutError()
+        exc.upscale_step=step
+        raise exc from cancelled
     except Exception as exc:
         exc.upscale_step=step
         raise

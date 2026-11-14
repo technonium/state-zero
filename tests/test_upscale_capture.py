@@ -1,6 +1,7 @@
 """In-page export capture never invokes Chrome downloads and always restores hooks."""
 import tests
 import base64
+import asyncio
 from pathlib import Path
 import tempfile
 import time
@@ -12,7 +13,7 @@ from ops.flow_video_upscale import download_existing
 
 class CaptureTests(unittest.IsolatedAsyncioTestCase):
     async def test_capture_success_timeout_invalid_and_exception_restore_hooks(self):
-        for case in ('valid','timeout','non_mp4','failure'):
+        for case in ('valid','timeout','non_mp4','failure','cancelled'):
             with self.subTest(case=case),tempfile.TemporaryDirectory() as tmp:
                 client=MagicMock();client.__aenter__=AsyncMock(return_value=client);client.__aexit__=AsyncMock(return_value=False)
                 page=client.page;page.goto=AsyncMock();page.url='https://flow.google.com/project/project/edit/media'
@@ -27,6 +28,7 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
                     calls.append(js)
                     if js=='() => window._gflowCapturedBase64':
                         if case=='failure':raise RuntimeError('closed')
+                        if case=='cancelled':raise asyncio.CancelledError()
                         return None if case=='timeout' else base64.b64encode(
                             b'0000ftyp'+b'0'*1200 if case=='valid' else b'not an mp4').decode()
                 page.evaluate=AsyncMock(side_effect=evaluate)
@@ -36,8 +38,8 @@ class CaptureTests(unittest.IsolatedAsyncioTestCase):
                         patch('flow_readback.select_video',return_value={'workflow_id':'workflow'}), \
                         patch.object(FlowMediaClient,'_probe_video',return_value=(1080,1920,8,True)):
                     kwargs={'workflow_id':'workflow','deadline':time.time()+(.02 if case=='timeout' else 3)}
-                    if case=='failure':
-                        with self.assertRaises(RuntimeError) as caught:
+                    if case in ('failure','cancelled'):
+                        with self.assertRaises(RuntimeError if case=='failure' else TimeoutError) as caught:
                             await download_existing('project','media',output,**kwargs)
                         self.assertEqual(caught.exception.upscale_step,'capture')
                     else:
