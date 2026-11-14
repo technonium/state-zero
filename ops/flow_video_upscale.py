@@ -19,6 +19,7 @@ async def download_existing(project_id, media_id, output, *, workflow_id=None, d
     from gflow_cli.config import get_settings
     from flow_readback import snapshot, select_video, ReadbackIdentityError
     from flow_media_client import FlowMediaClient
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
     if not workflow_id:
         return 'identity_unavailable'
     deadline = deadline or time.time()+240
@@ -34,26 +35,31 @@ async def download_existing(project_id, media_id, output, *, workflow_id=None, d
         current=urlsplit(page.url)
         if current.scheme!='https' or current.hostname!='flow.google.com' or current.path!=route:
             raise ReadbackIdentityError('Optional download editor identity differs')
-        # The visible media must belong to this exact accepted workflow as well as its editor.
-        sources=await page.locator('video').evaluate_all('(videos) => videos.map(v => v.currentSrc || v.src)')
+        # The canvas has no video source; bind the listing/editor, then verify bytes in the caller.
         expected_path='/video/'+clip['workflow_id']
-        if len(sources)!=1 or urlsplit(sources[0]).hostname!='flow-content.google' or urlsplit(sources[0]).path!=expected_path:
-            return 'active_clip_unverified'
-        button=page.get_by_role('button',name=re.compile(r'^download$',re.I))
+        button=page.get_by_role('button',name='Download media',exact=True).locator('visible=true')
+        try:
+            await button.first.wait_for(state='visible',timeout=max(1,min(30,deadline-time.time())*1000))
+        except PlaywrightTimeoutError:
+            return 'ambiguous_control'
         if await button.count()!=1:
             return 'ambiguous_control'
         await button.click()
-        choice=page.get_by_role('menuitem',name=re.compile(r'1080p',re.I))
-        if await choice.count()==0:
-            choice=page.get_by_role('button',name=re.compile(r'1080p',re.I))
+        choice=page.get_by_role('menuitem',name=re.compile(r'^1080p',re.I)).locator('visible=true')
         if await choice.count()!=1 or not await choice.is_visible() or not await choice.is_enabled() or 'upgrade' in (await choice.inner_text()).lower():
             return 'not_offered'
         async with page.expect_download(timeout=max(1,(deadline-time.time())*1000)) as event:
             await choice.click()
         download=await event.value
         transfer=urlsplit(download.url)
-        if (transfer.scheme!='https' or transfer.hostname!='flow-content.google' or transfer.path!=expected_path
-                or transfer.username or transfer.password or transfer.port not in (None,443)):
+        if transfer.scheme=='blob':
+            origin=urlsplit(transfer.path)
+            allowed=(origin.scheme=='https' and origin.netloc=='flow.google.com')
+        else:
+            allowed=(transfer.scheme=='https' and transfer.hostname=='flow-content.google'
+                and transfer.path==expected_path and not transfer.username and not transfer.password
+                and transfer.port in (None,443))
+        if not allowed:
             return 'transfer_identity_unverified'
         staged=output.with_name(output.stem+'.download.mp4')
         try:

@@ -254,8 +254,10 @@ class OptionalDownloadTests(unittest.IsolatedAsyncioTestCase):
         page=client.page;page.goto=AsyncMock();page.url='https://flow.google.com/project/project/edit/media'
         page.locator.return_value.evaluate_all=AsyncMock(return_value=['https://flow-content.google/video/workflow'])
         button=MagicMock();button.count=AsyncMock(return_value=1);button.click=AsyncMock()
+        button.locator.return_value=button;button.first.wait_for=AsyncMock()
         choice=MagicMock();choice.count=AsyncMock(return_value=1);choice.is_visible=AsyncMock(return_value=True)
         choice.is_enabled=AsyncMock(return_value=True);choice.inner_text=AsyncMock(return_value='1080p');choice.click=AsyncMock()
+        choice.locator.return_value=choice
         page.get_by_role.side_effect=[button,choice]
         download=MagicMock(url='https://flow-content.google/video/other-workflow');download.save_as=AsyncMock()
         future=asyncio.get_running_loop().create_future();future.set_result(download)
