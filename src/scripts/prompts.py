@@ -1009,7 +1009,7 @@ class PromptOrchestrator:
         """
         Call LLM API to generate text.
         
-        Uses OpenRouter (Minimax) as primary with Google Gemini 3.8 Flash as fallback.
+        Uses OpenRouter (Minimax) as primary with Google Gemini 4 Hydrogen as fallback.
         """
         self._prompt_seconds_remaining()
         # Mock mode only when no real API is available (OpenRouter takes priority)
@@ -1063,7 +1063,7 @@ class PromptOrchestrator:
         started = time.monotonic()
         outcome = "error"
         try:
-            print("🔄 Using direct Google Gemini 3.8 Flash")
+            print("🔄 Using direct Google Gemini 4 Hydrogen")
             result = call_google_gemini_generate_content(
                 prompt=prompt,
                 api_key=self.google_api_key,

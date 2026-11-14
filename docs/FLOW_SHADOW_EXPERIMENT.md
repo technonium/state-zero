@@ -245,9 +245,8 @@ unmeasured; it is checked as observed, never inferred from the interpolation key
 Mismatches are blocked unsent and recorded privately. Originals with a scene cut
 above 0.25 fail the attempt and cannot be re-adopted by recovery.
 
-Veo 3.1 Fast retires on 5 December 2026. The separate API fallback remains
-`gemini-omni-1.1-flash`; Google auto-routes it to 1.2 from 3 December. This Flow
-migration does not change that API setting.
+Veo 3.1 Fast retires on 5 December 2026. The separate API fallback uses
+`gemini-omni-1.2-flash`.
 
 `FLOW_IMAGE_UPSCALE_2K` defaults to `false`; enable it only after verifying the
 account offers a usable export. Preserve the original and inspect its actual

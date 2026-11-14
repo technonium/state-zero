@@ -25,9 +25,9 @@ Xvfb, the pinned gflow patches and a persistent authenticated profile. See the
 rejects publishing credentials and must not be used as the production entrypoint.
 
 Google API images use `gemini-nano-banana-2.1` by default, with 3:4 and 2K request
-settings. API video defaults to `gemini-omni-1.1-flash` (8 seconds, 720p, scaled
+settings. API video defaults to `gemini-omni-1.2-flash` (8 seconds, 720p, scaled
 locally to 1080p). Models can be configured through `GOOGLE_IMAGE_MODEL` and
-`GOOGLE_VIDEO_MODEL`. The Gemini prompt fallback uses `gemini-3.8-flash`.
+`GOOGLE_VIDEO_MODEL`. The Gemini prompt fallback uses `gemini-4-hydrogen`.
 
 Flow explicitly selects Nano Banana 2.1, 3:4 and one image. Its original image
 is retained; image upscaling is off by default. Flow video uses one portrait
