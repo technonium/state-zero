@@ -485,6 +485,30 @@ class EnvironmentSelectionTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     db.repair_selected_environment_history_from_output([])
 
+    def test_unique_missing_qualifier_repairs_today_and_preserves_reason(self):
+        reason = ('The cosmic emptiness represents the unknown unconventional path one must enter, '
+                  'leaving behind familiar emotional comfort to step into the publicly visible '
+                  'professional void where new status and recognition can form.')
+        raw = 'Void/Space — ' + reason
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+                'STATE_ZERO_PRIVATE_ROOT': tmp, 'PIPELINE_DATE': '2026-11-14'}):
+            orchestrator = PromptOrchestrator(llm_api_key='mock')
+            context = orchestrator._resolve_environment_candidates('LOW', '2026-11-14')
+            context['candidate_options'] = ['Void/Space (Low) — Cosmic emptiness']
+            with patch.object(orchestrator, '_resolve_environment_candidates', return_value=context), \
+                    patch.object(orchestrator, 'call_llm', return_value=raw):
+                result = orchestrator.generate_environment({'date': '2026-11-14', 'energy_zone': 'LOW'}, 'quiet')
+            debug = json.loads((orchestrator.output_dir / 'environment_selection_debug.json').read_text())
+        self.assertEqual(result, 'Void/Space (Low) — ' + reason)
+        self.assertEqual(debug['repair_status'], 'qualifier_match')
+        self.assertEqual(debug['final_selection_source'], 'repaired')
+
+    def test_missing_qualifier_is_not_repaired_when_ambiguous(self):
+        name, status = extract_valid_environment_name('Void/Space — quiet',
+            ['Void/Space (Low)', 'Void/Space (High)'])
+        self.assertIsNone(name)
+        self.assertEqual(status, 'no_match')
+
     def test_extract_valid_environment_name_prefers_explicit_choice_cue(self):
         repaired_name, status = extract_valid_environment_name(
             'I choose "Glacial Valley" because it fits better.',

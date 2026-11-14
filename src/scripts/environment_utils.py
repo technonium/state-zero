@@ -72,6 +72,11 @@ def extract_valid_environment_name(raw_text: str, allowed_names: list[str]) -> t
     if parsed_norm in allowed_lookup:
         return allowed_lookup[parsed_norm], "parsed_name_match"
 
+    qualifier_matches = [name for name in allowed_names
+                         if normalize_environment_name(re.sub(r"\s+\([^()]+\)$", "", name)) == parsed_norm]
+    if len(qualifier_matches) == 1:
+        return qualifier_matches[0], "qualifier_match"
+
     first_line = next((line for line in (raw_text or "").splitlines() if line.strip()), "")
     normalized_first_line = _normalize_for_search(first_line)
 
