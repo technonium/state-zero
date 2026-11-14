@@ -45,6 +45,14 @@ class PortfolioMediaTests(unittest.TestCase):
         self.assertIn('color=c=white:s=1080x1920:r=24000/1001[bg]',
                       command[command.index('-filter_complex') + 1])
 
+    def test_zero_denominator_frame_rate_is_a_value_error(self):
+        with tempfile.TemporaryDirectory() as tmp, patch('composite.check_ffmpeg'), \
+                patch('composite.subprocess.check_output', return_value='0/0\n'), \
+                patch('composite.subprocess.run') as encode:
+            with self.assertRaisesRegex(ValueError, 'Video frame rate must be positive'):
+                process_video_card(Path(tmp)/'source.mp4', {}, Path(tmp)/'card.mp4')
+            encode.assert_not_called()
+
     def _make_video(self, path: Path):
         subprocess.run(
             [

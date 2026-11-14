@@ -58,7 +58,7 @@ class FlowMediaClient:
     def _input_settings() -> dict:
         return {name: os.getenv(name, default) for name, default in (
             ('GFLOW_PROFILE', 'shadow'), ('FLOW_PREFLIGHT_PROJECT_ID', ''),
-            ('FLOW_IMAGE_UPSCALE_2K', 'false'), ('FLOW_VIDEO_UPSCALE_1080P', 'false'),
+            ('FLOW_IMAGE_UPSCALE_2K', 'false'),
             ('GOOGLE_IMAGE_MODEL', GOOGLE_IMAGE_MODEL),
             ('GOOGLE_VIDEO_MODEL', GOOGLE_VIDEO_MODEL))}
 

@@ -375,7 +375,11 @@ def process_video_card(video_path: Path, data: dict, output_path: Path):
         "-show_entries", "stream=r_frame_rate", "-of", "default=noprint_wrappers=1:nokey=1",
         str(video_path),
     ], text=True, timeout=30).strip()
-    if Fraction(frame_rate) <= 0:
+    try:
+        positive_rate = Fraction(frame_rate) > 0
+    except ZeroDivisionError:
+        raise ValueError("Video frame rate must be positive") from None
+    if not positive_rate:
         raise ValueError("Video frame rate must be positive")
     print(f"🎬 Processing VIDEO layout (FFmpeg compositing at Y={VIDEO_ART_OFFSET_Y})")
 

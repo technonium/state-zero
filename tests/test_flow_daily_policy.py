@@ -270,6 +270,17 @@ class DailyFlowPolicyTests(unittest.TestCase):
         self.assertTrue(art.is_file())
         self.assertEqual(result, video)
 
+    def test_video_upscale_toggle_does_not_change_frozen_generation_identity(self):
+        with patch.dict(os.environ, {'FLOW_VIDEO_UPSCALE_1080P': 'true'}):
+            self.freeze()
+        manifest = (self.root / 'flow_inputs.json').read_bytes()
+        with patch.dict(os.environ, {'FLOW_VIDEO_UPSCALE_1080P': 'false'}):
+            self.assertTrue(FlowMediaClient.validate_inputs(self.root))
+            with patch.dict(os.environ, {'GOOGLE_VIDEO_MODEL': 'different-generation-model'}):
+                with self.assertRaises(FlowCommandError):
+                    FlowMediaClient.validate_inputs(self.root)
+        self.assertEqual((self.root / 'flow_inputs.json').read_bytes(), manifest)
+
     def test_frozen_inputs_detect_changes_without_rewriting_manifest(self):
         self.freeze()
         manifest = self.root / 'flow_inputs.json'
