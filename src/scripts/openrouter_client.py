@@ -2,7 +2,7 @@
 OpenRouter LLM Client for prompt generation.
 
 This module provides a client for calling OpenRouter's API with Minimax.
-It includes fallback support to Google Gemini 3.8 Flash.
+It includes fallback support to Google Gemini 4 Hydrogen.
 
 Configuration:
 - Model: minimax/minimax-m2.5
@@ -53,7 +53,7 @@ def call_google_gemini_generate_content(
         prompt: The user prompt
         api_key: Google API key
         model: Gemini model name without REST prefix
-        temperature: Generation temperature
+        temperature: Retained for caller compatibility; not sent to Gemini
         max_output_tokens: Max output tokens
         thinking_budget: Gemini thinking budget
         timeout: Request timeout in seconds
@@ -80,7 +80,6 @@ def call_google_gemini_generate_content(
             }
         ],
         "generationConfig": {
-            "temperature": temperature,
             "maxOutputTokens": max_output_tokens,
             "thinkingConfig": {
                 "thinkingBudget": thinking_budget,
@@ -122,7 +121,7 @@ class OpenRouterClient:
     Client for OpenRouter API with Minimax.
     
     Supports thinking mode for enhanced reasoning capabilities.
-    Falls back to Google Gemini 3.8 Flash on failure.
+    Falls back to Google Gemini 4 Hydrogen on failure.
     """
     
     BASE_URL = "https://openrouter.ai/api/v1"
@@ -225,7 +224,7 @@ class OpenRouterClient:
                 if self.fallback_api_key:
                     primary_seconds = time.monotonic() - started
                     fallback_started = time.monotonic()
-                    print("🔄 Attempting fallback to Google Gemini 3.8 Flash...")
+                    print("🔄 Attempting fallback to Google Gemini 4 Hydrogen...")
                     try:
                         result = self._call_google_gemini(prompt, self.fallback_api_key)
                         provider, outcome = "gemini", "success"
@@ -389,7 +388,7 @@ class OpenRouterClient:
     
     def _call_google_gemini(self, prompt: str, api_key: str) -> str:
         """
-        Fallback to Google Gemini 3.8 Flash.
+        Fallback to Google Gemini 4 Hydrogen.
         
         Args:
             prompt: The user prompt
@@ -398,7 +397,7 @@ class OpenRouterClient:
         Returns:
             Generated text response
         """
-        print("🔄 Using Google Gemini 3.8 Flash as fallback")
+        print("🔄 Using Google Gemini 4 Hydrogen as fallback")
 
         result = call_google_gemini_generate_content(
             prompt=prompt,
@@ -447,7 +446,7 @@ def create_llm_client(
     
     print(f"🤖 Creating LLM Client")
     print(f"   Primary: OpenRouter ({model or 'minimax/minimax-m2.5'})")
-    print(f"   Fallback: {'Google Gemini 3.8 Flash' if google_key else 'None'}")
+    print(f"   Fallback: {'Google Gemini 4 Hydrogen' if google_key else 'None'}")
     
     return OpenRouterClient(
         api_key=openrouter_key,

@@ -10,7 +10,7 @@ FLOW_VIDEO_RESULT = 'omni_1_2_flash'
 FLOW_VIDEO_ENUM = 'OMNI_1_2_FLASH'
 GOOGLE_IMAGE_MODEL = 'gemini-nano-banana-2.1'
 GOOGLE_VIDEO_MODEL = 'gemini-omni-1.2-flash'
-GEMINI_MODEL = 'gemini-3.8-flash'
+GEMINI_MODEL = 'gemini-4-hydrogen'
 
 
 def flow_video_model_matches(model: object) -> bool:

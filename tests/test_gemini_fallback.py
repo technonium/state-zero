@@ -12,10 +12,10 @@ class GeminiFallbackModelTests(unittest.TestCase):
         response=Mock();response.json.return_value={'candidates':[{'content':{'parts':[{'text':'ok'}]}}]}
         with patch('openrouter_client.requests.post',return_value=response) as post,patch.dict(os.environ,{},clear=True):
             self.assertEqual(call_google_gemini_generate_content(prompt='unchanged prompt',api_key='fixture'), 'ok')
-        self.assertEqual(GEMINI_MODEL,'gemini-3.8-flash')
-        self.assertIn('/models/gemini-3.8-flash:generateContent',post.call_args.args[0])
+        self.assertEqual(GEMINI_MODEL,'gemini-4-hydrogen')
+        self.assertIn('/models/gemini-4-hydrogen:generateContent',post.call_args.args[0])
         self.assertEqual(post.call_args.kwargs['timeout'],90)
-        self.assertEqual(post.call_args.kwargs['json']['generationConfig'],{'temperature':1.0,'maxOutputTokens':12000,'thinkingConfig':{'thinkingBudget':8000}})
+        self.assertEqual(post.call_args.kwargs['json']['generationConfig'],{'maxOutputTokens':12000,'thinkingConfig':{'thinkingBudget':8000}})
         self.assertEqual(post.call_args.kwargs['json']['contents'][0]['parts'][0]['text'],'unchanged prompt')
         for configured,expected in ((None,120),('200',200)):
             with patch.dict(os.environ,{} if configured is None else {'OPENROUTER_CALL_DEADLINE_SECONDS':configured},clear=True), \
