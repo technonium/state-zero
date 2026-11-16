@@ -54,7 +54,7 @@ The camera always behaves like disembodied consciousness settling on something. 
 
 Use the single most characteristic motion for this environment, scaled to recovery zone. One motion across the full 8 seconds — not multiple competing actions.
 
-**MID recovery:** Same environment class as HIGH, but more active and unsettled — motion present with irregular frequency, reduced clarity, or mild disruption. Not yet an event. Things are coasting but uneasily.
+**MID recovery:** Same environment class as HIGH, but more active and unsettled — motion present with irregular frequency, reduced clarity, or mild disruption. Not yet an event. Things are coasting but uneasily. Never use the LOW column for MID: nothing calves, breaks off, falls with impact, fractures, or ruptures. Start from the HIGH motion and make it irregular.
 
 **HIGH and LOW recovery tiers by environment:**
 

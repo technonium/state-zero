@@ -24,6 +24,7 @@ One or two sentences. A statement that is simultaneously true of the landscape a
 - Never describe the image literally
 - Never use the word body
 - Never copy phrases from one_liner — reinterpret it
+- Never reuse an example caption below, even when today's conditions match its label — the examples show the register, not the answer. Write a new one
 - No conjunction that links body to landscape explicitly (never: "and the fog agreed", "the stone confirmed it", "the landscape already knew")
 
 Good:

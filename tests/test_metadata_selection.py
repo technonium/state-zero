@@ -94,7 +94,7 @@ class MetadataSelectionTests(unittest.TestCase):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
                 orchestrator.call_llm = self._metadata_responder(
                     ["ASH MERIDIAN\nCLEAR HORIZON\nGLASS SHELF\nSTONE REACH\nDEEP VAULT"],
-                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                    ["The field opened past the final ridge. Everything reached and nothing resisted."],
                 )
 
                 metadata = orchestrator.extract_metadata(
@@ -136,7 +136,7 @@ class MetadataSelectionTests(unittest.TestCase):
                         "ASH MERIDIAN\nMERIDIAN\nSTONE REACH\nCLEAR REACH\nEMBER REACH",
                         "BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING",
                     ],
-                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                    ["The field opened past the final ridge. Everything reached and nothing resisted."],
                 )
 
                 metadata = orchestrator.extract_metadata(
@@ -215,6 +215,149 @@ class MetadataSelectionTests(unittest.TestCase):
         self.assertFalse(orchestrator._validate_scene_description(metadata["scene_description"]))
         self.assertTrue(debug_payload["scene_debug"]["retry_triggered"])
 
+    def test_scene_description_is_measured_in_card_lines_not_characters(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        # 85 characters, but long words push it onto a third card line.
+        three_lines = "The charge remained but it no longer demanded anything. Stillness at the center held."
+        self.assertEqual(len(three_lines), 85)
+        self.assertIn("scene_description_too_long", orchestrator._validate_scene_description(three_lines))
+        # 89 characters that still fit the card's two lines.
+        two_lines = "The pressure held until nothing could. The silence that followed settled into everything."
+        self.assertEqual(len(two_lines), 89)
+        self.assertNotIn("scene_description_too_long", orchestrator._validate_scene_description(two_lines))
+
+    def test_scene_description_copying_a_prompt_example_is_rejected(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        examples = PromptOrchestrator._scene_description_examples()
+        self.assertEqual(len(examples), 10)  # 5 Good + 5 Bad quoted in the template
+        for copied in (
+            "Nothing reaches this far down. The compression is total and the quiet is permanent.",
+            "the glow at the base is all that remains -- the cooling started some time ago",
+        ):
+            with self.subTest(copied=copied):
+                self.assertIn("copies_prompt_example", orchestrator._validate_scene_description(copied))
+        original = "Nothing reaches this deep. The pressure is complete and the silence stays."
+        self.assertNotIn("copies_prompt_example", orchestrator._validate_scene_description(original))
+
+    def test_copied_example_triggers_retry_and_uses_original_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-14"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = self._metadata_responder(
+                    ["BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING"],
+                    [
+                        "Nothing reaches this far down. The compression is total and the quiet is permanent.",
+                        "Nothing reaches this deep. The pressure is complete and the silence stays.",
+                    ],
+                )
+                metadata = orchestrator.extract_metadata(
+                    self._daily_data(),
+                    "MARCH 14 2026",
+                    environment="Frozen/Ice — quiet reason",
+                    image_json={"core_concept": "A frozen field holding its shape under pressure."},
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(
+            metadata["scene_description"],
+            "Nothing reaches this deep. The pressure is complete and the silence stays.",
+        )
+        self.assertEqual(debug_payload["scene_selection_source"], "retry_valid")
+        self.assertIn("copies_prompt_example", debug_payload["scene_debug"]["first_rejection_reasons"])
+
+    def _scene_for(self, first: str, retry: str):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-14"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = self._metadata_responder(
+                    ["BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING"],
+                    [first, retry],
+                )
+                metadata = orchestrator.extract_metadata(
+                    self._daily_data(),
+                    "MARCH 14 2026",
+                    environment="Frozen/Ice — quiet reason",
+                    image_json={"core_concept": "A frozen field holding its shape under pressure."},
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
+                )
+        return metadata["scene_description"], debug_payload["scene_selection_source"]
+
+    def test_two_too_long_captions_keep_the_original_not_the_placeholder(self):
+        # Real Minimax captions from 16 Nov testing: three card lines each, otherwise fine.
+        first = "The old stones had stopped reaching long ago. Everything moved as if it carried the weight of that choice."
+        retry = "The weight of every motion went unaccounted. The monuments have carried theirs since before the naming."
+        self.assertEqual(self._scene_for(first, retry), (first, "too_long_first"))
+        # Original unusable (metric word), retry only too long: the retry is kept.
+        metric = "Recovery stayed low across the whole span, and every reserve was spent before the end of it all."
+        self.assertEqual(self._scene_for(metric, retry), (retry, "too_long_retry"))
+
+    def test_too_short_captions_still_use_the_placeholder(self):
+        scene, source = self._scene_for("Fog held.", "Here it is:")
+        self.assertEqual(source, "fallback_safe_scene")
+
+    def test_rambling_or_content_failures_still_use_the_placeholder(self):
+        rambling = ("Each support gave way at its own pace until the frame could no longer hold its shape. "
+                    "Wait, that's over 85 characters; let me restate.")
+        self.assertGreater(len(rambling), 120)
+        metric = "Recovery stayed low across the whole span, and every reserve was spent before the end."
+        for first, retry in ((rambling, rambling), (metric, rambling)):
+            with self.subTest(first=first[:30]):
+                scene, source = self._scene_for(first, retry)
+                self.assertEqual(source, "fallback_safe_scene")
+                self.assertNotIn(scene, (first, retry))
+
+    def test_every_safe_scene_fallback_passes_validation(self):
+        orchestrator = PromptOrchestrator.__new__(PromptOrchestrator)
+        for (zone, depth), text in PromptOrchestrator._SAFE_SCENE_FALLBACKS.items():
+            with self.subTest(zone=zone, depth=depth):
+                self.assertEqual(orchestrator._validate_scene_description(text), [])
+        default = orchestrator._fallback_scene_description({"recovery_zone": "UNKNOWN"})
+        self.assertEqual(orchestrator._validate_scene_description(default), [])
+
+    def test_too_long_scene_triggers_retry_and_uses_valid_retry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(
+                os.environ,
+                {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-03-14"},
+                clear=False,
+            ):
+                orchestrator = PromptOrchestrator(llm_api_key="mock")
+                orchestrator.call_llm = self._metadata_responder(
+                    ["BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING"],
+                    [
+                        "The monuments sagged with accumulated years. Each one carries what time refused to release.",
+                        "The monuments sagged with the years. Each holds what time would not release.",
+                    ],
+                )
+
+                metadata = orchestrator.extract_metadata(
+                    self._daily_data(),
+                    "MARCH 14 2026",
+                    environment="Frozen/Ice — quiet reason",
+                    image_json={"core_concept": "A frozen field holding its shape under pressure."},
+                )
+                debug_payload = json.loads(
+                    (orchestrator.output_dir / "metadata_selection_debug.json").read_text(encoding="utf-8")
+                )
+
+        self.assertEqual(
+            metadata["scene_description"],
+            "The monuments sagged with the years. Each holds what time would not release.",
+        )
+        self.assertEqual(debug_payload["scene_selection_source"], "retry_valid")
+
     def test_extract_metadata_handles_db_lookup_failure_without_crashing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch.dict(
@@ -225,7 +368,7 @@ class MetadataSelectionTests(unittest.TestCase):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
                 orchestrator.call_llm = self._metadata_responder(
                     ["ASH MERIDIAN\nCLEAR HORIZON\nGLASS SHELF\nSTONE REACH\nDEEP VAULT"],
-                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                    ["The field opened past the final ridge. Everything reached and nothing resisted."],
                 )
                 with patch.object(CardDatabase, "get_recent_titles", side_effect=RuntimeError("db unavailable")):
                     metadata = orchestrator.extract_metadata(
@@ -297,7 +440,7 @@ class MetadataSelectionTests(unittest.TestCase):
                 orchestrator = PromptOrchestrator(llm_api_key="mock")
                 orchestrator.call_llm = self._metadata_responder(
                     ["BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING"],
-                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                    ["The field opened past the final ridge. Everything reached and nothing resisted."],
                 )
 
                 orchestrator.extract_metadata(
@@ -351,7 +494,7 @@ class MetadataSelectionTests(unittest.TestCase):
                         "OBSIDIAN REACH\nEMBER BASIN\nFROST LINE\nWIDE REACH\nSALT BASIN",
                         "BASALT VISTA\nGLASS HARBOR\nSILENT BASIN\nFROST LINE\nCLEARING",
                     ],
-                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                    ["The field opened past the final ridge. Everything reached and nothing resisted."],
                 )
 
                 metadata = orchestrator.extract_metadata(
@@ -392,7 +535,7 @@ class MetadataSelectionTests(unittest.TestCase):
                         "ASH MERIDIAN\nTOR\nTHREE WORD TITLE\nNO\nARC",
                         "CLEAR REACH\nICE\nANOTHER BAD TITLE\nX\nVOID",
                     ],
-                    ["The field opened past the last edge. Everything reached and nothing pushed back."],
+                    ["The field opened past the final ridge. Everything reached and nothing resisted."],
                 )
 
                 metadata = orchestrator.extract_metadata(

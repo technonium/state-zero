@@ -11,6 +11,8 @@ FLOW_VIDEO_ENUM = 'OMNI_1_2_FLASH'
 GOOGLE_IMAGE_MODEL = 'gemini-nano-banana-2.1'
 GOOGLE_VIDEO_MODEL = 'gemini-omni-1.2-flash'
 GEMINI_MODEL = 'gemini-4-hydrogen'
+# Text model for every prompt stage, via OpenRouter (was minimax/minimax-m2.5 until 16 Nov 2026).
+PROMPT_MODEL = 'anthropic/claude-haiku-5.5'
 
 
 def flow_video_model_matches(model: object) -> bool:

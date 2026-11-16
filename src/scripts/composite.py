@@ -216,6 +216,29 @@ def draw_spark_icon(canvas: Image.Image, x: int, y: int, size: int) -> None:
         draw.polygon(pts, fill="black")
 
 
+def wrap_text_lines(text: str, font: ImageFont.FreeTypeFont, max_w: int) -> list[str]:
+    """Split text into the lines it takes at max_w."""
+    lines: list[str] = []
+    current_line = ""
+    for word in text.split():
+        test = f"{current_line} {word}".strip()
+        bbox = font.getbbox(test)
+        if bbox[2] - bbox[0] <= max_w:
+            current_line = test
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+
+def caption_line_count(text: str) -> int:
+    """Lines the scene description takes on the card (the card shows two)."""
+    return len(wrap_text_lines(text, load_fonts()["text"], DESC_W))
+
+
 def draw_wrapped_text(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -227,22 +250,7 @@ def draw_wrapped_text(
     max_lines: int = 2,
 ) -> None:
     """Draw text with word-wrapping."""
-    words = text.split()
-    lines: list[str] = []
-    current_line = ""
-
-    for word in words:
-        test = f"{current_line} {word}".strip()
-        bbox = font.getbbox(test)
-        text_w = bbox[2] - bbox[0]
-        if text_w <= max_w:
-            current_line = test
-        else:
-            if current_line:
-                lines.append(current_line)
-            current_line = word
-    if current_line:
-        lines.append(current_line)
+    lines = wrap_text_lines(text, font, max_w)
 
     if len(lines) > max_lines:
         last = lines[max_lines - 1]

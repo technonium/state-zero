@@ -22,11 +22,12 @@ class GeminiFallbackModelTests(unittest.TestCase):
                     patch('openrouter_client.requests.post',return_value=response) as post:
                 OpenRouterClient(api_key='fixture')._post_openrouter_request('https://openrouter.ai/api/v1/chat/completions',{}, {})
             self.assertEqual(post.call_args.kwargs['timeout'],expected)
-        self.assertEqual(OpenRouterClient.DEFAULT_MODEL,'minimax/minimax-m2.5')
+        self.assertEqual(OpenRouterClient.DEFAULT_MODEL,'anthropic/claude-haiku-5.5')
 
     def test_minimax_prefers_fast_providers_with_fallback_and_unchanged_settings(self):
         reply=Mock();reply.json.return_value={'choices':[{'message':{'content':'ok'}}]}
-        for model,provider in ((None,{'order':['streamlake','digitalocean','atlas-cloud'],'allow_fallbacks':True}),('other/model',None)):
+        for model,provider in (('minimax/minimax-m2.5',{'order':['streamlake','digitalocean','atlas-cloud'],'allow_fallbacks':True}),
+                               (None,None),('other/model',None)):
             with patch.object(OpenRouterClient,'_post_openrouter_request',return_value=reply) as post:
                 self.assertEqual(OpenRouterClient(api_key='fixture',model=model)._call_openrouter('p'),'ok')
             payload=post.call_args.args[2]

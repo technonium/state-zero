@@ -28,6 +28,7 @@ from title_utils import (
     structural_title_key,
 )
 from utils import env_bool, get_output_root, get_project_root, load_project_dotenv
+from composite import caption_line_count
 
 load_project_dotenv()
 
@@ -37,6 +38,7 @@ from openrouter_client import (
     GEMINI_TIMEOUT_SECONDS,
     LLMProviderError,
     OpenRouterError,
+    PROMPT_MODEL,
     call_google_gemini_generate_content,
     create_llm_client,
 )
@@ -315,13 +317,13 @@ class PromptOrchestrator:
             self.llm_client = create_llm_client(
                 openrouter_api_key=or_key,
                 google_api_key=llm_api_key,
-                model="minimax/minimax-m2.5",
+                model=PROMPT_MODEL,
                 temperature=1.0,
                 max_tokens=12000,
                 thinking_budget=8000
             )
             self.use_openrouter = True
-            print("✅ LLM Client initialized: OpenRouter (Minimax) with Google Gemini fallback")
+            print(f"✅ LLM Client initialized: OpenRouter ({PROMPT_MODEL}) with Google Gemini fallback")
         else:
             # Fall back to direct Google API usage
             self.api_key = llm_api_key
@@ -1009,7 +1011,7 @@ class PromptOrchestrator:
         """
         Call LLM API to generate text.
         
-        Uses OpenRouter (Minimax) as primary with Google Gemini 4 Hydrogen as fallback.
+        Uses OpenRouter (PROMPT_MODEL) as primary with Google Gemini 4 Hydrogen as fallback.
         """
         self._prompt_seconds_remaining()
         # Mock mode only when no real API is available (OpenRouter takes priority)
@@ -1962,14 +1964,28 @@ class PromptOrchestrator:
         cleaned = " ".join(line.strip() for line in cleaned.splitlines() if line.strip())
         return cleaned.strip("\"'` ")
 
+    @staticmethod
+    def _normalize_scene_text(text: str) -> str:
+        return " ".join(re.sub(r"[^a-z0-9 ]+", " ", text.lower()).split())
+
+    @classmethod
+    def _scene_description_examples(cls) -> set[str]:
+        """Normalized Good/Bad example captions quoted in the scene template."""
+        template = (get_project_root() / "src/prompts/scene_description_builder.md").read_text(encoding="utf-8")
+        return {cls._normalize_scene_text(m) for m in re.findall(r'^- "([^"]+)"', template, flags=re.MULTILINE)}
+
     def _validate_scene_description(self, value: str) -> list[str]:
         reasons: list[str] = []
         if not value:
             return ["blank_scene_description"]
 
+        if self._normalize_scene_text(value) in self._scene_description_examples():
+            reasons.append("copies_prompt_example")
+
         if len(value) < 55:
             reasons.append("scene_description_too_short")
-        if len(value) > 100:
+        # The card shows two lines and cuts the rest; measure with the card's own font.
+        if caption_line_count(value) > 2:
             reasons.append("scene_description_too_long")
 
         forbidden_patterns = [
@@ -2006,19 +2022,31 @@ class PromptOrchestrator:
         )
 
     _SAFE_SCENE_FALLBACKS: dict[tuple[str, str], str] = {
-        ('LOW', 'ABYSS'): 'A sealed field of dark pressure buckles inward, with dim particles dragging through the frame.',
-        ('LOW', 'DEEP'): 'A buried mineral field sags under pressure while dim side-light catches the failing edge.',
-        ('LOW', 'MID-DEPTH'): 'A low-lit terrain holds together unevenly as heavy air gathers around the central mass.',
-        ('LOW', 'SURFACE'): 'An exposed field sits under hard light, its surface stressed and uneven after a visible shift.',
-        ('MID', 'ABYSS'): 'A sealed dark field holds a narrow pulse of light, with suspended dust drifting in slow layers.',
-        ('MID', 'DEEP'): 'A buried recess steadies around lateral light, with mineral haze moving through the center.',
-        ('MID', 'MID-DEPTH'): 'A muted terrain carries soft pressure across its surface while distant light stays restrained.',
-        ('MID', 'SURFACE'): 'An open field steadies under clear light, with small textures moving around the central form.',
-        ('HIGH', 'ABYSS'): 'A sealed interior glows from within, with bright particles pressing through the surrounding dark.',
-        ('HIGH', 'DEEP'): 'A dense mineral field gathers bright lateral light as active textures move through the recess.',
-        ('HIGH', 'MID-DEPTH'): 'A charged terrain brightens across its surface, with layered motion gathering near the center.',
-        ('HIGH', 'SURFACE'): 'A clear exposed field holds bright motion along the edges while the center stays sharply defined.',
+        ('LOW', 'ABYSS'): 'A sealed field of dark pressure buckles inward. Dim particles drag through it.',
+        ('LOW', 'DEEP'): 'A buried mineral field sags under pressure. Dim side-light catches the edge.',
+        ('LOW', 'MID-DEPTH'): 'A low-lit terrain holds together unevenly. Heavy air gathers at the center.',
+        ('LOW', 'SURFACE'): 'An exposed field sits under hard light, its surface stressed after a shift.',
+        ('MID', 'ABYSS'): 'A sealed dark field holds a narrow pulse of light. Dust drifts in slow layers.',
+        ('MID', 'DEEP'): 'A buried recess steadies around lateral light. Mineral haze drifts through.',
+        ('MID', 'MID-DEPTH'): 'A muted terrain carries soft pressure. The distant light stays restrained.',
+        ('MID', 'SURFACE'): 'An open field steadies under clear light. Small textures move at the center.',
+        ('HIGH', 'ABYSS'): 'A sealed interior glows from within. Bright particles press into the dark.',
+        ('HIGH', 'DEEP'): 'A dense mineral field gathers bright side-light. Textures move through it.',
+        ('HIGH', 'MID-DEPTH'): 'A charged terrain brightens across its surface. Motion gathers at the center.',
+        ('HIGH', 'SURFACE'): 'A clear exposed field holds bright motion at its edges. The center stays sharp.',
     }
+
+    def _too_long_only_scene(self, *candidates: tuple[str, list[str], str]) -> tuple[str, str] | None:
+        """First caption (original before retry) whose only fault is overflowing the card.
+
+        The card cuts it after two lines with an ellipsis, which beats a generic placeholder.
+        Over 120 characters the model is usually rambling ("Wait, that's over..."), not captioning.
+        """
+        return next(
+            ((text, which) for text, reasons, which in candidates
+             if reasons == ['scene_description_too_long'] and len(text) <= 120),
+            None,
+        )
 
     def _fallback_scene_description(self, daily_data: dict | None) -> str:
         daily_data = daily_data or {}
@@ -2026,7 +2054,7 @@ class PromptOrchestrator:
         depth_level = str(daily_data.get('depth_level') or 'MID-DEPTH').strip().upper()
         return self._SAFE_SCENE_FALLBACKS.get(
             (recovery_zone, depth_level),
-            'A contained terrain holds quiet pressure, with layered texture moving around the central field.',
+            'A contained terrain holds quiet pressure. Layered texture moves around the center.',
         )
 
     def generate_title(self, daily_data: dict, date_display: str, environment: str = "") -> dict:
@@ -2187,9 +2215,16 @@ class PromptOrchestrator:
             retry_raw_output = self.call_llm(retry_prompt)
             retry_cleaned = self._clean_scene_description_output(retry_raw_output)
             retry_rejection_reasons = self._validate_scene_description(retry_cleaned)
+            too_long_only = self._too_long_only_scene(
+                (first_cleaned, first_rejection_reasons, 'first'),
+                (retry_cleaned, retry_rejection_reasons, 'retry'),
+            )
             if not retry_rejection_reasons:
                 selected_scene = retry_cleaned
                 selected_scene_source = 'retry_valid'
+            elif too_long_only:
+                selected_scene, which = too_long_only
+                selected_scene_source = f'too_long_{which}'
             else:
                 selected_scene = self._fallback_scene_description(daily_data)
                 fallback_rejection_reasons = self._validate_scene_description(selected_scene)

@@ -1,11 +1,11 @@
 """
 OpenRouter LLM Client for prompt generation.
 
-This module provides a client for calling OpenRouter's API with Minimax.
+This module provides a client for calling OpenRouter's API (model: PROMPT_MODEL).
 It includes fallback support to Google Gemini 4 Hydrogen.
 
 Configuration:
-- Model: minimax/minimax-m2.5
+- Model: anthropic/claude-haiku-5.5 (state_zero_models.PROMPT_MODEL)
 - Temperature: 1.0
 - Thinking: enabled with 8000 token budget
 - Max tokens: 12000
@@ -18,7 +18,7 @@ import time
 import requests
 from typing import Optional
 
-from state_zero_models import GEMINI_MODEL
+from state_zero_models import GEMINI_MODEL, PROMPT_MODEL
 GEMINI_TIMEOUT_SECONDS = 90
 
 
@@ -118,14 +118,14 @@ def call_google_gemini_generate_content(
 
 class OpenRouterClient:
     """
-    Client for OpenRouter API with Minimax.
+    Client for OpenRouter API.
     
     Supports thinking mode for enhanced reasoning capabilities.
     Falls back to Google Gemini 4 Hydrogen on failure.
     """
     
     BASE_URL = "https://openrouter.ai/api/v1"
-    DEFAULT_MODEL = "minimax/minimax-m2.5"
+    DEFAULT_MODEL = PROMPT_MODEL
     
     # Default generation parameters
     DEFAULT_TEMPERATURE = 1.0
@@ -151,7 +151,7 @@ class OpenRouterClient:
         
         Args:
             api_key: OpenRouter API key
-            model: Model to use (default: minimax/minimax-m2.5)
+            model: Model to use (default: PROMPT_MODEL)
             temperature: Temperature for generation (default: 1.0)
             max_tokens: Maximum tokens in response (default: 12000)
             thinking_budget: Thinking token budget (default: 8000)
@@ -247,7 +247,7 @@ class OpenRouterClient:
 
     def _call_openrouter(self, prompt: str, system_prompt: Optional[str] = None) -> str:
         """
-        Call OpenRouter API with Minimax.
+        Call OpenRouter API.
         
         Args:
             prompt: The user prompt
@@ -426,7 +426,7 @@ def create_llm_client(
     Args:
         openrouter_api_key: OpenRouter API key (or env var OPENROUTER_API_KEY)
         google_api_key: Google API key for fallback (or env var GOOGLE_API_KEY_PRIMARY)
-        model: Model to use (default: minimax/minimax-m2.5)
+        model: Model to use (default: PROMPT_MODEL)
         temperature: Temperature setting (default: 1.0)
         max_tokens: Max tokens (default: 12000)
         thinking_budget: Thinking budget (default: 8000)
@@ -445,7 +445,7 @@ def create_llm_client(
         )
     
     print(f"🤖 Creating LLM Client")
-    print(f"   Primary: OpenRouter ({model or 'minimax/minimax-m2.5'})")
+    print(f"   Primary: OpenRouter ({model or PROMPT_MODEL})")
     print(f"   Fallback: {'Google Gemini 4 Hydrogen' if google_key else 'None'}")
     
     return OpenRouterClient(
