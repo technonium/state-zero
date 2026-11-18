@@ -17,8 +17,8 @@ MEDIA = '22222222-2222-4222-8222-222222222222'
 WORKFLOW = '33333333-3333-4333-8333-333333333333'
 
 
-def listing(media=MEDIA, seed=123, prompt='synthetic', model=36, aspect=4):
-    details = [None] * 15
+def listing(media=MEDIA, seed=123, prompt='synthetic', model=36, aspect=4, fields=15):
+    details = [None] * fields
     details[1] = seed; details[7] = prompt; details[8] = model
     details[13] = 'https://flow-content.google/original'; details[14] = aspect
     return [None, [[WORKFLOW, None, None, ['unique.png', [], None, None, media, None, []], PROJECT]],
@@ -46,6 +46,15 @@ class ReadbackTests(unittest.IsolatedAsyncioTestCase):
         for model, aspect in [(35, 4), (36, 1)]:
             with self.assertRaises(ReadbackUnavailable):
                 select_image(decode_listing(listing(model=model, aspect=aspect), PROJECT), self.context())
+
+    def test_current_host_trailing_image_fields_keep_model_and_aspect_exact(self):
+        # 18 Nov 2026: Flow lists new images with 19 detail fields.
+        parsed = decode_listing(listing(fields=19), PROJECT)
+        self.assertEqual(select_image(parsed, self.context()).media_id, MEDIA)
+        for model, aspect in [(35, 4), (36, 1)]:
+            with self.subTest(model=model, aspect=aspect), self.assertRaises(ReadbackUnavailable):
+                select_image(decode_listing(listing(model=model, aspect=aspect, fields=19), PROJECT),
+                             self.context())
 
     def test_ambiguous_results_do_not_choose_newest(self):
         payload = listing()

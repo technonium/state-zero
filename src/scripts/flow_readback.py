@@ -222,7 +222,9 @@ def select_image(listing, data):
                 and image.seed == data['seed'] and fingerprint(image.prompt) == data['prompt_hash']):
             row = listing['media'][image.media_id]
             details = row[6][0]
-            if len(details) != 15 or details[8] != 36 or details[14] != 4:
+            # Flow added trailing fields to new image records on 18 Nov 2026 (15 -> 19);
+            # model and aspect keep their positions, so those stay exact.
+            if len(details) < 15 or details[8] != 36 or details[14] != 4:
                 raise ReadbackIdentityError('Recovered image settings differ')
             if min(image.dimensions) < 512 or abs(image.dimensions[0] / image.dimensions[1] - .75) > .015:
                 raise ReadbackUnavailable('Recovered image dimensions differ')
