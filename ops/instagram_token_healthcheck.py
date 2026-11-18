@@ -202,11 +202,8 @@ def main():
     state["last_days_to_expiry"] = days_left
     state["last_hours_to_expiry"] = hours_left
 
-    crossed = None
-    for threshold in thresholds:
-        if days_left <= threshold:
-            crossed = threshold
-            break
+    # The tightest threshold crossed, so 7, 3 and 1 day warnings each fire once.
+    crossed = min((threshold for threshold in thresholds if days_left <= threshold), default=None)
 
     dedupe_key = f"{expires_at}:{crossed}"
     if crossed is not None and state.get("last_expiry_alert_key") != dedupe_key:

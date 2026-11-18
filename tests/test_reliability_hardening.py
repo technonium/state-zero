@@ -283,7 +283,7 @@ class ReliabilityHardeningTests(unittest.TestCase):
                     {
                         "consecutive_refresh_failures": 10,
                         "last_refresh_failure_notice_key": "3+:True:refresh failed: expiry threshold reached",
-                        "last_expiry_alert_key": "2026-05-04T05:22:27+00:00:14",
+                        "last_expiry_alert_key": "2026-05-04T05:22:27+00:00:7",
                         "last_ok_notice_date": "2026-04-29",
                     }
                 ),
@@ -307,6 +307,51 @@ class ReliabilityHardeningTests(unittest.TestCase):
             self.assertEqual(notifier.statuses, [])
             self.assertEqual(notifier.warnings, [])
             self.assertEqual(notifier.errors, [])
+
+    def test_healthcheck_warns_at_each_tighter_expiry_threshold(self):
+        import ops.instagram_token_healthcheck as healthcheck
+
+        class FakeManager:
+            auto_refresh_mode = "off"
+
+            def __init__(self, days):
+                self.days = days
+
+            def inspect_token_health(self):
+                return {"valid": True, "detail": "Token accepted by Graph API.",
+                        "expires_at": "2026-11-18T12:29:13+00:00",
+                        "days_to_expiry": self.days, "hours_to_expiry": self.days * 24}
+
+            def maybe_auto_refresh(self, report=None, force_on_invalid=False):
+                return False, "auto-refresh disabled"
+
+        class FakeNotifier:
+            def __init__(self):
+                self.statuses, self.warnings = [], []
+
+            def notify_status(self, **kwargs):
+                self.statuses.append(kwargs)
+
+            def notify_warning(self, **kwargs):
+                self.warnings.append(kwargs)
+                return True
+
+            def notify_error(self, **kwargs):
+                raise AssertionError(kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env = {"STATE_ZERO_PRIVATE_ROOT": tmpdir, "PIPELINE_DATE": "2026-11-18",
+                   "INSTAGRAM_TOKEN_HEALTHCHECK_ENABLED": "true", "INSTAGRAM_TOKEN_ALERT_DAYS": "14,7,3,1"}
+            sent = []
+            # 18 Nov 2026: only the 14-day warning fired, then daily "valid" notices to expiry.
+            for days in (13.5, 6.5, 2.5, 1.5, 0.48, 0.47):
+                notifier = FakeNotifier()
+                with patch.dict(os.environ, env, clear=False), patch.object(
+                    healthcheck, "get_instagram_token_manager", return_value=FakeManager(days)
+                ), patch.object(healthcheck, "get_notifier", return_value=notifier):
+                    healthcheck.main()
+                sent += [w["message"] for w in notifier.warnings]
+            self.assertEqual([m.split("(threshold ")[1].split(" ")[0] for m in sent], ["14", "7", "3", "1"])
 
     def test_write_json_atomic_fsyncs_before_replace(self):
         with tempfile.TemporaryDirectory() as tmpdir:
