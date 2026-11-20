@@ -460,6 +460,8 @@ class FlowMediaClient:
             submitted = [a for a in attempts if a['submission'] not in {'not_attempted', 'blocked_before_submission'}]
             used = len(submitted)
             pre_submit = sum(a['submission'] == 'not_attempted' for a in attempts)
+            # Popup blocks send nothing, so they are counted apart and never use up attempts.
+            ui_blocks = int(saved.get('ui_blocks') or 0)
             current=FlowMediaClient._read_diagnostics(diagnostics)
             identified=bool(current.get('retrieval',{}).get('candidate'))
             last_sent_failure = (submitted[-1].get('failure') or {}) if submitted else {}
@@ -481,10 +483,25 @@ class FlowMediaClient:
                 try:
                     generate(None)
                     self._save_attempt(diagnostics, attempt)
+                    if ui_blocks:
+                        try:  # Prints the log line, then sends one Telegram notice.
+                            self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_UI_BLOCK_CLEARED',
+                                f'Flow {stage}: succeeded after {ui_blocks} popup block(s).')
+                        except Exception:
+                            pass  # A notice must never turn a finished Flow result into a failure.
                     return self._finish_daily(stage, output, diagnostics, 'flow')
                 except FlowCommandError as exc:
                     failure = {k: getattr(exc, k) for k in ('category', 'error_class', 'media_id', 'retryable',
                                                           'detail', 'operation_id')}
+                    if exc.category == 'pre_submit_ui_blocked':
+                        # Nothing was sent, so no attempt is recorded; the next slot opens a fresh browser.
+                        self._write_diagnostics(diagnostics, {'pending_attempt': None, 'ui_blocks': ui_blocks + 1,
+                                                              'last_ui_block': failure | {'at': time.time()}})
+                        print(f'FLOW_{stage.upper()}_UI_BLOCKED_{ui_blocks + 1}: Flow {stage}: a popup covered '
+                              f'a Flow control; nothing was sent. The next slot retries.')
+                        self._notify_transition(diagnostics, f'FLOW_{stage.upper()}_UI_BLOCKED',
+                            f'Flow {stage}: a popup covered a Flow control; nothing was sent. Retrying each slot.')
+                        raise
                     attempt['failure'] = failure
                     self._save_attempt(diagnostics, attempt)
                     self._write_diagnostics(diagnostics, {'failure': failure})
@@ -993,6 +1010,10 @@ class FlowMediaClient:
                 category = 'pre_submit_transient'
             elif auth_error:
                 category = "auth_required"
+            elif (error_class == 'UiSelectorDriftError' and not clicked
+                    and 'covered by' in detail and 'cdk-overlay' in detail):
+                # A Flow popup sat over a control before anything was sent: retry next slot.
+                category = 'pre_submit_ui_blocked'
             elif clicked:
                 category = "post_submit_error"
             elif bool(error.get("retryable")):

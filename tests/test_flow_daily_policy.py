@@ -864,6 +864,65 @@ class DailyFlowPolicyTests(unittest.TestCase):
         api.assert_not_called()
         self.assertTrue(target.is_file())
 
+    def ui_block(self):
+        return FlowCommandError('image', 'pre_submit_ui_blocked', error_class='UiSelectorDriftError',
+                                submission_state='not_attempted')
+
+    def test_popup_block_waits_for_next_slot_and_never_uses_up_retries_or_api(self):
+        self.freeze()
+        with patch.object(FlowMediaClient, '_generate_image', side_effect=self.ui_block()) as flow, \
+                patch('flow_media_client.GoogleImageClient') as api, \
+                patch('notifier.safe_notify_status', return_value=True) as notice:
+            for _ in range(5):  # Every morning slot meets the same popup.
+                with self.assertRaises(FlowCommandError) as error:
+                    FlowMediaClient().generate_image({}, self.root / 'generated_art.png')
+                self.assertEqual(error.exception.category, 'pre_submit_ui_blocked')
+        self.assertEqual(flow.call_count, 5)  # One try per slot, no same-run repeat.
+        api.assert_not_called()
+        self.assertEqual([c.args[1] for c in notice.call_args_list], ['FLOW_IMAGE_UI_BLOCKED'])
+        saved = json.loads((self.root / 'flow_image_diagnostics.json').read_text())
+        self.assertEqual(saved.get('attempts', []), [])  # Attempt history and its caps stay untouched.
+        self.assertEqual(saved['ui_blocks'], 5)
+        self.assertIsNone(saved['pending_attempt'])
+
+    def test_popup_block_then_success_logs_the_recovering_try(self):
+        self.freeze()
+        target = self.root / 'generated_art.png'
+        outcomes = [self.ui_block(), self.ui_block(), None]
+        def generate(request, output, recovered=None):
+            outcome = outcomes.pop(0)
+            if outcome:
+                raise outcome
+            return self.save_image(request, output)
+        with patch.object(FlowMediaClient, '_generate_image', side_effect=generate), \
+                patch('flow_media_client.GoogleImageClient') as api, \
+                patch('notifier.safe_notify_status', return_value=True) as notice, \
+                patch('builtins.print') as printed:
+            for _ in range(2):
+                with self.assertRaises(FlowCommandError):
+                    FlowMediaClient().generate_image({}, target)
+            self.assertEqual(FlowMediaClient().generate_image({}, target), target)
+        api.assert_not_called()
+        lines = [str(c.args[0]) for c in printed.call_args_list if c.args]
+        self.assertTrue(any(l.startswith('FLOW_IMAGE_UI_BLOCKED_1:') for l in lines))
+        self.assertTrue(any(l.startswith('FLOW_IMAGE_UI_BLOCKED_2:') for l in lines))
+        self.assertIn('FLOW_IMAGE_UI_BLOCK_CLEARED: Flow image: succeeded after 2 popup block(s).', lines)
+        self.assertEqual([c.args[1] for c in notice.call_args_list],
+                         ['FLOW_IMAGE_UI_BLOCKED', 'FLOW_IMAGE_UI_BLOCK_CLEARED'])
+
+    def test_popup_covering_a_control_is_classified_separately_from_real_selector_drift(self):
+        def cli_error(detail):
+            payload = {'status': 'error', 'error': {'class': 'UiSelectorDriftError', 'detail': detail}}
+            result = Mock(returncode=1, stdout=json.dumps(payload))
+            with patch('flow_media_client.run_bounded', return_value=result):
+                with self.assertRaises(FlowCommandError) as error:
+                    FlowMediaClient._run_json(['gflow', 'image', 't2i', 'x', '--json'], 60)
+            return error.exception.category
+        self.assertEqual(cli_error('migrated host: .settings-trigger-button did not accept a click within 5000 ms '
+                                   '— it is covered by div.cdk-overlay-backdrop.cdk-overlay-backdrop-showing (host=migrated)'),
+                         'pre_submit_ui_blocked')
+        self.assertEqual(cli_error('migrated host: .settings-trigger-button not found'), 'pre_submit_terminal')
+
     def test_emergency_rescue_survives_notification_exception(self):
         from pipeline import WHOOPPipeline, PipelineStageError
         pipeline = WHOOPPipeline.__new__(WHOOPPipeline)
